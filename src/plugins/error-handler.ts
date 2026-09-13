@@ -1,6 +1,6 @@
 import type { FastifyError, FastifyReply, FastifyRequest } from 'fastify';
-import { Type } from '@sinclair/typebox';
 import fp from 'fastify-plugin';
+import { Type } from 'typebox';
 import { exposeErrorDetail } from '@/config/env';
 import { DomainError, ERROR_CODES } from '@/shared/errors';
 

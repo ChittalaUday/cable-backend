@@ -1,5 +1,5 @@
-import type { Static, TSchema } from '@sinclair/typebox';
-import { Type } from '@sinclair/typebox';
+import type { Static, TSchema } from 'typebox';
+import { Type } from 'typebox';
 import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from '@/config/constants';
 
 /**

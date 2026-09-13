@@ -68,13 +68,13 @@ Search is `pg_trgm` in Postgres, not a search cluster.
 | Concern | Choice | Notes |
 |---|---|---|
 | Runtime | **Node.js 24 LTS**, ESM | — |
-| Language | TypeScript, strict | — |
+| Language | TypeScript **5.9**, strict | **Pinned — do not upgrade to 7.** typescript-eslint 8.70 supports `>=4.8.4 <6.1.0`; TS 7 silently drops typed linting, and every typed rule starts reporting `any`. Revisit when typescript-eslint ships TS 7 support. |
 | Framework | **Fastify 5** | Schema-first, fastest serializer |
 | Architecture | **Modular monolith** | §3 |
 | Package manager | **pnpm** | Same as the app repo |
 | Database | **PostgreSQL 18** | — |
 | ORM | **Drizzle ORM** + Drizzle Kit | Migrations are readable SQL, no codegen step |
-| Validation | **TypeBox → JSON Schema** | Fastify's *native* validator/serializer compiles it directly; OpenAPI for free |
+| Validation | **TypeBox 1.x** (`typebox`, not `@sinclair/typebox`) → JSON Schema | Fastify's *native* validator/serializer compiles it directly; OpenAPI for free |
 | Auth | JWT access + rotating refresh token | §4.3, §4.6 |
 | Password hashing | **Argon2id** | Use `@node-rs/argon2` — prebuilt Rust binding, **no node-gyp in the image**. Not the `argon2` package. |
 | Authorization | RBAC + permissions + scopes | §5 |
@@ -112,6 +112,11 @@ two reading `process.env` raw.
 
 **Rule:** before adding any dependency, check whether Fastify, Drizzle, or
 `node:` stdlib already does it. Most of the time one of them does.
+
+**Upgrades:** `pnpm outdated` should be empty apart from the pinned entries
+above. Before taking a major, check its peer range against what is already
+installed — a mismatch here does not fail loudly, it degrades: typed lint rules
+stop seeing types and start reporting `any` everywhere.
 
 ### 2.1 Deployment tiers
 

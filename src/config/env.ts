@@ -1,7 +1,7 @@
-import type { Static } from '@sinclair/typebox';
+import type { Static } from 'typebox';
 import process from 'node:process';
-import { Type } from '@sinclair/typebox';
-import { Value } from '@sinclair/typebox/value';
+import { Type } from 'typebox';
+import { Assert, Clean, Clone, Convert, Default, Errors } from 'typebox/value';
 
 /**
  * The ONLY place `process.env` is read (AGENTS.md §10). Everything else imports
@@ -120,15 +120,22 @@ const EnvSchema = Type.Object({
 export type Env = Static<typeof EnvSchema>;
 
 function loadEnv(): Env {
+  // Env values arrive as strings, so Convert runs before Assert; Clean drops the
+  // hundreds of unrelated variables a shell carries.
+  const shaped = Clean(EnvSchema, Default(EnvSchema, Convert(EnvSchema, Clone({ ...process.env }))));
+
   try {
-    return Value.Parse(['Clone', 'Clean', 'Default', 'Convert', 'Assert'], EnvSchema, process.env) as Env;
+    Assert(EnvSchema, shaped);
   }
   catch {
-    const problems = [...Value.Errors(EnvSchema, Value.Default(EnvSchema, { ...process.env }))]
-      .map(e => `  ${e.path || '/'}: ${e.message}`)
+    const problems = [...Errors(EnvSchema, shaped)]
+      .map(issue => `  ${issue.instancePath || '/'}: ${issue.message}`)
       .join('\n');
+
     throw new Error(`Invalid environment configuration:\n${problems}`);
   }
+
+  return shaped;
 }
 
 /**
