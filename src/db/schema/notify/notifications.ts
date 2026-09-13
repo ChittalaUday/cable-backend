@@ -1,7 +1,7 @@
 import { index, jsonb, text, timestamp, uuid } from 'drizzle-orm/pg-core';
-import { notify } from './schemas';
-import { tenants } from './tenants';
-import { users } from './users';
+import { users } from '../auth/users';
+import { notify } from '../schemas';
+import { tenants } from '../tenancy/tenants';
 
 /** What a caller asks for. `in_app` is delivered by being readable; the rest go over a transport. */
 export const NOTIFICATION_CHANNELS = ['in_app', 'whatsapp', 'sms'] as const;

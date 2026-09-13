@@ -36,6 +36,69 @@
       "when": 1789285739300,
       "tag": "0004_young_sleeper",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1789293960566,
+      "tag": "0005_noisy_black_cat",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1789294205953,
+      "tag": "0006_overjoyed_reaper",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1789294388755,
+      "tag": "0007_silent_sasquatch",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1789294799802,
+      "tag": "0008_magenta_eternals",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1789294862619,
+      "tag": "0009_crazy_kid_colt",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1789294917570,
+      "tag": "0010_condemned_doomsday",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1789294996069,
+      "tag": "0011_furry_jack_flag",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1789295091448,
+      "tag": "0012_fat_ultimo",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1789295308160,
+      "tag": "0013_dapper_the_phantom",
+      "breakpoints": true
     }
   ]
 }

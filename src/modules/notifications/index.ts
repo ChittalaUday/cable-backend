@@ -1,4 +1,4 @@
-export { MessagingService, normalisePhone } from './messaging.service';
+export { MessagingService, normalisePhone, to10DigitPhone } from './messaging.service';
 export type { MessagingServiceOptions } from './messaging.service';
 export { MESSAGE_CHANNELS } from './messaging.types';
 export type { MessageChannel, MessagingProvider, OutboundMessage, SendResult } from './messaging.types';

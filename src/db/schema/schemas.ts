@@ -42,3 +42,6 @@ export const media = pgSchema('media');
  * instead of re-derived in three services. Never any tables of its own.
  */
 export const analytics = pgSchema('analytics');
+
+/** Append-only business events. */
+export const audit = pgSchema('audit');

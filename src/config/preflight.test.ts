@@ -14,7 +14,7 @@ describe('runPreflight', () => {
             return { rows: [{ '?column?': 1 }] };
           if (sql.includes('pg_namespace')) {
             return {
-              rows: ['tenancy', 'auth', 'iam', 'crm', 'notify', 'media', 'analytics'].map(nspname => ({ nspname })),
+              rows: ['tenancy', 'auth', 'iam', 'crm', 'notify', 'media', 'analytics', 'audit'].map(nspname => ({ nspname })),
             };
           }
           if (sql.includes('__drizzle_migrations'))

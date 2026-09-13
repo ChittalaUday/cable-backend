@@ -4,6 +4,7 @@ import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from '@/app';
 import { otpCodes, sessions, users } from '@/db/schema';
+import { normalisePhone } from '@/modules/notifications';
 import { hashOtp } from '@/shared/security/otp';
 import { createTestDb } from '@/test/db';
 import { seedAuthData, uniqueDeviceId, uniquePhone } from '@/test/fixtures';
@@ -44,9 +45,10 @@ async function issueOtp(phone: string, code = KNOWN_CODE) {
     payload: { phone },
   });
 
+  const identifier = normalisePhone(phone, '91');
   await db.update(otpCodes)
-    .set({ codeHash: hashOtp(code, phone) })
-    .where(eq(otpCodes.identifier, phone));
+    .set({ codeHash: hashOtp(code, identifier) })
+    .where(eq(otpCodes.identifier, identifier));
 
   return response;
 }
@@ -189,7 +191,7 @@ describe('otp login', () => {
     expect(response.statusCode).toBe(401);
     expect(bodyOf(response).code).toBe('OTP_INVALID');
 
-    const [row] = await db.select().from(otpCodes).where(eq(otpCodes.identifier, phone));
+    const [row] = await db.select().from(otpCodes).where(eq(otpCodes.identifier, normalisePhone(phone, '91')));
     expect(row!.attempts).toBe(1);
   });
 
@@ -218,7 +220,7 @@ describe('otp login', () => {
     await issueOtp(phone);
     await db.update(otpCodes)
       .set({ expiresAt: new Date(Date.now() - 1000) })
-      .where(eq(otpCodes.identifier, phone));
+      .where(eq(otpCodes.identifier, normalisePhone(phone, '91')));
 
     const response = await app.inject({
       method: 'POST',

@@ -1,8 +1,8 @@
 import { index, integer, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
-import { roles } from './roles';
-import { tenancy } from './schemas';
+import { users } from '../auth/users';
+import { roles } from '../iam/roles';
+import { tenancy } from '../schemas';
 import { tenants } from './tenants';
-import { users } from './users';
 
 /**
  * The join that makes multi-tenancy work (AGENTS.md §4.1).

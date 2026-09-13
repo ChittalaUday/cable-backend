@@ -1,7 +1,7 @@
 import { bigint, index, jsonb, text, timestamp, uuid } from 'drizzle-orm/pg-core';
-import { media } from './schemas';
-import { tenants } from './tenants';
-import { users } from './users';
+import { users } from '../auth/users';
+import { media } from '../schemas';
+import { tenants } from '../tenancy/tenants';
 
 /** Where the file came from. */
 export const FILE_KINDS = ['upload', 'generated'] as const;
@@ -66,9 +66,3 @@ export type NewFileRecord = typeof files.$inferInsert;
 export type FileKind = (typeof FILE_KINDS)[number];
 export type FileStatus = (typeof FILE_STATUSES)[number];
 export type FileVisibility = (typeof FILE_VISIBILITIES)[number];
-
-// Domain tables reference a file by id (`customers.photo_file_id`), which keeps
-// a real foreign key. If many-to-many attachments become necessary (a ticket
-// with several photos), add a `media.attachments` link table then — a
-// polymorphic owner_type/owner_id pair here would buy flexibility nothing needs
-// yet at the cost of every FK guarantee.

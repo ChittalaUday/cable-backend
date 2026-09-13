@@ -1,0 +1,3 @@
+ALTER TABLE "crm"."subscriptions" ADD COLUMN "installation_address_id" uuid;--> statement-breakpoint
+ALTER TABLE "crm"."subscriptions" ADD CONSTRAINT "subscriptions_installation_address_id_customer_addresses_id_fk" FOREIGN KEY ("installation_address_id") REFERENCES "crm"."customer_addresses"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+CREATE INDEX "subscriptions_address_idx" ON "crm"."subscriptions" USING btree ("installation_address_id");

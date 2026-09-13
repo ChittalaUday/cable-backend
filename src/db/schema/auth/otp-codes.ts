@@ -1,5 +1,5 @@
 import { index, integer, text, timestamp, uuid } from 'drizzle-orm/pg-core';
-import { auth } from './schemas';
+import { auth } from '../schemas';
 
 export const OTP_PURPOSES = ['login', 'verify_phone'] as const;
 

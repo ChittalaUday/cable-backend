@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
-import { boolean, check, index, text, timestamp, uuid } from 'drizzle-orm/pg-core';
-import { auth } from './schemas';
+import { boolean, check, index, text, timestamp, uuid, varchar } from 'drizzle-orm/pg-core';
+import { auth } from '../schemas';
 
 /**
  * Global identity — ONE row per human, across every tenant (AGENTS.md §4.1).
@@ -14,7 +14,9 @@ export const users = auth.table('users', {
 
   /** Sign-in identifier. At least one of email/phone must be present. */
   email: text('email').unique(),
-  phone: text('phone').unique(),
+
+  /** 10-digit Indian mobile number without country code or symbols. */
+  phone: varchar('phone', { length: 10 }).unique(),
 
   /** Null means the account has no password and signs in with Google only. */
   passwordHash: text('password_hash'),
@@ -40,6 +42,7 @@ export const users = auth.table('users', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, table => [
   check('users_identifier_present', sql`${table.email} IS NOT NULL OR ${table.phone} IS NOT NULL`),
+  check('users_phone_ten_digits', sql`${table.phone} IS NULL OR ${table.phone} ~ '^[0-9]{10}$'`),
   index('users_disabled_at_idx').on(table.disabledAt),
 ]);
 

@@ -95,6 +95,27 @@ Tables are namespaced by domain — nothing is in `public`:
 | `notify` | notifications |
 | `media` | files |
 | `analytics` | views only (dashboard aggregates) |
+| `audit` | append-only business audit events |
+
+### Business audit log
+
+Audit semantic business mutations (`customer.updated`, `package.price_changed`), not reads, HTTP traffic, or arbitrary SQL. Pino remains the application/request log. Audit rows are append-only; retention is a separate maintenance concern.
+
+Always write the business mutation and audit row through the same Drizzle transaction. Snapshots, changes, and metadata are recursively sanitized, but callers must still avoid putting unnecessary personal data in them.
+
+```ts
+await db.transaction(async (tx) => {
+  const [customer] = await tx.update(customers).set(patch).where(/* tenant-scoped predicate */).returning();
+  await audit.updated(tx, request.auditContext, {
+    entityType: 'customer',
+    entityId: customer.id,
+    before: existingCustomer,
+    after: customer,
+  });
+});
+```
+
+`tenantId` is nullable only for genuine platform events. Tenant-scoped work must copy the validated tenant directly into the row; the audit context plugin only captures the header and does not replace tenant validation. If volume eventually warrants it, range-partition `audit.audit_logs` by `created_at` (normally monthly). Database triggers remain an optional last-resort safety layer for a small number of exceptionally sensitive tables, not the source of business events.
 
 Caching is Redis with a 300s TTL: `GET` reads it, a successful
 `POST`/`PUT`/`PATCH`/`DELETE` invalidates that resource. Responses carry

@@ -18,7 +18,7 @@ export interface PreflightResult {
   failed: boolean;
 }
 
-const REQUIRED_SCHEMAS = ['tenancy', 'auth', 'iam', 'crm', 'notify', 'media', 'analytics'];
+const REQUIRED_SCHEMAS = ['tenancy', 'auth', 'iam', 'crm', 'notify', 'media', 'analytics', 'audit'];
 const MIGRATIONS_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'db', 'migrations');
 
 const ok = (name: string, detail: string): Check => ({ name, status: 'ok', detail });

@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
-import { boolean, integer, numeric, text, timestamp, uuid } from 'drizzle-orm/pg-core';
-import { analytics, notify } from './schemas';
+import { boolean, integer, numeric, text, uuid } from 'drizzle-orm/pg-core';
+import { analytics } from '../schemas';
 
 /**
  * Read models (AGENTS.md §8.3).
@@ -32,19 +32,6 @@ export const tenantCustomerStats = analytics.view('tenant_customer_stats', {
   pendingCustomers: integer('pending_customers').notNull(),
   addedThisMonth: integer('added_this_month').notNull(),
   outstandingTotal: numeric('outstanding_total', { precision: 14, scale: 2 }).notNull(),
-}).existing();
-
-/**
- * `notify.user_unread_counts` — unread in-app notifications per (tenant, user).
- *
- * Named so the badge count is one definition rather than a filter every caller
- * re-types and eventually gets subtly wrong.
- */
-export const userUnreadCounts = notify.view('user_unread_counts', {
-  tenantId: uuid('tenant_id').notNull(),
-  userId: uuid('user_id').notNull(),
-  unreadCount: integer('unread_count').notNull(),
-  latestAt: timestamp('latest_at', { withTimezone: true }),
 }).existing();
 
 /**

@@ -1,13 +1,14 @@
-import { index, numeric, text, timestamp, uuid } from 'drizzle-orm/pg-core';
-import { crm } from './schemas';
-import { tenants } from './tenants';
-import { users } from './users';
+import { index, jsonb, numeric, text, timestamp, uuid, varchar } from 'drizzle-orm/pg-core';
+import { users } from '../auth/users';
+import { crm } from '../schemas';
+import { tenants } from '../tenancy/tenants';
 
 /**
  * A subscriber, scoped to one tenant (AGENTS.md §4.1).
  *
- * `userId` is nullable: an imported subscriber has a business record but no
- * login account, and may never get one.
+ * Identity, credentials, name, and primary phone reside on `auth.users` (§4.1).
+ * Extended subscriber metadata, secondary contacts, KYC, and notes live directly here.
+ * Physical addresses live in `crm.customer_addresses` for indexing and filtering.
  */
 export const customers = crm.table('customers', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -19,12 +20,13 @@ export const customers = crm.table('customers', {
    */
   customerCode: text('customer_code').notNull().unique(),
 
-  userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
 
-  name: text('name').notNull(),
-  phone: text('phone'),
-  email: text('email'),
-  address: text('address'),
+  alternatePhone: varchar('alternate_phone', { length: 10 }),
+  whatsappNumber: varchar('whatsapp_number', { length: 10 }),
+
+  nationalIdType: text('national_id_type'),
+  nationalIdNumber: text('national_id_number'),
 
   areaId: uuid('area_id'),
   locationId: uuid('location_id'),
@@ -33,6 +35,11 @@ export const customers = crm.table('customers', {
 
   /** Money is `numeric` in Postgres and decimal.js in TypeScript — never a JS number (§8). */
   outstandingBalance: numeric('outstanding_balance', { precision: 12, scale: 2 }).notNull().default('0'),
+
+  notes: text('notes'),
+
+  /** Dynamic additional properties (installation notes, provider tags, custom attributes). */
+  metadata: jsonb('metadata'),
 
   /** Scope anchor for OWN (§5). */
   createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
@@ -44,11 +51,9 @@ export const customers = crm.table('customers', {
   // Every query filters on tenant_id, so it leads every composite index (§8).
   index('customers_tenant_created_idx').on(table.tenantId, table.createdAt.desc()),
   index('customers_tenant_status_idx').on(table.tenantId, table.status),
-  index('customers_tenant_phone_idx').on(table.tenantId, table.phone),
+  index('customers_user_idx').on(table.userId),
   index('customers_area_idx').on(table.areaId),
   index('customers_location_idx').on(table.locationId),
-  // No composite unique on (tenant_id, customer_code): the global UNIQUE on
-  // customer_code already subsumes it, since tenant prefixes are unique (§8.1).
 ]);
 
 export type Customer = typeof customers.$inferSelect;

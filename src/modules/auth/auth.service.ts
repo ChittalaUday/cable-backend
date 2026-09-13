@@ -6,7 +6,7 @@ import type { AccessTokenClaims, TokenSigner } from '@/shared/security/tokens';
 import { randomUUID } from 'node:crypto';
 import { and, desc, eq, isNull, or, sql } from 'drizzle-orm';
 import { otpCodes, tenantMemberships, users } from '@/db/schema';
-import { normalisePhone } from '@/modules/notifications';
+import { normalisePhone, to10DigitPhone } from '@/modules/notifications';
 import { ERROR_CODES } from '@/shared/errors';
 import { badRequest, forbidden, unauthorized } from '@/shared/errors/domain-error';
 import { generateOtp, hashOtp, otpMatches } from '@/shared/security/otp';
@@ -176,11 +176,11 @@ export class AuthService {
   async login(input: LoginInput): Promise<AuthTokens & { user: PublicUser }> {
     const identifier = input.identifier.trim().toLowerCase();
 
-    // `normalisePhone` strips non-digits, so an email would be looked up as a
+    // `to10DigitPhone` extracts digits, so an email would be looked up as a
     // phone: `admin2024@satya.in` becomes `912024`, reaching whoever owns it.
     const asPhone = identifier.includes('@')
       ? null
-      : normalisePhone(identifier, this.deps.config.defaultCountryCode);
+      : to10DigitPhone(identifier);
 
     const [user] = await this.db.select().from(users).where(
       asPhone === null ? eq(users.email, identifier) : or(eq(users.email, identifier), eq(users.phone, asPhone)),
@@ -303,11 +303,12 @@ export class AuthService {
   }
 
   private async findOrCreateByPhone(phone: string): Promise<User> {
-    const [existing] = await this.db.select().from(users).where(eq(users.phone, phone));
+    const nationalPhone = to10DigitPhone(phone);
+    const [existing] = await this.db.select().from(users).where(eq(users.phone, nationalPhone));
     if (existing)
       return existing;
 
-    const [created] = await this.db.insert(users).values({ phone }).returning();
+    const [created] = await this.db.insert(users).values({ phone: nationalPhone }).returning();
     if (!created)
       throw new Error('User insert returned no row');
 

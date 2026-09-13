@@ -131,6 +131,10 @@ export default antfu(
   // Entry points and seeders report to a human on a terminal, not to a request logger.
   {
     files: ['**/src/db/seed/**/*.ts', '**/src/db/migrate.ts'],
-    rules: { 'no-console': 'off' },
+    rules: {
+      'no-console': 'off',
+      'max-lines-per-function': 'off',
+      'complexity': 'off',
+    },
   },
 );

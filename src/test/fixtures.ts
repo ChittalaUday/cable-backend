@@ -15,7 +15,7 @@ import { ALL_PERMISSION_KEYS, PERMISSIONS } from '@/shared/security/permissions'
 
 /** Unique, never a real number — `999` is not an allocated Indian mobile prefix. */
 export function uniquePhone(): string {
-  return `91999${String(randomInt(0, 10_000_000)).padStart(7, '0')}`;
+  return `999${String(randomInt(0, 10_000_000)).padStart(7, '0')}`;
 }
 
 export function uniqueEmail(prefix = 'user'): string {

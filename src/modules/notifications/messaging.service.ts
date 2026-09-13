@@ -97,3 +97,17 @@ export function normalisePhone(raw: string, defaultCountryCode: string): string 
   const national = digits.replace(/^0+/, '');
   return `${defaultCountryCode}${national}`;
 }
+
+/**
+ * Reduce a phone number to 10-digit Indian mobile number for storage in `users.phone`.
+ */
+export function to10DigitPhone(raw: string): string {
+  const digits = raw.replace(/\D/g, '');
+  if (digits.length === 12 && digits.startsWith('91'))
+    return digits.slice(2);
+
+  if (digits.length === 11 && digits.startsWith('0'))
+    return digits.slice(1);
+
+  return digits;
+}

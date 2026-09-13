@@ -76,7 +76,7 @@ const ROLE_NAMES: Record<SeedRoleId, string> = {
 };
 
 const TENANTS = [
-  { code: 'SCB', name: 'Satya Cable & Broadband' },
+  { code: 'SSCN', name: 'Sri Satya Cable Network' },
   { code: 'NCB', name: 'Nova Cable Network' },
 ];
 

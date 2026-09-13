@@ -1,5 +1,5 @@
 import { index, integer, text, timestamp, uuid } from 'drizzle-orm/pg-core';
-import { tenancy } from './schemas';
+import { tenancy } from '../schemas';
 
 /**
  * A cable operator. Every business record in the system belongs to exactly one.

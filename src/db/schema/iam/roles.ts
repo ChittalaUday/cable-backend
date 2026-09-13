@@ -1,7 +1,7 @@
 import { boolean, index, primaryKey, text, timestamp, uuid } from 'drizzle-orm/pg-core';
 import { PERMISSION_SCOPES } from '@/shared/security/permissions';
-import { iam } from './schemas';
-import { tenants } from './tenants';
+import { iam } from '../schemas';
+import { tenants } from '../tenancy/tenants';
 
 /**
  * A named bundle of permissions (AGENTS.md §5).

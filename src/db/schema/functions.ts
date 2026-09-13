@@ -39,3 +39,11 @@ export function scopeRank(value: unknown) {
 export function similarity(left: unknown, right: unknown) {
   return sql<number>`similarity(${left}, ${right})`;
 }
+
+/**
+ * `crm.next_customer_code(uuid) → text` — atomically increments `customer_seq`
+ * on the tenant under row lock and returns `{TENANT_CODE}-{seq}` (e.g. `SSCN-000123`).
+ */
+export function nextCustomerCode(tenantId: unknown) {
+  return sql<string>`crm.next_customer_code(${tenantId})`;
+}

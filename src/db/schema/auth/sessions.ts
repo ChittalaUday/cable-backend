@@ -1,6 +1,6 @@
 import { index, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { auth } from '../schemas';
 import { devices } from './devices';
-import { auth } from './schemas';
 import { users } from './users';
 
 export const SESSION_REVOKE_REASONS = [
