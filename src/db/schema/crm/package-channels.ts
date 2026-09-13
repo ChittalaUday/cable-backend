@@ -3,12 +3,6 @@ import { crm } from '../schemas';
 import { channels } from './channels';
 import { packages } from './packages';
 
-/**
- * Junction table mapping packages to channels (many-to-many).
- *
- * Channel number (LCN) and provider metadata are owned by the `channels` table
- * (bound to `service_id`), while this table establishes package membership.
- */
 export const packageChannels = crm.table('package_channels', {
   id: uuid('id').primaryKey().defaultRandom(),
   packageId: uuid('package_id').notNull().references(() => packages.id, { onDelete: 'cascade' }),

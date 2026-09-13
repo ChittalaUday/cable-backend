@@ -1,7 +1,6 @@
 import type { ErrorCode } from './codes';
 import { ERROR_CODES } from './codes';
 
-/** One field-level problem, so a client can attach it to the right input. */
 export interface ValidationDetail { field: string; issue: string }
 
 export interface DomainErrorInit {
@@ -11,13 +10,6 @@ export interface DomainErrorInit {
   details?: ValidationDetail[];
 }
 
-/**
- * Thrown by services (AGENTS.md §3, §7).
- *
- * Services never throw HTTP errors — they throw this, and the single
- * `setErrorHandler` maps it to a status code and a response body. That is what
- * keeps a service testable without booting a server.
- */
 export class DomainError extends Error {
   override readonly name = 'DomainError';
   readonly code: ErrorCode;
@@ -32,12 +24,6 @@ export class DomainError extends Error {
   }
 }
 
-/**
- * A record that is missing, or one that belongs to another tenant.
- *
- * These are deliberately the same error: a distinct code for the cross-tenant
- * case would confirm the row exists and leak across the boundary (§4.5).
- */
 export function notFound(what = 'Resource'): DomainError {
   return new DomainError({ code: ERROR_CODES.RESOURCE_NOT_FOUND, statusCode: 404, message: `${what} not found` });
 }

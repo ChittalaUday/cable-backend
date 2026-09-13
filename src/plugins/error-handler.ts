@@ -4,12 +4,6 @@ import { Type } from 'typebox';
 import { exposeErrorDetail } from '@/config/env';
 import { DomainError, ERROR_CODES } from '@/shared/errors';
 
-/**
- * The one error shape the API emits (AGENTS.md §6, §7.1).
- *
- * `code` is what clients branch on; `message` is human text that may be
- * reworded or translated at any time and must never be parsed.
- */
 export const ErrorResponse = Type.Object({
   statusCode: Type.Integer(),
   error: Type.String(),
@@ -20,11 +14,6 @@ export const ErrorResponse = Type.Object({
     field: Type.String(),
     issue: Type.String(),
   }))),
-  /**
-   * Diagnostics, present on local and staging only (§2.1). Production omits
-   * these entirely — a stack trace names file paths, library versions and query
-   * fragments, and `requestId` is how an incident is traced instead.
-   */
   debug: Type.Optional(Type.Object({
     name: Type.String(),
     message: Type.String(),
@@ -33,7 +22,6 @@ export const ErrorResponse = Type.Object({
   })),
 }, { $id: 'ErrorResponse' });
 
-/** Diagnostics for a non-production response. Never called in production. */
 function debugOf(error: Error): { name: string; message: string; stack?: string; cause?: string } {
   return {
     name: error.name,
@@ -54,7 +42,6 @@ const STATUS_TEXT: Record<number, string> = {
   503: 'Service Unavailable',
 };
 
-/** Turn Fastify's validation output into per-field details a form can use. */
 function validationDetails(error: FastifyError): { field: string; issue: string }[] {
   return (error.validation ?? []).map(issue => ({
     field: issue.instancePath.replace(/^\//, '') || String(issue.params.missingProperty ?? ''),
@@ -68,7 +55,6 @@ export default fp(async (app) => {
   app.setErrorHandler((error: FastifyError, request: FastifyRequest, reply: FastifyReply) => {
     request.log.error({ err: error }, 'request failed');
 
-    // Services throw DomainError; they never know about HTTP (§3).
     if (error instanceof DomainError) {
       return reply.status(error.statusCode).send({
         statusCode: error.statusCode,
@@ -124,7 +110,6 @@ export default fp(async (app) => {
       });
     }
 
-    // A 4xx raised by a plugin rather than a service.
     return reply.status(status).send({
       statusCode: status,
       error: STATUS_TEXT[status] ?? 'Error',

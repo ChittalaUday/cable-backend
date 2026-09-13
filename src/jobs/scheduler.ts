@@ -1,5 +1,5 @@
 import type { FastifyBaseLogger } from 'fastify';
-import type { StorageService } from '@/modules/storage';
+import type { StorageService } from '@/modules/storage/storage.service';
 import { PgBoss } from 'pg-boss';
 import { env } from '@/config/env';
 import { runLogCleanupJob } from './log-cleanup.job';

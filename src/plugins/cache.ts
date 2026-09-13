@@ -10,7 +10,6 @@ declare module 'fastify' {
   }
 
   interface FastifyContextConfig {
-    /** false opts a route out. `tenant` shares one entry across a tenant's users. */
     cache?: false | { scope?: 'user' | 'tenant' };
   }
 }
@@ -26,13 +25,10 @@ export default fp(async (app) => {
   const redis = new Redis(env.REDIS_URL, {
     lazyConnect: true,
     maxRetriesPerRequest: 2,
-    // ioredis throws on an unhandled 'error' event otherwise, and a cache
-    // outage must not take the API down (§8.5).
     enableOfflineQueue: false,
   });
   redis.on('error', () => {});
 
-  // Not fatal: the API degrades to reading Postgres, and preflight reports it.
   await redis.connect().catch((error: unknown) => {
     app.log.warn(`Redis unreachable at boot: ${error instanceof Error ? error.message : String(error)}`);
   });
@@ -55,10 +51,6 @@ export default fp(async (app) => {
       resource: resourceOf(request.url),
       url: request.url,
       tenantId,
-      // Responses are permission-filtered, so a key shared across users would
-      // serve one user's rows to another. Tenant scope is opt-in per route.
-      // `session` is only populated after `authenticate`, so the declared type
-      // over-promises on public routes.
       userId: config !== false && config?.scope === 'tenant'
         ? null
         : (request as { session?: { sub: string } }).session?.sub ?? 'anon',

@@ -99,6 +99,21 @@
           "    }",
           "",
           "    if (body && body.sessionId) pm.environment.set('sessionId', body.sessionId);",
+          "",
+          "    // `/auth/me` is the only response that names the caller's memberships.",
+          "    // A member of more than one tenant MUST send x-tenant-id: without it every",
+          "    // tenant-scoped route answers 400 TENANT_HEADER_MISSING.",
+          "    if (body && Array.isArray(body.memberships) && body.memberships.length) {",
+          "        if (!pm.environment.get('tenantId')) {",
+          "            pm.environment.set('tenantId', body.memberships[0].tenantId);",
+          "            console.log('[tenant] tenantId set to', body.memberships[0].tenantId);",
+          "        }",
+          "        if (body.memberships.length > 1) {",
+          "            console.log('[tenant] you belong to', body.memberships.length,",
+          "                'tenants:', body.memberships.map(m => m.tenantId).join(', '),",
+          "                '- set tenantId by hand to act in another one');",
+          "        }",
+          "    }",
           "}",
           "",
           "// Every error carries a machine-readable `code` (AGENTS.md \u00a77.1).",
@@ -376,6 +391,1408 @@
             },
             "description": "Revokes every session for this user across all devices."
           }
+        }
+      ]
+    },
+    {
+      "name": "Locations",
+      "description": "Tenant-configured address tree (AGENTS.md \u00a78.6).\n\n`X-Tenant-Id` is sent on every request here; it is only REQUIRED when your account belongs to more than one operator \u2014 otherwise the tenant comes from the token. Leave `tenantId` empty in the environment if you have a single membership.\n\nOrder for a fresh tenant: create categories \u2192 create a schema over them \u2192 create a root \u2192 generate the subtree.",
+      "item": [
+        {
+          "name": "Configuration (admin)",
+          "description": "The hierarchy DEFINITION \u2014 needs `locations.configure`. Run these in order once per tenant.",
+          "item": [
+            {
+              "name": "List categories",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/location-categories",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "location-categories"
+                  ]
+                },
+                "description": "The kinds of place this tenant has: Area, Building, Floor, Door \u2014 or Village, Street, House."
+              }
+            },
+            {
+              "name": "Create category",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "content-type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/location-categories",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "location-categories"
+                  ]
+                },
+                "description": "`config` is presentation only \u2014 the UI reads it. The hierarchy lives in a schema, not here.\n\nSaves `categoryId`.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"name\": \"Building\",\n  \"slug\": \"building\",\n  \"config\": {\n    \"icon\": \"building\",\n    \"placeholder\": \"Select building\",\n    \"allowCustom\": true\n  }\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if (pm.response.code < 300) {",
+                      "    const body = pm.response.json();",
+                      "    pm.environment.set('categoryId', body.id);",
+                      "}"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "Update category",
+              "request": {
+                "method": "PATCH",
+                "header": [
+                  {
+                    "key": "content-type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/location-categories/{{categoryId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "location-categories",
+                    "{{categoryId}}"
+                  ]
+                },
+                "description": "Rename or change display rules. The slug is the stable handle and is not editable.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"name\": \"Apartment Block\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Delete category",
+              "request": {
+                "method": "DELETE",
+                "header": [
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/location-categories/{{categoryId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "location-categories",
+                    "{{categoryId}}"
+                  ]
+                },
+                "description": "409 RESOURCE_IN_USE while a schema level or a location still uses it. Never a cascade."
+              }
+            },
+            {
+              "name": "List schemas",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/location-schemas",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "location-schemas"
+                  ]
+                },
+                "description": "Each schema with its levels, root first. A tenant runs several at once: apartments on one street, houses on the next."
+              }
+            },
+            {
+              "name": "Create schema (Area \u2192 Building \u2192 Block \u2192 Floor \u2192 Door)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "content-type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/location-schemas",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "location-schemas"
+                  ]
+                },
+                "description": "Levels are ordered root-first \u2014 the ORDER is the hierarchy.\n\nCreate the five categories first and set the `*CategoryId` variables, or paste ids directly.\n\nSaves `schemaId`.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"name\": \"Apartment\",\n  \"slug\": \"apartment\",\n  \"description\": \"Multi-storey buildings with numbered flats\",\n  \"levels\": [\n    {\n      \"categoryId\": \"{{areaCategoryId}}\"\n    },\n    {\n      \"categoryId\": \"{{buildingCategoryId}}\"\n    },\n    {\n      \"categoryId\": \"{{blockCategoryId}}\"\n    },\n    {\n      \"categoryId\": \"{{floorCategoryId}}\"\n    },\n    {\n      \"categoryId\": \"{{doorCategoryId}}\",\n      \"isTerminal\": true\n    }\n  ]\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if (pm.response.code < 300) {",
+                      "    const body = pm.response.json();",
+                      "    pm.environment.set('schemaId', body.id);",
+                      "}"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "Update schema",
+              "request": {
+                "method": "PATCH",
+                "header": [
+                  {
+                    "key": "content-type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/location-schemas/{{schemaId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "location-schemas",
+                    "{{schemaId}}"
+                  ]
+                },
+                "description": "Name/description/active only. Levels are not edited in place \u2014 nodes already reference them.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"name\": \"Apartment complex\",\n  \"isActive\": true\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Delete schema",
+              "request": {
+                "method": "DELETE",
+                "header": [
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/location-schemas/{{schemaId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "location-schemas",
+                    "{{schemaId}}"
+                  ]
+                },
+                "description": "409 RESOURCE_IN_USE while any location belongs to it."
+              }
+            },
+            {
+              "name": "Generate a subtree (blocks \u2192 floors \u2192 doors)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "content-type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/location-schemas/{{schemaId}}/generate",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "location-schemas",
+                    "{{schemaId}}",
+                    "generate"
+                  ]
+                },
+                "description": "One entry per level BELOW `parentId`, in schema order. Either `names` or `count` + a format.\n\nTokens: `{parent}`, `{parentCode}`, `{label}`, `{i}`, `{i2}`, `{i3}`, and `{name}` in `codeFormat`.\n`{parentCode}` cascades: block `A` \u2192 floor `A1` \u2192 door `A101`.\n\nThis example creates 2 blocks + 8 floors + 32 doors = 42 rows. Capped at 2000 per call.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"parentId\": \"{{locationId}}\",\n  \"levels\": [\n    {\n      \"names\": [\n        \"A\",\n        \"B\"\n      ],\n      \"nameFormat\": \"Block {label}\",\n      \"codeFormat\": \"{label}\"\n    },\n    {\n      \"count\": 4,\n      \"nameFormat\": \"Floor {i}\",\n      \"codeFormat\": \"{parentCode}{i}\"\n    },\n    {\n      \"count\": 4,\n      \"nameFormat\": \"{parentCode}{i2}\",\n      \"codeFormat\": \"{name}\"\n    }\n  ]\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Tree",
+          "description": "The nodes themselves. `locations.view` to read, `locations.create` to add.",
+          "item": [
+            {
+              "name": "List roots",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/locations?parentId=null&limit=50",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "locations"
+                  ],
+                  "query": [
+                    {
+                      "key": "parentId",
+                      "value": "null"
+                    },
+                    {
+                      "key": "limit",
+                      "value": "50"
+                    }
+                  ]
+                },
+                "description": "`parentId=null` lists roots. There is no separate /children route \u2014 that is what this parameter is."
+              }
+            },
+            {
+              "name": "List children of a node",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/locations?parentId={{locationId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "locations"
+                  ],
+                  "query": [
+                    {
+                      "key": "parentId",
+                      "value": "{{locationId}}"
+                    }
+                  ]
+                },
+                "description": "One level down."
+              }
+            },
+            {
+              "name": "List a whole subtree",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/locations?ancestorId={{locationId}}&limit=100",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "locations"
+                  ],
+                  "query": [
+                    {
+                      "key": "ancestorId",
+                      "value": "{{locationId}}"
+                    },
+                    {
+                      "key": "limit",
+                      "value": "100"
+                    }
+                  ]
+                },
+                "description": "Everything below the node at any depth \u2014 the filter a customer dashboard uses."
+              }
+            },
+            {
+              "name": "Search by name or alias",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/locations?q=Sai&limit=20",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "locations"
+                  ],
+                  "query": [
+                    {
+                      "key": "q",
+                      "value": "Sai"
+                    },
+                    {
+                      "key": "limit",
+                      "value": "20"
+                    }
+                  ]
+                },
+                "description": "Matches the node name OR any alias, so `Sai Apartments`, `SSA` and `Sri Sai Apt` all find the same building."
+              }
+            },
+            {
+              "name": "Filter by category and status",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/locations?categoryId={{doorCategoryId}}&status=pending&limit=50",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "locations"
+                  ],
+                  "query": [
+                    {
+                      "key": "categoryId",
+                      "value": "{{doorCategoryId}}"
+                    },
+                    {
+                      "key": "status",
+                      "value": "pending"
+                    },
+                    {
+                      "key": "limit",
+                      "value": "50"
+                    }
+                  ]
+                },
+                "description": "Review queue: nodes a field operator added that nobody has approved yet."
+              }
+            },
+            {
+              "name": "Create a root",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "content-type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/locations",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "locations"
+                  ]
+                },
+                "description": "A root needs `schemaId` and an unrestricted grant \u2014 it sits inside nobody\u2019s subtree.\n\nSaves `locationId`.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"schemaId\": \"{{schemaId}}\",\n  \"name\": \"Mandapeta\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if (pm.response.code < 300) {",
+                      "    const body = pm.response.json();",
+                      "    pm.environment.set('locationId', body.id);",
+                      "}"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "Create a child",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "content-type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/locations",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "locations"
+                  ]
+                },
+                "description": "Schema and category are INHERITED: the category is whatever the schema puts at the next level, so the client never picks one.\n\n`aliases` replaces the whole set.\n\nSaves `locationId` to the new node.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"parentId\": \"{{locationId}}\",\n  \"name\": \"Sri Sai Apartments\",\n  \"aliases\": [\n    \"Sai Apartments\",\n    \"SSA\"\n  ],\n  \"latitude\": 16.8702,\n  \"longitude\": 81.9276\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if (pm.response.code < 300) {",
+                      "    const body = pm.response.json();",
+                      "    pm.environment.set('locationId', body.id);",
+                      "}"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "Get one node",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/locations/{{locationId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "locations",
+                    "{{locationId}}"
+                  ]
+                },
+                "description": "Carries its own breadcrumb: `path`, `pathIds`, `depth`. No /ancestors route needed."
+              }
+            },
+            {
+              "name": "Update / approve a node",
+              "request": {
+                "method": "PATCH",
+                "header": [
+                  {
+                    "key": "content-type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/locations/{{locationId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "locations",
+                    "{{locationId}}"
+                  ]
+                },
+                "description": "How a pending, operator-added node is accepted into the tree.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"name\": \"Sri Sai Apartments\",\n  \"status\": \"approved\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Delete a node",
+              "request": {
+                "method": "DELETE",
+                "header": [
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/locations/{{locationId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "locations",
+                    "{{locationId}}"
+                  ]
+                },
+                "description": "409 RESOURCE_IN_USE if it still has children or customers. 204 on a row that is already gone (DELETE is idempotent)."
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Catalogue",
+      "description": "Services \u2192 providers \u2192 packages, and where each is sold (docs/services-providers-packages.md).\n\nOrder for a fresh tenant: create a service \u2192 add its providers \u2192 add packages to a provider \u2192 set coverage \u2192 check availability at a location.",
+      "item": [
+        {
+          "name": "Services & providers",
+          "description": "A service is what the subscriber buys; a provider is who supplies it. A second MSO is a provider, never a second service.",
+          "item": [
+            {
+              "name": "List services",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/services",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "services"
+                  ]
+                },
+                "description": "Each row carries `providerCount` \u2014 how many active suppliers deliver it."
+              }
+            },
+            {
+              "name": "Create service",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "content-type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/services",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "services"
+                  ]
+                },
+                "description": "Name it for what it is \u2014 `Cable TV`, not `ACT Cable TV`. The brand belongs on the provider.\n\nSaves `serviceId`.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"name\": \"Cable TV\",\n  \"slug\": \"cable-tv\",\n  \"serviceType\": \"cable\",\n  \"description\": \"Digital cable television\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if (pm.response.code < 300) {",
+                      "    const body = pm.response.json();",
+                      "    pm.environment.set('serviceId', body.id);",
+                      "}"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "Get service",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/services/{{serviceId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "services",
+                    "{{serviceId}}"
+                  ]
+                },
+                "description": "One service, with how many active providers deliver it.\n\n404 RESOURCE_NOT_FOUND for a service of another tenant \u2014 the same answer as missing, on purpose (AGENTS.md \u00a74.5)."
+              }
+            },
+            {
+              "name": "Update service",
+              "request": {
+                "method": "PATCH",
+                "header": [
+                  {
+                    "key": "content-type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/services/{{serviceId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "services",
+                    "{{serviceId}}"
+                  ]
+                },
+                "description": "`slug` and `serviceType` are fixed \u2014 both are referenced by what already sells.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"description\": \"Digital cable, 250+ channels\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Delete service",
+              "request": {
+                "method": "DELETE",
+                "header": [
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/services/{{serviceId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "services",
+                    "{{serviceId}}"
+                  ]
+                },
+                "description": "409 RESOURCE_IN_USE while a provider still delivers it. Soft delete."
+              }
+            },
+            {
+              "name": "List providers",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/service-providers?serviceId={{serviceId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "service-providers"
+                  ],
+                  "query": [
+                    {
+                      "key": "serviceId",
+                      "value": "{{serviceId}}"
+                    }
+                  ]
+                },
+                "description": "Drop the query param to list every provider in the tenant."
+              }
+            },
+            {
+              "name": "Create provider (ACT Digital)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "content-type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/service-providers",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "service-providers"
+                  ]
+                },
+                "description": "Saves `serviceProviderId`. `isDefault: true` clears the previous default for this service.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"serviceId\": \"{{serviceId}}\",\n  \"name\": \"ACT Digital\",\n  \"slug\": \"act-digital\",\n  \"code\": \"ACTMDPLCOMDLURB0000002144\",\n  \"isDefault\": true,\n  \"contact\": {\n    \"phone\": \"18001234567\",\n    \"portalUrl\": \"https://portal.example\"\n  }\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if (pm.response.code < 300) {",
+                      "    const body = pm.response.json();",
+                      "    pm.environment.set('serviceProviderId', body.id);",
+                      "}"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "Create second provider (Hathway)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "content-type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/service-providers",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "service-providers"
+                  ]
+                },
+                "description": "The case the redesign exists for: two MSOs on one service, each with its own packages and channel numbers.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"serviceId\": \"{{serviceId}}\",\n  \"name\": \"Hathway\",\n  \"slug\": \"hathway\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Get provider",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/service-providers/{{serviceProviderId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "service-providers",
+                    "{{serviceProviderId}}"
+                  ]
+                },
+                "description": "One provider, with the service it supplies.\n\nA provider belongs to exactly one service; `serviceId` is not patchable (docs/services-providers-packages.md)."
+              }
+            },
+            {
+              "name": "Update provider",
+              "request": {
+                "method": "PATCH",
+                "header": [
+                  {
+                    "key": "content-type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/service-providers/{{serviceProviderId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "service-providers",
+                    "{{serviceProviderId}}"
+                  ]
+                },
+                "description": "`serviceId` is not patchable \u2014 moving a provider would take its packages and every subscription with it.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"isDefault\": true\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Delete provider",
+              "request": {
+                "method": "DELETE",
+                "header": [
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/service-providers/{{serviceProviderId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "service-providers",
+                    "{{serviceProviderId}}"
+                  ]
+                },
+                "description": "Soft delete."
+              }
+            }
+          ]
+        },
+        {
+          "name": "Coverage & availability",
+          "description": "Where each service and provider is sold. A row covers its location AND everything below it; the nearest ancestor wins. No rows at all means \"everywhere\".",
+          "item": [
+            {
+              "name": "Set provider coverage",
+              "request": {
+                "method": "PUT",
+                "header": [
+                  {
+                    "key": "content-type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/service-providers/{{serviceProviderId}}/coverage",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "service-providers",
+                    "{{serviceProviderId}}",
+                    "coverage"
+                  ]
+                },
+                "description": "Replaces the whole set. The first row covers a town and every door under it; the second punches a hole in it.\n\nSet `locationId` from the Locations folder first.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"entries\": [\n    {\n      \"locationId\": \"{{locationId}}\"\n    },\n    {\n      \"locationId\": \"{{blockLocationId}}\",\n      \"isAvailable\": false,\n      \"note\": \"fibre not pulled here yet\"\n    }\n  ]\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Get provider coverage",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/service-providers/{{serviceProviderId}}/coverage",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "service-providers",
+                    "{{serviceProviderId}}",
+                    "coverage"
+                  ]
+                },
+                "description": "Reads back with `locationPath` breadcrumbs, not bare ids."
+              }
+            },
+            {
+              "name": "Set service-wide coverage",
+              "request": {
+                "method": "PUT",
+                "header": [
+                  {
+                    "key": "content-type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/services/{{serviceId}}/coverage",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "services",
+                    "{{serviceId}}",
+                    "coverage"
+                  ]
+                },
+                "description": "Applies to every provider of the service that has no row of its own at a deeper node.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"entries\": [\n    {\n      \"locationId\": \"{{locationId}}\"\n    }\n  ]\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Get service-wide coverage",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/services/{{serviceId}}/coverage",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "services",
+                    "{{serviceId}}",
+                    "coverage"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "What can this address buy?",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/locations/{{locationId}}/availability",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "locations",
+                    "{{locationId}}",
+                    "availability"
+                  ]
+                },
+                "description": "The add-customer wizard call: services \u2192 providers that reach this node \u2192 their active packages, already filtered. One request instead of three plus client-side guessing."
+              }
+            }
+          ]
+        },
+        {
+          "name": "Packages & channels",
+          "description": "Packages belong to a PROVIDER. Money is a decimal string, never a JSON number.",
+          "item": [
+            {
+              "name": "List packages",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/packages?serviceProviderId={{serviceProviderId}}&limit=50",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "packages"
+                  ],
+                  "query": [
+                    {
+                      "key": "serviceProviderId",
+                      "value": "{{serviceProviderId}}"
+                    },
+                    {
+                      "key": "limit",
+                      "value": "50"
+                    }
+                  ]
+                },
+                "description": "`?serviceId=` also works \u2014 it filters by joining through the provider."
+              }
+            },
+            {
+              "name": "Create package",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "content-type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/packages",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "packages"
+                  ]
+                },
+                "description": "Prices are strings: `\"349.00\"`. Sending `349.00` as a number is a 400.\n\nSaves `packageId`.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"serviceProviderId\": \"{{serviceProviderId}}\",\n  \"name\": \"ACT Base 250\",\n  \"slug\": \"act-base-250\",\n  \"packageType\": \"base\",\n  \"price\": \"349.00\",\n  \"discount\": \"0.00\",\n  \"msoShare\": \"164.01\",\n  \"taxRate\": \"18.00\",\n  \"billingCycle\": \"monthly\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if (pm.response.code < 300) {",
+                      "    const body = pm.response.json();",
+                      "    pm.environment.set('packageId', body.id);",
+                      "}"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "Get package with its lineup",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/packages/{{packageId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "packages",
+                    "{{packageId}}"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "Reprice package",
+              "request": {
+                "method": "PATCH",
+                "header": [
+                  {
+                    "key": "content-type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/packages/{{packageId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "packages",
+                    "{{packageId}}"
+                  ]
+                },
+                "description": "The provider is fixed \u2014 re-pointing a package rewrites what every subscriber is on.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"price\": \"399.00\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Delete package",
+              "request": {
+                "method": "DELETE",
+                "header": [
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/packages/{{packageId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "packages",
+                    "{{packageId}}"
+                  ]
+                },
+                "description": "409 RESOURCE_IN_USE while anyone is still subscribed."
+              }
+            },
+            {
+              "name": "List channels",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/channels?serviceProviderId={{serviceProviderId}}&limit=100",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "channels"
+                  ],
+                  "query": [
+                    {
+                      "key": "serviceProviderId",
+                      "value": "{{serviceProviderId}}"
+                    },
+                    {
+                      "key": "limit",
+                      "value": "100"
+                    }
+                  ]
+                },
+                "description": "A provider\u2019s own lineup. Two MSOs may both number a channel 101."
+              }
+            },
+            {
+              "name": "Set package channels",
+              "request": {
+                "method": "PUT",
+                "header": [
+                  {
+                    "key": "content-type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/packages/{{packageId}}/channels",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "packages",
+                    "{{packageId}}",
+                    "channels"
+                  ]
+                },
+                "description": "Replaces the bouquet. Every channel must belong to this package\u2019s provider; `[]` clears it.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"channels\": [\n    {\n      \"channelId\": \"{{channelId}}\",\n      \"isMandatory\": true\n    }\n  ]\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            }
+          ]
         }
       ]
     }

@@ -12,8 +12,9 @@ boundaries. It is not microservices, and splitting it is not a goal.
 
 **Phase 1 — what is actually built now.** Tenant-scoped CRUD and the auth that
 protects it: `auth`, `tenants`, `users`, `roles`, `permissions`, `devices`,
-`customers`, `services`, `packages`, `connections`, plus read aggregation for
-dashboards.
+`customers`, `services`, `packages`, `connections`, the tenant-configurable
+`locations` tree behind every address and area scope (§8.6), plus read
+aggregation for dashboards.
 
 Phase 1 talks to Postgres and to exactly two outbound endpoints, both required
 by sign-in and both synchronous by nature: **Google** (ID-token verification)
@@ -31,9 +32,9 @@ so nobody improvises one later:
 | Tickets | `modules/tickets` | 2 |
 | Inventory | `modules/inventory` | 2 |
 | File storage (R2/S3) | `plugins/storage.ts` | 3 |
-| SMS provider | a second `MessagingProvider` in `modules/notifications` | when a gateway is chosen |
-| Email (incl. email OTP) | `modules/notifications` behind a provider interface | when a provider is chosen |
-| Push (FCM) | `modules/notifications` | 3 |
+| SMS provider | a second `MessagingProvider` in `modules/messaging` | when a gateway is chosen |
+| Email (incl. email OTP) | `modules/messaging` behind a provider interface | when a provider is chosen |
+| Push (FCM) | `modules/messaging` | 3 |
 | Excel / CSV export | `modules/reports` | 3 |
 | SSE realtime | `modules/notifications` | 3 |
 | Sentry, Prometheus | `plugins/` | with production traffic |
@@ -230,11 +231,15 @@ services instead (§4.5, §10).
 
 - **A module owns its tables.** `customers.service.ts` is the only code that
   writes `customers`.
-- **Cross-module access goes through the other module's service**, imported
-  from its `index.ts`. Never reach into another module's internals, and never
-  join across a module boundary in raw SQL just because both tables are in the
-  same database. That shortcut is exactly how a modular monolith stops being
-  modular, and the linter blocks it.
+- **Cross-module access goes through the other module's service file**
+  (`@/modules/locations/locations.service`). Its controller, routes and wire
+  schemas are internal; a caller reaching for those is coupling to how the
+  module talks HTTP. There is no `index.ts` barrel — a file that only re-exports
+  the file next to it is one more place to keep in step, and the import path
+  already says which module it crosses into. The linter enforces the rest.
+- **Never join across a module boundary in raw SQL** just because both tables
+  are in the same database. That shortcut is exactly how a modular monolith
+  stops being modular, and the linter blocks it too.
 - **A module that needs three other modules' services** is a sign the logic
   belongs in a new module, not that the rule should bend.
 
@@ -253,8 +258,8 @@ src/
 ├── plugins/                      # Autoloaded, fastify-plugin wrapped, order-independent
 │   ├── database.ts               # Decorates `app.db` (Drizzle) + pool lifecycle
 │   ├── auth.ts                   # @fastify/jwt + `app.authenticate` + session checks
-│   ├── tenant.ts                 # `app.resolveTenant` — validates active tenant vs membership
-│   ├── rbac.ts                   # `app.requirePermission(key, scope?)` hook factory
+│   ├── tenant.ts                 # GLOBAL onRequest: authenticate + resolve `request.tenantId`
+│   ├── rbac.ts                   # `app.requirePermission(key)` + the resolved `request.access`
 │   ├── security.ts               # helmet, cors, rate-limit
 │   ├── swagger.ts                # OpenAPI + /docs
 │   ├── error-handler.ts          # setErrorHandler / setNotFoundHandler
@@ -262,12 +267,13 @@ src/
 │   └── storage.ts                # deferred (§1)
 │
 ├── modules/                      # Autoloaded: modules/**/*.routes.ts
-│   ├── auth/  tenants/  users/  roles/  permissions/  devices/       ← phase 1
+│   ├── auth/  iam/  tenants/  users/  roles/  permissions/  devices/ ← phase 1
+│   ├── locations/                                                    ← phase 1 (§8.6)
 │   ├── customers/  services/  packages/  connections/                ← phase 1
 │   ├── audit/                                                        ← phase 1
 │   ├── inventory/  billing/  invoices/  payments/  collections/      ← phase 2
 │   ├── tickets/                                                      ← phase 2
-│   └── notifications/  reports/                                      ← phase 3
+│   └── messaging/  notifications/  reports/                          ← phase 3
 │
 ├── db/
 │   ├── schema/                   # Drizzle tables, one file per table
@@ -292,14 +298,30 @@ src/
 
 ```
 modules/customers/
-├── customers.routes.ts        # Route declarations only
+├── customers.routes.ts        # ENTRY: builds the service, registers the route files below
 ├── customers.controller.ts    # request/reply ⇄ service
 ├── customers.service.ts       # Business rules + Drizzle queries
 ├── customers.schema.ts        # TypeBox — the WIRE contract
 ├── customers.types.ts         # Types with no schema (optional)
-├── customers.test.ts          # Colocated
-└── index.ts                   # The module's public surface: its service, nothing else
+└── customers.test.ts          # Colocated
 ```
+
+**`*.routes.ts` is the module's entry point.** Autoload registers exactly that
+file (`modules/**/*.routes.ts`), so it is where the module's service is
+constructed and decorated:
+
+```ts
+// locations.routes.ts
+app.decorate('locations', new LocationsService(app.db));
+await app.register(configRoutes); // ./locations.config-routes.ts
+await app.register(treeRoutes); // ./locations.tree-routes.ts
+```
+
+A module large enough to split its routes names the extra files
+`*-routes.ts` — deliberately not `*.routes.ts`, so autoload does not register
+them twice, once bare and once through the entry. Wiring lives in the module
+that owns it; a `plugins/` file whose whole body is one constructor call is
+indirection between a route and the thing it calls.
 
 **"Schema" means two different things — keep them straight:**
 
@@ -319,6 +341,21 @@ someone adds one.
   buys). Unrelated to `*.service.ts` files, which are the application layer.
 - `modules/collections/` — **payment collection** runs by field staff. Not a
   database collection.
+
+**`messaging` and `notifications` are two modules, not one.** `modules/messaging`
+sends a message over a channel — WhatsApp, SMS, push — and owns the providers;
+it has no tables. `modules/notifications` owns the `notify` tables and decides
+what is worth telling a user about, then asks `messaging` to deliver it. Merging
+them is what made the provider interface leak into the inbox query in the first
+place.
+
+**There are no `index.ts` barrels in `modules/`.** An import names the file it
+needs (`@/modules/messaging/messaging.service`,
+`@/modules/storage/providers/r2.provider`), so the module's real surface is
+visible at the call site rather than hidden behind a re-export list that has to
+be maintained in step. The one `index.ts` that does exist is
+`modules/<name>/routes/index.ts`, and it is a plugin, not a barrel: it registers
+the route files next to it.
 
 ### Jobs
 
@@ -358,6 +395,7 @@ This is the core of the domain. Read this section twice.
 
 ```
 users                    Global identity. ONE row per human, across all tenants.
+  ├─ customer_code       UNIQUE, nullable — canonical code for identity verification & mapping
   ├─ email               UNIQUE, nullable
   ├─ phone               UNIQUE, nullable          (CHECK: email IS NOT NULL OR phone IS NOT NULL)
   ├─ password_hash       nullable (null ⇒ Google-only account)
@@ -374,6 +412,7 @@ tenant_memberships       The join. A user's role is a property of the MEMBERSHIP
 
 customers                Tenant-scoped BUSINESS record.
   ├─ tenant_id → tenants
+  ├─ customer_code       Nullable, redundant — tenant-scoped/denormalized copy for display & operational lookup
   └─ user_id → users     NULLABLE — a bulk-imported subscriber has no login account
 ```
 
@@ -434,7 +473,7 @@ POST /api/v1/auth/otp/request  { phone, channel? }   → 202, always
 POST /api/v1/auth/otp/verify   { phone, code, ... }  → tokens
 ```
 
-**Delivery is a service, not a vendor.** `modules/notifications` exposes a
+**Delivery is a service, not a vendor.** `modules/messaging` exposes a
 channel (`whatsapp` | `sms`); callers never name a provider. Today WhatsApp is
 served by a self-hosted **OpenWA** instance
 (`POST /api/sessions/{id}/messages/send-text`, `X-API-Key`, `chatId` =
@@ -470,11 +509,26 @@ tells that apart from a bug.
 
 A multi-tenant user must tell the backend which tenant a request is for.
 
-**Decision: the client sends an `X-Tenant-Id` header.** The `tenant` plugin
-validates it against the `memberships` claim on every request and rejects
-anything not matching an `active` membership. The access token is *not*
-re-issued when the user switches tenants — tenant switching is a client-side
-header change, and the client re-issues nothing.
+**Decision: the tenant comes from the token, and `X-Tenant-Id` picks between
+them.** One global `onRequest` hook (`plugins/tenant.ts`) runs on every route:
+
+1. Authenticates, unless the route declares `config: { public: true }`.
+2. If `X-Tenant-Id` is present, it must match a membership in the **signed
+   token** — a claim the client cannot edit — or the request is
+   `403 TENANT_NOT_A_MEMBER`.
+3. If it is absent and the caller has exactly **one** membership, that is the
+   tenant. One membership is not ambiguous, and most callers are staff of a
+   single operator who should never have to send the header.
+4. Otherwise `request.tenantId` stays undefined, and any route guarded by
+   `requirePermission` answers `400 TENANT_HEADER_MISSING`.
+
+The access token is *not* re-issued when the user switches tenants — switching
+is a header change, and the client re-issues nothing.
+
+**Protected is the default.** A route says nothing and is authenticated; only
+sign-in, health and docs opt out with `public: true`. The other way round — a
+route that must remember to add a guard — fails silently when someone forgets,
+and the endpoint simply works for everybody.
 
 Rejected alternative: baking one `tenantId` into the token. It forces a token
 round-trip on every tenant switch and makes a stolen token tenant-specific in a
@@ -491,6 +545,10 @@ No exceptions.**
 - A service function that touches a tenant-scoped table **must** take `tenantId`
   as a required parameter. Not optional. Not defaulted. With no repository layer
   to funnel through, this parameter is the isolation guarantee — treat it that way.
+- A service that also needs the caller's grants takes the whole `AccessContext`
+  (§5), which **carries `tenant_id` as a required field**. Same guarantee, one
+  step stronger: the tenant a query filters on is the tenant the permissions
+  were resolved for, so the two cannot drift apart in an argument list.
 - This API has no cross-tenant role or tenant-scope bypass. Platform
   administration is a separate flow outside this identity and authorization model.
 - Postgres Row-Level Security is enabled on tenant-scoped tables as a
@@ -699,6 +757,42 @@ to a permission map per `(user, tenant)`, cached in memory keyed by a `version`
 column on the membership. Bumping `version` invalidates it. The compiled map is
 server state — it is never shipped to a client to be enforced there.
 
+### 5.1 How the two stages are wired
+
+| Piece | Lives in | Does |
+|---|---|---|
+| the global `onRequest` hook | `plugins/tenant.ts` | Authenticates every non-`public` route and resolves `request.tenantId` from the token, or from `X-Tenant-Id` when the caller has more than one membership (§4.4). No query. |
+| `AccessService` | `modules/iam/access.service.ts` | Loads the membership, its role's grants, and its area/location grants; compiles them into an `AccessContext` and caches it. |
+| `app.requirePermission(key)` | `plugins/rbac.ts` | preHandler, **stage 1**. Resolves the context, rejects `PERM_DENIED` if the key is absent, and puts the context on `request.access`. |
+| the service | `modules/*/x.service.ts` | **Stage 2**. Takes `request.access` and decides whether the granted scope reaches this record. |
+
+Authentication and the tenant are already done by the time a route's own
+`preHandler` runs, so a route declares only the permission it needs:
+
+```ts
+app.get('/locations/:id', {
+  preHandler: app.requirePermission(PERMISSIONS.LOCATIONS_VIEW),
+  schema: { /* ... */ },
+}, controller.get);
+```
+
+**A membership resolved from the database beats the claim.** The token says
+which tenants a user belonged to when it was signed; `requirePermission` reads
+the row, so a membership suspended since is refused with
+`TENANT_MEMBERSHIP_SUSPENDED` even though the claim still names it.
+
+**`AREA` and `LOCATION` are subtree grants over the location tree** (§8.6):
+`tenancy.membership_areas` and `membership_locations` hold node ids, and a grant
+on a node reaches everything beneath it — checked with
+`geo.location_ancestors`, in SQL, not by loading the tree. **A caller whose
+scope is below `ALL` and who has no grants reaches nothing**, and a list returns
+an empty page rather than everything. Fail closed is the whole point.
+
+> `ponytail:` the cache is a 60s TTL plus `app.access.invalidate(userId,
+> tenantId)`, not the `permission_version` column, because nothing writes
+> memberships yet. Key it on the version when that write path lands — the column
+> is already there.
+
 ---
 
 ## 6. API conventions
@@ -754,6 +848,85 @@ Do not invent a second error format.
 
 **Idempotency:** `PATCH` and `DELETE` are idempotent. `DELETE` on a missing row
 returns `204`, not `404`.
+
+### 6.0 Every change is recorded
+
+**If a route changes something, it writes a row to `audit.audit_logs`.** Not a
+convention — a build failure. `audit.coverage.test.ts` walks the real route
+table and fails on any `POST`/`PUT`/`PATCH`/`DELETE` that is not declared in
+`AUDITED_ROUTES` (`src/modules/audit/audited-routes.ts`), and on any declared
+route that no longer exists.
+
+Adding a mutating endpoint is four steps:
+
+1. Capture the record **before** the change — the method almost always loads it
+   already to check it exists; assign it instead of discarding it.
+2. `await audit.created/updated/deleted(this.db, access.audit, { entityType, entityId, before, after })`
+   in the **service**, never the controller.
+3. Add the route to `AUDITED_ROUTES` with the action it writes.
+4. Assert the row in a test.
+
+The audit context rides on `access`, so no service signature changes:
+`plugins/rbac.ts` spreads `{ ...context, audit: request.auditContext }` per
+request. Never store it on `AccessContext` itself — that object is cached per
+user and tenant, and a request id kept there is replayed onto everyone else's
+rows.
+
+Inside an existing transaction, pass `tx` rather than `this.db`, so a
+rolled-back change cannot leave a log behind. For a job, use
+`systemAuditContext('job:<name>')`.
+
+The full contract — row shape, the auth events, what is redacted, how the
+tenant and actor are resolved — is in **docs/audit-trail.md**.
+
+### 6.1 Locations — the shipped surface
+
+Every route below needs `Authorization: Bearer …` **and** `X-Tenant-Id`.
+
+| Method | Path | Permission | Notes |
+|---|---|---|---|
+| `GET` | `/location-categories` | `locations.view` | The kinds of place this tenant has |
+| `POST` `PATCH` `DELETE` | `/location-categories[/:id]` | `locations.configure` | Delete is `409 RESOURCE_IN_USE` while a level or node uses it |
+| `GET` | `/location-schemas` | `locations.view` | Each with its ordered levels, root first |
+| `POST` `PATCH` `DELETE` | `/location-schemas[/:id]` | `locations.configure` | `PATCH` is name/description/active only — levels are not edited in place |
+| `POST` | `/location-schemas/:id/generate` | `locations.configure` | Bulk-creates a subtree; capped at 2000 nodes per call |
+| `GET` | `/locations` | `locations.view` | `?parentId=` (`null` for roots), `?ancestorId=`, `?schemaId=`, `?categoryId=`, `?status=`, `?isActive=`, `?q=` |
+| `POST` | `/locations` | `locations.create` | Category comes from the schema, not the caller |
+| `GET` `PATCH` `DELETE` | `/locations/:id` | `view` / `update` / `delete` | The node carries its own `path`, `pathIds` and `depth` |
+
+**There is no `/locations/:id/children`, `/ancestors` or `/descendants`.**
+`?parentId=` is children, `?ancestorId=` is the subtree, and the breadcrumb ships
+on the node. Three endpoints that would each need their own schema, guard, test
+and client method, replaced by two query parameters and a field.
+
+**And there is no `/buildings`, `/floors` or `/doors`** — those hard-code one
+tenant's business model into the URL space (§8.6).
+
+### 6.2 The catalogue — services, providers, packages
+
+`docs/services-providers-packages.md` is the design and the reasoning; this is
+the surface.
+
+| Method | Path | Permission |
+|---|---|---|
+| `GET` `POST` `PATCH` `DELETE` | `/services[/:id]` | `services.*` |
+| `GET` `POST` `PATCH` `DELETE` | `/service-providers[/:id]` `?serviceId=` | `services.*` |
+| `GET` `PUT` | `/services/:id/coverage`, `/service-providers/:id/coverage` | `services.view` / `services.update` |
+| `GET` | `/locations/:id/availability` | `services.view` |
+| `GET` `POST` `PATCH` `DELETE` | `/packages[/:id]` `?serviceProviderId=` `?serviceId=` | `packages.*` |
+| `PUT` | `/packages/:id/channels` | `packages.update` |
+| `GET` | `/channels` `?serviceProviderId=` | `packages.view` |
+
+Three rules that are easy to get backwards:
+
+- **A package belongs to a provider, never to a service.** `?serviceId=` on
+  `/packages` is a filter that joins through the provider; there is no
+  `service_id` column to filter on.
+- **Coverage covers the node and everything below it**, and the nearest
+  ancestor wins. A service or provider with no coverage rows sells everywhere —
+  otherwise a tenant that configured nothing could sell nothing.
+- **Money is a decimal string on the wire** (§8), including `price`,
+  `discount`, `mso_share`. A JSON number would round it.
 
 ---
 
@@ -1006,11 +1179,16 @@ in a brand-new tenant tells you how big the whole platform is); and sequences
 are non-transactional, so a rolled-back insert burns a number and leaves a gap
 in an identifier customers read aloud.
 
-`customer_code` carries a **global** `UNIQUE` constraint — tenant codes are
-unique, so codes cannot collide across tenants, and a global constraint is the
-simpler backstop. On a unique violation the service retries the counter bump up
-to 3 times, then fails with `RESOURCE_CONFLICT`. The constraint exists to catch
-a logic bug, not as the normal path.
+`customer_code` carries its canonical original and global `UNIQUE` constraint on
+the **`auth.users`** table (`users_customer_code_unique`). Verification of a customer's
+official code is performed against `users` only.
+
+On **`crm.customers`**, `customer_code` is a redundant (denormalized) field used for
+tenant operations, UI display, and mapping subscribers to user accounts. Because imported
+customers may exist before creating login accounts, `crm.customers.customer_code` is
+nullable and unconstrained; authoritative code uniqueness and mapping resolve against
+`auth.users`. On unique code collisions during user creation/assignment, the service
+retries the counter bump up to 3 times, then fails with `RESOURCE_CONFLICT`.
 
 > `ponytail:` the counter is a `customer_seq` column on `tenants`, so creating a
 > customer briefly locks that tenant row. Fine at cable-operator write rates. If
@@ -1047,7 +1225,8 @@ decision about whether customers' existing numbers matter, so it is yours.
 | `tenancy` | `tenants`, `tenant_memberships`, `membership_areas`, `membership_locations` | `tenants` |
 | `auth` | `users`, `sessions`, `devices`, `otp_codes` | `auth`, `users`, `devices` |
 | `iam` | `roles`, `role_permissions` | `roles`, `permissions` |
-| `crm` | `customers` | `customers` |
+| `crm` | `customers`, `services`, `service_providers`, `service_coverage`, `packages`, `channels`, `subscriptions` | `customers`, `services`, `packages` |
+| `geo` | `location_categories`, `location_schemas`, `location_schema_levels`, `locations`, `location_aliases` | `locations` (§8.6) |
 | `notify` | `notifications` | `notifications` |
 | `media` | `files` | `storage` |
 | `analytics` | views only, no tables | cross-domain reads (§8.3) |
@@ -1100,6 +1279,7 @@ database needs it:
 | Function | Exists because |
 |---|---|
 | `crm.normalize_phone(text)` | An **expression index** needs it. `create index on crm.customers (crm.normalize_phone(phone))` makes a search for `83091 54716` hit `+91-8309154716`. Application code cannot supply a function to an index. |
+| `geo.location_descendants(uuid)` / `geo.location_ancestors(uuid)` | Other **queries** compose with them — a subtree filter is `location_id IN (SELECT id FROM geo.location_descendants($1))` (§8.6). Written once, cycle-guarded once. |
 | `iam.scope_rank(text)` | Lets SQL compare §5 scopes. Mirrors `SCOPE_RANK` in TypeScript, and **a test asserts the two agree** — two copies of a privilege ranking that drift is a security bug. |
 
 Every such function is `IMMUTABLE` and `PARALLEL SAFE`. A volatile function
@@ -1112,6 +1292,7 @@ nothing at all — so that too is asserted in a test.
 | View | Answers |
 |---|---|
 | `analytics.tenant_customer_stats` | The dashboard aggregate: counts by status, added this month, outstanding total — one row per tenant |
+| `geo.location_paths` | The full path of every node — `Mandapeta / Sri Sai Apartments / Block A / A101` — for breadcrumbs and search, instead of N queries up the tree |
 | `notify.user_unread_counts` | The unread badge, defined once instead of retyped as a filter |
 | `analytics.messaging_health` | 24h delivery outcomes per channel, so a dead WhatsApp session shows as a failure rate rather than as silence |
 
@@ -1218,6 +1399,137 @@ scope-limited.
   rather than assuming it.
 - The Redis instance may be shared with other projects. `CACHE_PREFIX` and a
   dedicated DB index in `REDIS_URL` are what keep the keyspaces apart.
+
+### 8.6 Locations: tenant-configurable, not hard-coded
+
+**There are no `area`, `building`, `floor` or `door` columns.** A location tree
+is three tables and the tenant's own configuration:
+
+```
+location_categories   what kinds of place exist    Area, Building, Floor, Door, Village, Street, House
+location_schemas      + _levels: which order       Building → Block → Floor → Flat
+locations             the actual nodes             Mandapeta → Sri Sai Apartments → Block A → First Floor → A101
+```
+
+A customer stores **one** id — the terminal node — and everything above it is
+derived. `crm.customer_addresses.location_id` is the address; the free-text
+columns beside it are the pre-import fallback and nothing more.
+
+**The service knows four words: category, parent category, location, parent
+location.** Anything of the shape
+
+```ts
+if (category.slug === 'floor') { /* ... */ } // <- no
+```
+
+is a hard-coded business model, and the next tenant is a village with streets
+and houses, or a commercial complex with shops. Depth is data. So is which level
+a customer may be assigned to — that is `location_schema_levels.is_terminal`,
+`Door` for one tenant and `Village` for another.
+
+**One tenant runs several schemas at once.** The apartment complex on one street
+and the individual houses on the next are both that tenant's customers;
+`locations.schema_id` says which shape a node belongs to, so neither the API nor
+the dashboard filter branches on it. The filter UI is generated from the
+categories in the node's schema — same component, same endpoints, whatever the
+tenant configured.
+
+**Hierarchy is rows, never nested JSON.** A `{"blocks":[{"floors":[...]}]}` blob
+cannot be filtered, assigned to a customer, permission-scoped or reported on
+without being parsed back into rows first. JSONB here holds *configuration* —
+category presentation rules, and the generation rules on a schema level
+(`{"format":"{block}{floorNumber}{unit}","unitsPerFloor":4}`) that turn one
+"Blocks A–C, floors Ground–3, 4 doors each" form into 60 ordinary `locations`
+rows. The template and the hierarchy definition are the same table on purpose:
+two tables that must agree about the same level order eventually disagree.
+
+**Traversal is `geo.location_ancestors()` / `geo.location_descendants()`**
+(§8.3), cycle-guarded, and `geo.location_paths` for breadcrumbs and search. A
+subtree filter is
+`location_id IN (SELECT id FROM geo.location_descendants($1))`. Nobody writes
+that recursive CTE by hand — four copies means three without the cycle guard.
+
+> `ponytail:` no `ltree`, no materialized `path` column. A recursive CTE over a
+> tenant's few thousand nodes is not the slow part, and a denormalized path is a
+> second source of truth that goes stale the first time a node is re-parented.
+> Add `ltree` with a GiST index when a descendant query actually shows up in the
+> slow log.
+
+**Keeping the tree from rotting into a data swamp:**
+
+- A field operator can add a missing flat (`source = 'user'`), because the
+  alternative is the operator typing the address into a notes field. Tenants
+  that want review leave it at `status = 'pending'` until an admin approves it.
+- Siblings cannot share a name — `UNIQUE NULLS NOT DISTINCT (tenant_id,
+  parent_id, name)`, so two roots called `Mandapeta` collide too. Without
+  `NULLS NOT DISTINCT`, Postgres treats every root's null parent as unique and
+  the duplicate lands silently.
+- `geo.location_aliases` maps `Sai Apartments`, `Sri Sai Apt` and `SSA` to one
+  node. It earns its table during CSV import, where the same building is spelled
+  four ways.
+- Deleting a node with children or with customers on it is `RESTRICT`. A tree
+  that can be silently orphaned is not a tree.
+
+**Geography is optional and separate.** `latitude`/`longitude` belong on an area
+or a building; a door number does not need coordinates, and the logical tree
+does not depend on them. PostGIS, if it ever lands, is additive — it does not
+become the hierarchy.
+
+**Scopes point at nodes.** `tenancy.membership_areas.area_id` and
+`membership_locations.location_id` are foreign keys into `geo.locations`; an
+"area" is simply a coarse node, and how coarse is the tenant's configuration.
+
+> `ponytail:` AREA and LOCATION are still two separate grant dimensions in §5,
+> which is why `crm.customers.area_id` caches the coarse ancestor. One subtree
+> grant checked with `location_ancestors` would replace both the second grant
+> table and that column. Do it when the scope resolver is written, not before.
+
+#### The module
+
+`modules/locations/` — routes in §6.1, permissions `locations.view|create|`
+`update|delete` plus `locations.configure` for the hierarchy definition. The
+split is the point: field staff add nodes daily, an admin defines levels once,
+and those are different grants.
+
+**Who may see what.** `list` and every read run the §5 stage-2 check against the
+tree: a caller at `ALL` sees the tenant; a caller at `AREA`/`LOCATION` sees the
+subtrees they are granted, evaluated as
+`EXISTS (… geo.location_descendants(grant) …)` in the same query rather than as
+a filter in TypeScript; a caller at `OWN` sees nodes they created. **No grants
+and a scope below `ALL` means an empty page**, never the whole tenant.
+
+**Creating a root needs `ALL`.** A root sits inside nobody's subtree, so a
+scoped caller who could create one would have escaped their own scope.
+
+**A field-added node is `source = 'user'`, `status = 'pending'`**, whatever the
+client sent — that is decided by whether the caller holds
+`locations.configure`, not by a flag in the body. An operator adding the flat
+the tree is missing is a correction to review, and a client that could
+self-approve makes the review optional.
+
+**Bulk generation.** `POST /location-schemas/:id/generate` takes one entry per
+level below `parentId`, each either `names: [...]` or `count` with a format.
+Tokens: `{parent}`, `{parentCode}`, `{label}`, `{i}`, `{i2}`, `{i3}`, and
+`{name}` in `codeFormat`. `{parentCode}` is what cascades — block `A` → floor
+`A1` → door `A101` — and the whole expansion is a pure function
+(`locations.generate.ts`) with a unit test, because "blocks A–C, four doors a
+floor" is the part that is expensive to debug through a database. The total is
+counted **before** the transaction opens and refused over 2000: a four-level
+cartesian product is one typo away from a million rows.
+
+**Foreign keys are `NO ACTION … DEFERRABLE INITIALLY DEFERRED`, not `RESTRICT`.**
+Both refuse to orphan a row, but `RESTRICT` is checked per row, mid-statement —
+so deleting a *tenant* trips over its own cascade when it removes a category
+before the levels that reference it. Deferring to commit keeps the refusal
+(deleting a node with children is still a `409 RESOURCE_IN_USE`) and lets the
+cascade run. A test that wants to see the refusal without committing forces it
+with `SET CONSTRAINTS ALL IMMEDIATE`.
+
+**Drizzle wraps driver errors.** A constraint violation arrives as a
+`DrizzleQueryError` with the real SQLSTATE on `cause`, so
+`shared/errors/postgres.ts` unwraps it. Reading only the top-level `code` makes
+every 409 look like an unhandled 500 — which is exactly what it did until a test
+said otherwise.
 ---
 
 ## 9. Firestore → Postgres data migration
@@ -1430,6 +1742,7 @@ does not merge.
 - ✅ **DO** use `@fastify/sensible` errors and the one central error handler.
 - ✅ **DO** give every error a `code` from `shared/errors/codes.ts`, and mirror that file into clients.
 - ✅ **DO** revoke every session for a user on password, email or phone change.
+- ✅ **DO** write an audit row from the service for every change, and declare the route in `AUDITED_ROUTES` (§6.0).
 - ✅ **DO** read env only through `config/env.ts`.
 - ✅ **DO** treat this repo as the source of truth for permission keys, role IDs and error codes. Clients mirror it.
 - ✅ **DO** import across modules as `@/modules/<name>` (its `index.ts`); inside a module use relative siblings (`./customers.service`). Never `../../`.
@@ -1441,6 +1754,8 @@ does not merge.
 - ❌ **DO NOT** hand-write a type that mirrors a TypeBox schema. Infer it with `Static<>`.
 - ❌ **DO NOT** add a cron job that is non-idempotent, unscoped across tenants, or queries the DB directly (§3).
 - ❌ **DO NOT** swallow an error and return a fallback value — that is how a broken query becomes an empty dashboard.
+- ❌ **DO NOT** make an audit write best-effort. A silently missing row is worse than a failed request; the table sat empty for months exactly that way.
+- ❌ **DO NOT** read the tenant for an audit row from `X-Tenant-Id`. Use the resolved `request.tenantId` — single-tenant callers never send the header (§6.0).
 - ❌ **DO NOT** put a role column on `users`. Role belongs to the membership.
 - ❌ **DO NOT** trust `X-Tenant-Id` without validating it against the token's memberships.
 - ❌ **DO NOT** infer the acting account from anything but the signed token's `sub`/`sid`.

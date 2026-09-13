@@ -7,11 +7,6 @@ import {
 import { crm } from '../schemas';
 import { tenants } from '../tenancy/tenants';
 
-/**
- * Physical hardware inventory assets (STBs, Smart Cards / VCs, remotes, adapters, ONTs, routers).
- *
- * Tracks individual physical devices in stock or allocated to subscribers.
- */
 export const equipment = crm.table('equipment', {
   id: uuid('id').primaryKey().defaultRandom(),
   tenantId: uuid('tenant_id').notNull().references(() => tenants.id, { onDelete: 'cascade' }),
@@ -21,7 +16,6 @@ export const equipment = crm.table('equipment', {
   brand: text('brand'),
   model: text('model'),
 
-  /** Hardware identifiers. Unique per tenant when present. */
   serialNumber: text('serial_number'),
   vcNumber: text('vc_number'),
   macAddress: text('mac_address'),
@@ -30,12 +24,10 @@ export const equipment = crm.table('equipment', {
   ownershipType: text('ownership_type', { enum: EQUIPMENT_OWNERSHIPS }).notNull().default('tenant_provided'),
   depositAmount: numeric('deposit_amount', { precision: 12, scale: 2 }).notNull().default('0'),
 
-  /** Must be collected back if customer cancels / disconnects. */
   isReturnable: boolean('is_returnable').notNull().default(true),
 
   inventoryStatus: text('inventory_status', { enum: EQUIPMENT_INVENTORY_STATUSES }).notNull().default('available'),
 
-  /** Dynamic specs (firmware, port speed, RF input levels, voltage). */
   metadata: jsonb('metadata'),
 
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

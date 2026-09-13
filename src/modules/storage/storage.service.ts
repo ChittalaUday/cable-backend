@@ -19,6 +19,8 @@ import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { and, count, eq, isNull, lte, ne } from 'drizzle-orm';
 import { files, userFiles } from '@/db/schema';
+import { audit } from '@/modules/audit/audit.service';
+import { systemAuditContext } from '@/modules/audit/audit.types';
 import { ERROR_CODES } from '@/shared/errors';
 import { DomainError, notFound } from '@/shared/errors/domain-error';
 
@@ -30,18 +32,6 @@ export interface StorageServiceOptions {
   allowedContentTypes: string[];
 }
 
-/**
- * File metadata, presigned access, and content deduplication (AGENTS.md §8.4).
- *
- * Bytes can be:
- * 1. Streamed directly to API, staged locally to verify content hash, deduplicated, and unlinked.
- * 2. Uploaded directly to R2 via presigned URLs.
- *
- * Content deduplication:
- * - `media.files` tracks unique physical objects keyed by content checksum (SHA-256).
- * - `media.user_files` tracks tenant/user attachments pointing to a `files(id)`.
- * - If an uploaded file's checksum already exists in storage, duplicate bytes are not stored.
- */
 export class StorageService {
   constructor(
     private readonly db: Database,
@@ -63,15 +53,6 @@ export class StorageService {
       await this.options.provider.ping();
   }
 
-  /**
-   * Upload flow with local staging and content hash verification:
-   * 1. Takes the incoming file stream and pipes it temporarily to a local temp file.
-   * 2. Computes the SHA-256 hash and exact byte size while streaming.
-   * 3. Checks if a physical file with this hash already exists with status 'ready':
-   *    - If exists: creates `media.user_files` linked to existing file (skips storage upload).
-   *    - If new: uploads file from local temp to cloud storage, marks 'ready', creates `media.user_files`.
-   * 4. In `finally`: unconditionally removes the temporary local file.
-   */
   async uploadWithLocalStaging(input: LocalStagedUploadInput): Promise<DirectUploadResult> {
     this.assertContentTypeAllowed(input.contentType);
 
@@ -82,7 +63,6 @@ export class StorageService {
     try {
       const { checksum, sizeBytes } = await this.stageStreamToDisk(input, tempFilePath);
 
-      // Deduplication check: does a ready physical file with this checksum already exist?
       const [existingReadyFile] = await this.db.select().from(files).where(and(
         eq(files.checksum, checksum),
         eq(files.status, 'ready'),
@@ -106,7 +86,6 @@ export class StorageService {
         return { deduplicated: true, userFile, file: existingReadyFile };
       }
 
-      // New file: upload from local temp file to storage provider
       const storageKey = buildStorageKey(input.tenantId, input.originalName);
       const fileBuffer = await fs.promises.readFile(tempFilePath);
 
@@ -144,12 +123,10 @@ export class StorageService {
       return { deduplicated: false, userFile, file: newFile };
     }
     finally {
-      // Unconditionally remove the temporary local file
       try {
         await fs.promises.unlink(tempFilePath);
       }
       catch {
-        // Ignore if file doesn't exist
       }
     }
   }
@@ -175,16 +152,6 @@ export class StorageService {
     return { checksum, sizeBytes };
   }
 
-  /**
-   * Requests an upload via presigned URL.
-   *
-   * If `input.checksum` matches an existing physical file with `status: 'ready'`,
-   * returns `{ deduplicated: true }` and creates a new `media.user_files` record
-   * immediately without requiring a storage upload.
-   *
-   * Otherwise, creates a `pending` row in `files` + `user_files` and returns
-   * a presigned PUT upload URL.
-   */
   async requestUpload(input: RequestUploadInput): Promise<UploadResult> {
     this.assertContentTypeAllowed(input.contentType);
 
@@ -266,9 +233,6 @@ export class StorageService {
     return { userFile, file: existingFile };
   }
 
-  /**
-   * Verifies the object landed in storage, then marks the physical file `ready`.
-   */
   async confirmUpload(userFileId: string, tenantId: string | null): Promise<UserFileWithFile> {
     const { userFile, file } = await this.findOwned(userFileId, tenantId);
 
@@ -317,7 +281,6 @@ export class StorageService {
           await this.options.provider.remove(file.storageKey);
         }
 
-        // Soft-delete the duplicate pending file record
         await this.db.update(files)
           .set({ status: 'deleted', deletedAt: new Date(), updatedAt: new Date() })
           .where(eq(files.id, file.id));
@@ -339,7 +302,6 @@ export class StorageService {
     return { userFile, file: ready ?? file };
   }
 
-  /** Short-lived download URL for a private object. */
   async downloadUrl(userFileId: string, tenantId: string | null): Promise<{ url: string; expiresAt: Date }> {
     const { file } = await this.findOwned(userFileId, tenantId);
 
@@ -350,22 +312,14 @@ export class StorageService {
     return { url: signed.url, expiresAt: signed.expiresAt };
   }
 
-  /**
-   * Soft-deletes the user's file reference.
-   *
-   * Physical cloud object deletion and orphaned file pruning are deferred to
-   * the nightly cleanup cron (never on the request path of a write, AGENTS.md §1).
-   */
   async remove(userFileId: string, tenantId: string | null): Promise<void> {
     const { userFile } = await this.findOwned(userFileId, tenantId);
 
-    // Soft-delete the user file reference
     await this.db.update(userFiles)
       .set({ deletedAt: new Date(), updatedAt: new Date() })
       .where(eq(userFiles.id, userFile.id));
   }
 
-  /** Tenant-scoped lookup (§4.5): returns UserFile joined with File. */
   async findOwned(userFileId: string, tenantId: string | null): Promise<UserFileWithFile> {
     const [row] = await this.db.select({
       userFile: userFiles,
@@ -385,14 +339,6 @@ export class StorageService {
     return row;
   }
 
-  /**
-   * Nightly verification and cleanup cron:
-   * 1. Stale pending uploads: cleans up abandoned uploads where `expiresAt < now()` or older
-   *    than the grace period. Preserves in-flight pending uploads created recently.
-   * 2. Orphaned physical files: prunes physical objects where all user_files references were deleted.
-   * 3. Deleted physical files: prunes physical objects for files with status = 'deleted'.
-   * 4. Integrity verification: checks object existence in cloud storage for all active ready files.
-   */
   async verifyAndCleanupStorage(options: StorageCleanupOptions = {}): Promise<StorageCleanupReport> {
     const gracePeriodMinutes = options.gracePeriodMinutes ?? 120;
     const verifyStorageIntegrity = options.verifyStorageIntegrity ?? true;
@@ -402,10 +348,21 @@ export class StorageService {
     const pendingStats = await this.cleanupPendingFiles(cutoffTime, now);
     const readyStats = await this.cleanupAndVerifyReadyFiles(cutoffTime, verifyStorageIntegrity);
 
-    return {
-      ...pendingStats,
-      ...readyStats,
-    };
+    const report = { ...pendingStats, ...readyStats };
+    const changed = report.stalePendingCleaned + report.orphanedFilesCleaned + report.missingObjectsFlagged;
+
+    // Only when it actually did something. A nightly no-op would otherwise add
+    // 365 empty rows a year to the one table people read to find real events.
+    if (changed > 0) {
+      await audit.log(this.db, systemAuditContext('job:storage-cleanup'), {
+        action: 'storage.cleaned',
+        entityType: 'storage',
+        entityId: 'storage-cleanup',
+        after: { ...report, gracePeriodMinutes, verifyStorageIntegrity },
+      });
+    }
+
+    return report;
   }
 
   private async cleanupPendingFiles(
@@ -515,10 +472,6 @@ export class StorageService {
   }
 }
 
-/**
- * Server-generated object key. The client's filename never shapes the path —
- * that is how `../` traversal and collisions get in.
- */
 export function buildStorageKey(tenantId: string | null, originalName: string): string {
   const extension = path.extname(originalName).toLowerCase().replace(/[^a-z0-9.]/g, '').slice(0, 12);
   const now = new Date();

@@ -9,11 +9,6 @@ import { createTestDb } from '@/test/db';
 import { seedAuthData, uniqueDeviceId, uniquePhone } from '@/test/fixtures';
 import { bodyOf } from '@/test/http';
 
-/**
- * Holes found reviewing the flow. Every test here failed before its fix — none
- * describes behaviour that was already correct.
- */
-
 const { db, close } = createTestDb();
 
 let app: BuiltApp;
@@ -33,10 +28,6 @@ async function login(email: string, password: string, clientDeviceId = uniqueDev
   return { status: response.statusCode, body: bodyOf(response) };
 }
 
-/**
- * Without the `finally`, one failing assertion leaves the account with a
- * changed password and every later test fails for the wrong reason.
- */
 async function withUserPatch(
   patch: Partial<typeof users.$inferInsert>,
   restore: Partial<typeof users.$inferInsert>,
@@ -79,7 +70,6 @@ describe('credentials changed out of band', () => {
   it('refuses to refresh a session older than the last credential change', async () => {
     const { body } = await login(data.active.email, data.password);
 
-    // What a future password-change endpoint will do.
     await withUserPatch(
       { passwordHash: await hashPassword('a-different-password'), credentialsChangedAt: new Date() },
       { passwordHash: await hashPassword(data.password), credentialsChangedAt: new Date(0) },
@@ -155,24 +145,17 @@ describe('account enumeration', () => {
 
     await time(data.active.email);
 
-    // Best-of-three on each side: the floor is the measurement least polluted
-    // by scheduling, which is also what an attacker would sample for.
     const known = Math.min(...await Promise.all([1, 2, 3].map(async () => time(data.active.email))));
     const unknown = Math.min(...await Promise.all([1, 2, 3].map(async () => time(`ghost-${Date.now()}@test.local`))));
 
-    // Was ~9x before the dummy-hash verify. A generous bound: this asserts the
-    // argon2 work happens on both paths, not that the clock is quiet.
     expect(unknown).toBeGreaterThan(known / 3);
   });
 
   it('does not look an email up as a phone number', async () => {
-    // `normalisePhone` maps this to `91${digits}` — the digits of the local
-    // part. An account on that number must not be reachable this way.
     const collidingPhone = uniquePhone();
     const digits = collidingPhone.slice(2);
 
     await withUserPatch({ phone: collidingPhone }, { phone: data.active.phone }, async () => {
-      // Correct password, so reaching the account at all is the whole finding.
       const response = await login(`user${digits}@nowhere.test`, data.password);
 
       expect(response.status).toBe(401);
@@ -197,7 +180,6 @@ describe('refresh rotation is atomic', () => {
 
     const ok = results.filter(r => r.statusCode === 200);
 
-    // Both succeeding would mean one refresh token became two live ones.
     expect(ok).toHaveLength(1);
   });
 

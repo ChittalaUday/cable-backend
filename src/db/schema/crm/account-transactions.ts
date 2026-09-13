@@ -6,12 +6,6 @@ import { customers } from './customers';
 import { services } from './services';
 import { subscriptions } from './subscriptions';
 
-/**
- * Historical and operational ledger transactions (deductions, deposits, reversals).
- *
- * Populated from provider ledger reports (e.g. ACT / LCO deposit ledger).
- * Linked to the specific service offering (e.g. ACT Cable TV, Broadband).
- */
 export const accountTransactions = crm.table('account_transactions', {
   id: uuid('id').primaryKey().defaultRandom(),
   tenantId: uuid('tenant_id').notNull().references(() => tenants.id, { onDelete: 'cascade' }),

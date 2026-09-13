@@ -2,10 +2,6 @@ import process from 'node:process';
 import { buildApp } from '@/app';
 import { reportPreflight, runPreflight } from '@/config/preflight';
 
-/**
- * Runs the startup checks without listening, so a deploy pipeline can gate on
- * configuration before it routes traffic at a broken instance.
- */
 const app = await buildApp();
 
 try {

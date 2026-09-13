@@ -4,17 +4,11 @@ import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from '@/app';
 import { otpCodes, sessions, users } from '@/db/schema';
-import { normalisePhone } from '@/modules/notifications';
+import { normalisePhone } from '@/modules/messaging/messaging.service';
 import { hashOtp } from '@/shared/security/otp';
 import { createTestDb } from '@/test/db';
 import { seedAuthData, uniqueDeviceId, uniquePhone } from '@/test/fixtures';
 import { bodyOf } from '@/test/http';
-
-/**
- * End-to-end auth (§4.3, §4.6) through `inject` against a real database. Not
- * mocked: what is worth testing here only exists once the token, the session
- * row and the revocation cache have to agree.
- */
 
 const { db, close } = createTestDb();
 
@@ -33,11 +27,6 @@ function deviceHeaders(clientDeviceId: string) {
   };
 }
 
-/**
- * The code is never returned or stored (§4.3.1) — only the log provider sees
- * it. Rewriting the hash walks the real issue → verify → consume path without
- * reaching into the logger.
- */
 async function issueOtp(phone: string, code = KNOWN_CODE) {
   const response = await app.inject({
     method: 'POST',
@@ -251,7 +240,6 @@ describe('otp login', () => {
     const phone = uniquePhone();
     await issueOtp(phone, '111111');
 
-    // Past the cooldown, so the resend is allowed rather than rejected.
     await db.update(otpCodes)
       .set({ lastSentAt: new Date(Date.now() - 600_000) })
       .where(eq(otpCodes.identifier, phone));
@@ -382,7 +370,6 @@ describe('refresh rotation', () => {
     expect(replay.statusCode).toBe(401);
     expect(bodyOf(replay).code).toBe('AUTH_REFRESH_REUSED');
 
-    // The legitimate holder is signed out too — you cannot tell them apart.
     const afterReplay = await app.inject({
       method: 'GET',
       url: '/api/v1/auth/me',
@@ -397,7 +384,6 @@ describe('refresh rotation', () => {
     const response = await app.inject({
       method: 'POST',
       url: '/api/v1/auth/refresh',
-      // Long enough to pass the schema, so this reaches the service and 401s.
       payload: { refreshToken: 'a'.repeat(43) },
     });
 

@@ -1,4 +1,4 @@
-import type { AuditContext } from '@/modules/audit';
+import type { AuditContext } from '@/modules/audit/audit.types';
 import Fastify from 'fastify';
 import fp from 'fastify-plugin';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';

@@ -3,10 +3,6 @@ import swaggerUi from '@fastify/swagger-ui';
 import fp from 'fastify-plugin';
 import { isProduction } from '@/config/env';
 
-/**
- * OpenAPI generated from the route schemas (AGENTS.md §2). Never hand-written —
- * a hand-maintained spec is a spec that lies within a week.
- */
 export default fp(async (app) => {
   await app.register(swagger, {
     openapi: {
@@ -26,7 +22,6 @@ export default fp(async (app) => {
     },
   });
 
-  // Docs are for developers, not the internet.
   if (!isProduction) {
     await app.register(swaggerUi, {
       routePrefix: '/docs',

@@ -4,15 +4,11 @@ import pg from 'pg';
 import { csv, env } from '@/config/env';
 import * as schema from '@/db/schema';
 import { startScheduler } from '@/jobs/scheduler';
-import { createR2Provider, createUnconfiguredStorage, StorageService } from '@/modules/storage';
+import { createR2Provider } from '@/modules/storage/providers/r2.provider';
+import { createUnconfiguredStorage } from '@/modules/storage/providers/unconfigured.provider';
+import { StorageService } from '@/modules/storage/storage.service';
 import { createLogger } from '@/shared/logging/logger';
 
-/**
- * Background worker entry point (AGENTS.md §3).
- *
- * Runs jobs from `src/jobs/`, never in the API process.
- * Schedules the nightly storage verification and cleanup cron.
- */
 const log = createLogger('worker');
 
 const pool = new pg.Pool({ connectionString: env.DATABASE_URL, max: 2 });

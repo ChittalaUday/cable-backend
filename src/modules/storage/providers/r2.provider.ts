@@ -14,21 +14,11 @@ export interface R2Config {
   accessKeyId: string;
   secretAccessKey: string;
   bucket: string;
-  /** Explicit endpoint override (e.g. jurisdiction-specific endpoint). */
   endpoint?: string;
-  /** Jurisdiction for jurisdiction-specific endpoints (e.g. 'eu', 'fedramp'). */
   jurisdiction?: string;
-  /** Public base URL for a bucket served over a custom domain, if any. */
   publicBaseUrl?: string;
 }
 
-/**
- * Cloudflare R2 over the S3 API.
- *
- * R2 has no regions, so `region` is the required-but-ignored `auto`. Every
- * other S3-compatible store works through this same provider with a different
- * endpoint.
- */
 export function createR2Provider(config: R2Config): StorageProvider {
   const endpoint = config.endpoint
     ?? (config.jurisdiction !== undefined && config.jurisdiction !== ''
@@ -44,8 +34,6 @@ export function createR2Provider(config: R2Config): StorageProvider {
     },
   });
 
-  // getSignedUrl's command parameter is wider than exactOptionalPropertyTypes
-  // accepts from a concrete command, so each call site passes its own type.
   async function sign(
     command: PutObjectCommand | GetObjectCommand,
     expiresIn: number,
@@ -75,13 +63,10 @@ export function createR2Provider(config: R2Config): StorageProvider {
         return {
           sizeBytes: result.ContentLength ?? 0,
           contentType: result.ContentType ?? null,
-          // R2 returns the MD5 ETag; a sha-256 arrives as a checksum header.
           checksum: result.ChecksumSHA256 ?? null,
         };
       }
       catch (error) {
-        // A missing object is an answer, not a failure — the caller asked whether
-        // it exists. Anything else is a real storage problem and must surface.
         if (isNotFound(error))
           return null;
         throw error;

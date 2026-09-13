@@ -1,9 +1,3 @@
-/**
- * Canonical domain constants and enums for CRM (AGENTS.md §5, §8).
- *
- * Used both by Drizzle table definitions and Fastify / TypeBox API schemas.
- */
-
 export const SERVICE_TYPES = ['cable', 'broadband', 'iptv', 'voip', 'other'] as const;
 export type ServiceType = (typeof SERVICE_TYPES)[number];
 

@@ -1,17 +1,3 @@
-/**
- * Starts one PostgreSQL container for the whole test run (AGENTS.md §10).
- *
- * Tests run against the same Postgres version as production: `numeric` behaves
- * like `numeric`, constraints actually fire, and a broken migration is caught by
- * the suite rather than by a deploy.
- *
- * Skipped when DATABASE_URL_TEST is already set, so CI can point at a service
- * container instead of nesting Docker.
- *
- * If no container runtime is reachable, this does NOT fail the run — pure unit
- * tests have no reason to need Docker. DATABASE_URL_TEST stays unset and
- * `requireTestDatabase()` fails loudly in the tests that actually need it.
- */
 import path from 'node:path';
 import process from 'node:process';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';

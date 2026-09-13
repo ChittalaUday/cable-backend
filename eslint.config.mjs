@@ -1,21 +1,10 @@
 import path from 'node:path';
 import antfu from '@antfu/eslint-config';
 
-// Resolved from this file, not from process.cwd(). In a multi-root editor
-// workspace ESLint runs with the workspace root as its cwd, so a relative
-// tsconfig path silently finds nothing — type information degrades to `any` and
-// every typed rule starts reporting "Unexpected any value in conditional".
 const ROOT = import.meta.dirname;
 
-/**
- * Layer boundaries from AGENTS.md §3 are enforced here, not by reviewer memory.
- * With no repository layer, the `db/` restriction on controllers is the only
- * thing keeping queries out of the controller layer — it is load-bearing.
- */
 export default antfu(
   {
-    // antfu relaxes rules when it thinks it is running in an editor. Lint must
-    // behave identically on a laptop and in CI, so the detection is off.
     isInEditor: false,
     typescript: { tsconfigPath: path.join(ROOT, 'tsconfig.json'), tsconfigRootDir: ROOT },
     stylistic: { indent: 2, quotes: 'single', semi: true },
@@ -24,7 +13,6 @@ export default antfu(
     ignores: ['**/dist', '**/coverage', '**/node_modules', '**/src/db/migrations'],
   },
 
-  // Code fences inside Markdown are examples, not compiled source.
   {
     files: ['**/*.md/**'],
     rules: {
@@ -39,7 +27,6 @@ export default antfu(
     rules: {
       'unicorn/filename-case': ['error', {
         case: 'kebabCase',
-        // Convention-named docs that tooling looks up by exact name.
         ignore: ['AGENTS.md', 'CLAUDE.md', 'README.md'],
       }],
       'max-params': ['error', 3],
@@ -48,25 +35,18 @@ export default antfu(
 
       'ts/no-explicit-any': 'error',
 
-      // §10: console bypasses Pino, loses the requestId, and leaks in production.
       'no-console': 'error',
       'node/no-process-env': 'error',
 
-      // No `import/no-cycle`: antfu v4 ships import-lite, which does not provide it.
-      // The layer restrictions below already block the cycles that matter — a cycle
-      // inside one module is a local problem, not a broken boundary.
-
-      // §3: cross-module access goes through the module's index.ts, never its internals.
       'no-restricted-imports': ['error', {
         patterns: [{
-          group: ['@/modules/*/*'],
-          message: 'Cross-module: import from `@/modules/<name>` (its index.ts). Within a module, use a relative sibling import (./x).',
+          group: ['@/modules/*/*', '!@/modules/*/*.service', '!@/modules/*/*.types', '!@/modules/*/providers', '!@/modules/*/providers/*'],
+          message: 'Cross-module: import the module\'s service (`@/modules/<name>/<name>.service`). Within a module, use a relative sibling import (./x).',
         }],
       }],
     },
   },
 
-  // Type-aware rules need a real program, so they apply to compiled source only.
   {
     files: ['**/src/**/*.ts'],
     rules: {
@@ -77,7 +57,6 @@ export default antfu(
     },
   },
 
-  // §3: services are framework-free, so they stay testable without booting a server.
   {
     files: ['**/src/modules/**/*.service.ts'],
     rules: {
@@ -85,39 +64,34 @@ export default antfu(
         paths: [{ name: 'fastify', message: 'Services are framework-free (§3). Take plain arguments, throw domain errors.' }],
         patterns: [
           { group: ['@fastify/*'], message: 'Services are framework-free (§3).' },
-          { group: ['@/modules/*/*'], message: 'Cross-module: import from `@/modules/<name>` (its index.ts).' },
+          { group: ['@/modules/*/*', '!@/modules/*/*.service', '!@/modules/*/*.types', '!@/modules/*/providers', '!@/modules/*/providers/*'], message: 'Cross-module: import the module\'s service, its types, or a provider.' },
         ],
       }],
     },
   },
 
-  // §3: no database access above the service layer.
   {
     files: ['**/src/modules/**/*.controller.ts', '**/src/modules/**/*.routes.ts', '**/src/jobs/**/*.ts'],
     rules: {
       'no-restricted-imports': ['error', {
         patterns: [
           { group: ['@/db', '@/db/*', 'drizzle-orm', 'drizzle-orm/*'], message: 'No database access here (§3). Go through a service.' },
-          { group: ['@/modules/*/*'], message: 'Cross-module: import from `@/modules/<name>` (its index.ts).' },
+          { group: ['@/modules/*/*', '!@/modules/*/*.service', '!@/modules/*/*.types', '!@/modules/*/providers', '!@/modules/*/providers/*'], message: 'Cross-module: import the module\'s service, its types, or a provider.' },
         ],
       }],
     },
   },
 
-  // ESM process entry points: top-level await is exactly what they are for.
   {
     files: ['**/src/server.ts', '**/src/worker.ts', '**/src/verify.ts', '**/src/db/migrate.ts', '**/src/db/seed/**/*.ts'],
     rules: { 'antfu/no-top-level-await': 'off' },
   },
 
-  // TypeBox pairs a schema const with a same-named inferred type on purpose;
-  // they occupy different namespaces and keeping one name is the whole point.
   {
     files: ['**/*.schema.ts', '**/src/shared/pagination/**'],
     rules: { 'ts/no-redeclare': 'off' },
   },
 
-  // §10: env is read in exactly one place.
   {
     files: ['**/src/config/env.ts', '**/drizzle.config.ts', '**/vitest.config.ts', '**/src/test/**/*.ts', '**/*.test.ts'],
     rules: { 'node/no-process-env': 'off' },
@@ -128,7 +102,6 @@ export default antfu(
     rules: { 'max-lines-per-function': 'off', 'ts/no-non-null-assertion': 'off', 'no-console': 'off' },
   },
 
-  // Entry points and seeders report to a human on a terminal, not to a request logger.
   {
     files: ['**/src/db/seed/**/*.ts', '**/src/db/migrate.ts'],
     rules: {

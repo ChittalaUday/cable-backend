@@ -2,13 +2,6 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { DeviceHeaders, LoginBody, RefreshBody, RequestOtpBody, VerifyOtpBody } from './auth.schema';
 import type { DeviceInfo } from './sessions.service';
 
-/**
- * The only layer that touches `request`/`reply` (AGENTS.md §3).
- *
- * Unwraps the request, calls one service method, maps the result to a status
- * code. No business branching, no database access.
- */
-
 function deviceFrom(headers: DeviceHeaders): DeviceInfo {
   return {
     clientDeviceId: headers['x-device-id'],
@@ -23,9 +16,8 @@ export async function requestOtp(
   request: FastifyRequest<{ Body: RequestOtpBody }>,
   reply: FastifyReply,
 ) {
-  const { channel } = await request.server.auth.requestOtp(request.body);
+  const { channel } = await request.server.auth.requestOtp(request.body, request.auditContext);
 
-  // Always 202, whether or not the number is known (§4.3.1).
   return reply.status(202).send({
     status: 'accepted' as const,
     channel,
@@ -40,7 +32,7 @@ export async function verifyOtp(
   const result = await request.server.auth.verifyOtp({
     ...request.body,
     device: deviceFrom(request.headers),
-  });
+  }, request.auditContext);
 
   return reply.status(200).send({
     accessToken: result.accessToken,
@@ -58,7 +50,7 @@ export async function login(
   const result = await request.server.auth.login({
     ...request.body,
     device: deviceFrom(request.headers),
-  });
+  }, request.auditContext);
 
   return reply.status(200).send({
     accessToken: result.accessToken,
@@ -73,18 +65,18 @@ export async function refresh(
   request: FastifyRequest<{ Body: RefreshBody }>,
   reply: FastifyReply,
 ) {
-  const tokens = await request.server.auth.refresh(request.body.refreshToken);
+  const tokens = await request.server.auth.refresh(request.body.refreshToken, request.auditContext);
 
   return reply.status(200).send({ ...tokens, tokenType: 'Bearer' as const });
 }
 
 export async function logout(request: FastifyRequest, reply: FastifyReply) {
-  await request.server.auth.logout(request.session.sid);
+  await request.server.auth.logout(request.session.sid, request.auditContext);
   return reply.status(200).send({ revokedSessions: 1 });
 }
 
 export async function logoutEverywhere(request: FastifyRequest, reply: FastifyReply) {
-  const revoked = await request.server.auth.logoutEverywhere(request.session.sub);
+  const revoked = await request.server.auth.logoutEverywhere(request.session.sub, request.auditContext);
   return reply.status(200).send({ revokedSessions: revoked });
 }
 

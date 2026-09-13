@@ -1,18 +1,3 @@
-/**
- * Seeding script for MSO (ACT Digital) Cable TV customer, package, equipment & ledger data.
- *
- * Populates:
- * 1. Tenant: Sri Satya Cable Network (SSCN)
- * 2. Services: Cable TV (ACT), Broadband Internet (Satya Fiber), IPTV
- * 3. Channels: TV / IPTV channels with Logical Channel Numbers (LCN)
- * 4. Packages: Cable TV packs + Broadband tiers with JSON metadata
- * 5. Customers: 764 customer records with customer codes and complete raw/parsed JSON metadata (userId kept null)
- * 6. Customer Details: Extended flat/door, landmark, and KYC metadata
- * 7. Subscriptions: Linked to ACT Cable TV with serviceAccountNumber (C2602498, ...)
- * 8. Equipment: STB, Smart Card / VC, Remote, Adapter assets & customer mappings
- * 9. Account Transactions: 5,097 historical ledger entries from LCO deposit report
- */
-
 import type { ChannelGenre, ChannelResolution, PackageType, TransactionType } from '@/shared/constants/crm';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -30,6 +15,7 @@ import {
   equipment,
   packageChannels,
   packages,
+  serviceProviders,
   services,
   subscriptions,
   tenantMemberships,
@@ -201,7 +187,6 @@ function cleanPhone(rawPhone: string): string | null {
 async function run() {
   console.log('🚀 Starting MSO Data Seeding...');
 
-  // 1. Resolve tenant SSCN
   let [tenant] = await db.select().from(tenants).where(sql`${tenants.code} = 'SSCN'`).limit(1);
   if (!tenant) {
     const [inserted] = await db
@@ -212,15 +197,13 @@ async function run() {
   }
   console.log(`✅ Tenant resolved: ${tenant.name} (${tenant.code}) - ID: ${tenant.id}`);
 
-  // 2. Seed Services (Cable TV, Broadband, IPTV)
   const servicesToSeed = [
     {
       tenantId: tenant.id,
-      name: 'ACT Cable TV',
-      slug: 'act-cable-tv',
+      name: 'Cable TV',
+      slug: 'cable-tv',
       serviceType: 'cable' as const,
-      providerName: 'ACT Digital',
-      description: 'Digital Cable TV network with 250+ SD/HD Channels via ACT Digital MSO',
+      description: 'Digital cable television',
       status: 'active' as const,
       metadata: {
         mso: 'ACT Digital',
@@ -231,11 +214,10 @@ async function run() {
     },
     {
       tenantId: tenant.id,
-      name: 'Satya Fiber Broadband',
-      slug: 'satya-fiber-broadband',
+      name: 'Broadband',
+      slug: 'broadband',
       serviceType: 'broadband' as const,
-      providerName: 'Satya Fiber',
-      description: 'High-speed FTTH Fiber Broadband internet with unlimited data',
+      description: 'FTTH fibre internet',
       status: 'active' as const,
       metadata: {
         tech: 'FTTH',
@@ -245,11 +227,10 @@ async function run() {
     },
     {
       tenantId: tenant.id,
-      name: 'Satya Smart IPTV',
-      slug: 'satya-smart-iptv',
+      name: 'IPTV',
+      slug: 'iptv',
       serviceType: 'iptv' as const,
-      providerName: 'Satya IPTV',
-      description: 'Interactive IPTV streaming with 200+ live channels and OTT bundle',
+      description: 'Interactive IPTV streaming with an OTT bundle',
       status: 'active' as const,
       metadata: {
         ottApps: ['Hotstar', 'Zee5', 'SonyLIV', 'Aha'],
@@ -276,11 +257,68 @@ async function run() {
   }
   console.log(`✅ Seeded ${servicesToSeed.length} Services (Cable, Broadband, IPTV)`);
 
-  const cableServiceId = serviceMap.get('act-cable-tv')!;
-  const broadbandServiceId = serviceMap.get('satya-fiber-broadband')!;
-  const iptvServiceId = serviceMap.get('satya-smart-iptv')!;
+  const cableServiceId = serviceMap.get('cable-tv')!;
+  const broadbandServiceId = serviceMap.get('broadband')!;
+  const iptvServiceId = serviceMap.get('iptv')!;
 
-  // 3. Seed Channels with Logical Channel Numbers (LCN) & Languages
+  // ─── Service providers ──────────────────────────────────────────────────────
+  // The supplier behind each service. This is where the brand lives now: the
+  // service is "Cable TV", ACT Digital is one MSO that delivers it, and a second
+  // MSO is another row here rather than a duplicate service
+  // (docs/services-providers-packages.md).
+  const providersToSeed = [
+    {
+      tenantId: tenant.id,
+      serviceId: cableServiceId,
+      name: 'ACT Digital',
+      slug: 'act-digital',
+      code: 'ACTMDPLCOMDLURB0000002144',
+      description: 'ACT Digital MSO feed, 250+ SD/HD channels',
+      isDefault: true,
+      metadata: { network: 'SRI SATYA CABLE NETWORK', headend: 'TIDCO APTS, Mandapeta' },
+    },
+    {
+      tenantId: tenant.id,
+      serviceId: broadbandServiceId,
+      name: 'Satya Fiber',
+      slug: 'satya-fiber',
+      description: 'Own FTTH network',
+      isDefault: true,
+      metadata: { tech: 'FTTH', fiberSpeedTiers: [50, 100, 200, 300], ontProvided: true },
+    },
+    {
+      tenantId: tenant.id,
+      serviceId: iptvServiceId,
+      name: 'Satya IPTV',
+      slug: 'satya-iptv',
+      description: 'Own IPTV platform with an OTT bundle',
+      isDefault: true,
+      metadata: { ottApps: ['Hotstar', 'Zee5', 'SonyLIV', 'Aha'], catchupDays: 7 },
+    },
+  ];
+
+  const providerMap = new Map<string, string>();
+  for (const sp of providersToSeed) {
+    const [existing] = await db
+      .select()
+      .from(serviceProviders)
+      .where(sql`${serviceProviders.serviceId} = ${sp.serviceId} AND ${serviceProviders.slug} = ${sp.slug}`)
+      .limit(1);
+
+    if (existing) {
+      providerMap.set(sp.slug, existing.id);
+    }
+    else {
+      const [created] = await db.insert(serviceProviders).values(sp).returning();
+      providerMap.set(sp.slug, created!.id);
+    }
+  }
+  console.log(`✅ Seeded ${providersToSeed.length} Service providers (ACT Digital, Satya Fiber, Satya IPTV)`);
+
+  const cableProviderId = providerMap.get('act-digital')!;
+  const broadbandProviderId = providerMap.get('satya-fiber')!;
+  const iptvProviderId = providerMap.get('satya-iptv')!;
+
   const channelsList: Array<{
     name: string;
     slug: string;
@@ -336,7 +374,7 @@ async function run() {
     const [existing] = await db
       .select()
       .from(channels)
-      .where(sql`${channels.serviceId} = ${cableServiceId} AND ${channels.slug} = ${c.slug}`)
+      .where(sql`${channels.serviceProviderId} = ${cableProviderId} AND ${channels.slug} = ${c.slug}`)
       .limit(1);
 
     if (existing) {
@@ -347,7 +385,7 @@ async function run() {
         .insert(channels)
         .values({
           tenantId: tenant.id,
-          serviceId: cableServiceId,
+          serviceProviderId: cableProviderId,
           channelNumber: c.channelNumber,
           name: c.name,
           slug: c.slug,
@@ -366,7 +404,7 @@ async function run() {
           },
         })
         .onConflictDoUpdate({
-          target: [channels.serviceId, channels.channelNumber],
+          target: [channels.serviceProviderId, channels.channelNumber],
           set: {
             name: c.name,
             genre: c.genre,
@@ -388,9 +426,8 @@ async function run() {
   }
   console.log(`✅ Seeded ${channelsList.length} Channels with LCN and Languages`);
 
-  // 4. Seed Packages
   const packagesList: Array<{
-    serviceId: string;
+    serviceProviderId: string;
     name: string;
     slug: string;
     packageType: PackageType;
@@ -401,7 +438,7 @@ async function run() {
     metadata: Record<string, unknown>;
   }> = [
     {
-      serviceId: cableServiceId,
+      serviceProviderId: cableProviderId,
       name: 'ACT Ultimate Pre Viz',
       slug: 'act-ultimate-pre-viz',
       packageType: 'base',
@@ -412,7 +449,7 @@ async function run() {
       metadata: { totalChannels: 220, hdChannels: 5, ncfFee: 46.02, msoPackFee: 117.99 },
     },
     {
-      serviceId: cableServiceId,
+      serviceProviderId: cableProviderId,
       name: 'ACT BST Bronze Viz',
       slug: 'act-bst-bronze-viz',
       packageType: 'base',
@@ -423,7 +460,7 @@ async function run() {
       metadata: { totalChannels: 150, ncfFee: 46.02 },
     },
     {
-      serviceId: cableServiceId,
+      serviceProviderId: cableProviderId,
       name: 'ACT Smart HD Pre Viz',
       slug: 'act-smart-hd-pre-viz',
       packageType: 'base',
@@ -434,7 +471,7 @@ async function run() {
       metadata: { totalChannels: 260, hdChannels: 35 },
     },
     {
-      serviceId: cableServiceId,
+      serviceProviderId: cableProviderId,
       name: 'ETV Family Pack',
       slug: 'etv-family-pack',
       packageType: 'bouquet',
@@ -445,7 +482,7 @@ async function run() {
       metadata: { channelsCount: 6 },
     },
     {
-      serviceId: cableServiceId,
+      serviceProviderId: cableProviderId,
       name: 'Zee Prime Pack Telugu SD',
       slug: 'zee-prime-pack-telugu-sd',
       packageType: 'bouquet',
@@ -456,7 +493,7 @@ async function run() {
       metadata: { channelsCount: 8 },
     },
     {
-      serviceId: cableServiceId,
+      serviceProviderId: cableProviderId,
       name: 'Sun SD Bouquet 02 Telugu Basic',
       slug: 'sun-sd-bouquet-02-telugu-basic',
       packageType: 'bouquet',
@@ -467,7 +504,7 @@ async function run() {
       metadata: { channelsCount: 7 },
     },
     {
-      serviceId: broadbandServiceId,
+      serviceProviderId: broadbandProviderId,
       name: 'Fiber 50 Mbps Unlimited',
       slug: 'fiber-50-mbps-unlimited',
       packageType: 'base',
@@ -485,7 +522,7 @@ async function run() {
       },
     },
     {
-      serviceId: broadbandServiceId,
+      serviceProviderId: broadbandProviderId,
       name: 'Fiber 100 Mbps Unlimited',
       slug: 'fiber-100-mbps-unlimited',
       packageType: 'base',
@@ -504,7 +541,7 @@ async function run() {
       },
     },
     {
-      serviceId: broadbandServiceId,
+      serviceProviderId: broadbandProviderId,
       name: 'Fiber 200 Mbps Pro',
       slug: 'fiber-200-mbps-pro',
       packageType: 'base',
@@ -523,7 +560,7 @@ async function run() {
       },
     },
     {
-      serviceId: iptvServiceId,
+      serviceProviderId: iptvProviderId,
       name: 'IPTV Smart Telugu Plus',
       slug: 'iptv-smart-telugu-plus',
       packageType: 'combo',
@@ -544,7 +581,7 @@ async function run() {
     const [existing] = await db
       .select()
       .from(packages)
-      .where(sql`${packages.tenantId} = ${tenant.id} AND ${packages.slug} = ${p.slug}`)
+      .where(sql`${packages.serviceProviderId} = ${p.serviceProviderId} AND ${packages.slug} = ${p.slug}`)
       .limit(1);
 
     if (existing) {
@@ -577,7 +614,6 @@ async function run() {
     if (channelId === undefined)
       continue;
 
-    // 1. Primary cable base package gets all channels
     await db
       .insert(packageChannels)
       .values({
@@ -588,7 +624,6 @@ async function run() {
       .onConflictDoNothing({ target: [packageChannels.packageId, packageChannels.channelId] });
     packageChannelCount++;
 
-    // 2. BST Bronze (Free-to-Air channels)
     if (bstBronzePkgId !== undefined && c.isFta) {
       await db
         .insert(packageChannels)
@@ -601,7 +636,6 @@ async function run() {
       packageChannelCount++;
     }
 
-    // 3. Smart HD pack
     if (smartHdPkgId !== undefined) {
       await db
         .insert(packageChannels)
@@ -614,7 +648,6 @@ async function run() {
       packageChannelCount++;
     }
 
-    // 4. ETV Bouquet
     if (etvBouquetPkgId !== undefined && c.broadcaster === 'ETV Network') {
       await db
         .insert(packageChannels)
@@ -627,7 +660,6 @@ async function run() {
       packageChannelCount++;
     }
 
-    // 5. Zee Bouquet
     if (zeeBouquetPkgId !== undefined && c.broadcaster === 'Zee Entertainment') {
       await db
         .insert(packageChannels)
@@ -640,7 +672,6 @@ async function run() {
       packageChannelCount++;
     }
 
-    // 6. Sun Bouquet
     if (sunBouquetPkgId !== undefined && c.broadcaster === 'Sun Network') {
       await db
         .insert(packageChannels)
@@ -655,7 +686,6 @@ async function run() {
   }
   console.log(`✅ Seeded ${packageChannelCount} Package-Channel mappings`);
 
-  // 5. Parse Customer Report
   if (!fs.existsSync(MSO_REPORT_PATH))
     throw new Error(`Customer report file not found at ${MSO_REPORT_PATH}`);
 
@@ -663,7 +693,6 @@ async function run() {
   const parsedCustomers = parseMsoHtml(htmlContent);
   console.log(`📋 Parsed ${parsedCustomers.length} customer records from MSO report`);
 
-  // Disconnect existing customer user_id links and clean up previous bulk customer accounts
   await db
     .update(customers)
     .set({ userId: null })
@@ -679,7 +708,6 @@ async function run() {
       AND id NOT IN (SELECT user_id FROM auth.sessions)
   `);
 
-  // Cache existing subscriptions
   const existingSubs = await db
     .select({ id: subscriptions.id, customerId: subscriptions.customerId, acc: subscriptions.serviceAccountNumber })
     .from(subscriptions)
@@ -701,7 +729,6 @@ async function run() {
     const createdAtDate = parseCreatedDate(custRow.createdDate);
     const cleanedPhone = cleanPhone(custRow.mobileNo);
 
-    // Keep all customer raw & parsed info in JSON metadata for verification by admin
     const customerInfo = {
       name: custRow.name,
       mobileNo: custRow.mobileNo,
@@ -722,7 +749,6 @@ async function run() {
       customerId = existingSub.customerId;
       subscriptionId = existingSub.id;
 
-      // Update customer with userId = null and complete metadata JSON
       await db
         .update(customers)
         .set({
@@ -732,7 +758,6 @@ async function run() {
         })
         .where(sql`${customers.id} = ${customerId}`);
 
-      // Seed address if not already present
       const [existingAddr] = await db
         .select({ id: customerAddresses.id })
         .from(customerAddresses)
@@ -769,13 +794,11 @@ async function run() {
       }
     }
     else {
-      // Mint customerCode from crm.next_customer_code(tenantId)
       const codeRes = await db.execute<{ code: string }>(
         sql`SELECT crm.next_customer_code(${tenant.id}) AS code`,
       );
       const generatedCode = codeRes.rows[0]?.code ?? `SSCN-${Date.now()}`;
 
-      // Insert customer with userId = null and full metadata JSON
       const [newCust] = await db
         .insert(customers)
         .values({
@@ -794,7 +817,6 @@ async function run() {
       customerId = newCust!.id;
       insertedCustomers++;
 
-      // Seed granular installation address
       const [addr] = await db
         .insert(customerAddresses)
         .values({
@@ -813,13 +835,12 @@ async function run() {
         })
         .returning();
 
-      // Create subscription for ACT Cable TV
       const [newSub] = await db
         .insert(subscriptions)
         .values({
           tenantId: tenant.id,
           customerId,
-          serviceId: cableServiceId,
+          serviceProviderId: cableProviderId,
           packageId: primaryCablePkgId,
           serviceAccountNumber: custRow.accountNo,
           status: custRow.status as 'active' | 'inactive',
@@ -841,7 +862,6 @@ async function run() {
       subByAccount.set(custRow.accountNo, { id: subscriptionId, customerId });
       insertedSubs++;
 
-      // Create Equipment assets & customer_equipment mappings
       if (custRow.serialNumber.length > 0) {
         const [stbAsset] = await db
           .insert(equipment)
@@ -948,7 +968,6 @@ async function run() {
 
   console.log(`✅ Customers Processed: ${parsedCustomers.length} records (${insertedCustomers} new customers), ${insertedSubs} new subscriptions, ${insertedEquipment} equipment assets`);
 
-  // 6. Parse and Seed Ledger Transactions
   if (fs.existsSync(LEDGER_REPORT_PATH)) {
     const csvContent = fs.readFileSync(LEDGER_REPORT_PATH, 'utf8');
     const ledgerRows = parseLedgerCsv(csvContent);
@@ -967,7 +986,6 @@ async function run() {
     const batchSize = 500;
     const txRecords: Array<typeof accountTransactions.$inferInsert> = [];
 
-    // Check existing transaction count to avoid duplication
     const existingTxCount = await db
       .select({ count: sql<string>`count(*)` })
       .from(accountTransactions)

@@ -7,7 +7,6 @@ import { auditDiff, sanitizeAuditValue } from './audit.utils';
 
 type AuditDb = Pick<Database, 'insert' | 'select'>;
 
-/** Writes semantic business events through the transaction supplied by the caller. */
 export class AuditService {
   async log(db: AuditDb, context: AuditContext, event: AuditEvent): Promise<AuditLog> {
     const before = sanitizeAuditValue(event.before);
@@ -51,7 +50,6 @@ export class AuditService {
     return this.log(db, context, { ...event, action: `${event.entityType}.deleted` });
   }
 
-  /** Tenant-scoped keyset query for future admin APIs. */
   async list(db: AuditDb, query: AuditQuery): Promise<AuditLog[]> {
     const limit = query.limit ?? 50;
     if (!Number.isInteger(limit) || limit < 1 || limit > 100)

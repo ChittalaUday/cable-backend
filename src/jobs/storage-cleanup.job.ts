@@ -1,14 +1,7 @@
 import type { FastifyBaseLogger } from 'fastify';
-import type { StorageCleanupOptions, StorageCleanupReport, StorageService } from '@/modules/storage';
+import type { StorageService } from '@/modules/storage/storage.service';
+import type { StorageCleanupOptions, StorageCleanupReport } from '@/modules/storage/storage.types';
 
-/**
- * Nightly storage verification and cleanup job (AGENTS.md §3, §8.4).
- *
- * Runs in the worker process:
- * 1. Safely prunes expired/abandoned pending uploads while preserving in-flight requests.
- * 2. Prunes orphaned physical storage objects whose user references have been deleted.
- * 3. Verifies storage integrity of active ready files.
- */
 export async function runStorageCleanupJob(
   storage: StorageService,
   log?: FastifyBaseLogger | Console,

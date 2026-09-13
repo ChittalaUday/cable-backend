@@ -3,6 +3,7 @@ export * from './audit';
 export * from './auth';
 export * from './crm';
 export * from './functions';
+export * from './geo';
 export * from './iam';
 export * from './media';
 export * from './notify';

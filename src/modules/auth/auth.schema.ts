@@ -1,15 +1,6 @@
 import type { Static } from 'typebox';
 import { Type } from 'typebox';
 
-/**
- * Wire contracts for auth (AGENTS.md §7).
- *
- * Every route declares a response schema. Fastify's serializer is what
- * guarantees `password_hash` cannot leave the process even if a service hands
- * the whole user row over.
- */
-
-/** Device headers (§4.6). Client-supplied identity for support and revocation — never an auth factor. */
 export const DeviceHeaders = Type.Object({
   'x-device-id': Type.String({ minLength: 8, maxLength: 128 }),
   'x-platform': Type.Union([Type.Literal('ios'), Type.Literal('android'), Type.Literal('web')]),
@@ -25,7 +16,6 @@ export const RequestOtpBody = Type.Object({
   channel: Type.Optional(Type.Union([Type.Literal('whatsapp'), Type.Literal('sms')])),
 });
 
-/** Deliberately says nothing about whether the number is registered (§4.3.1). */
 export const RequestOtpResponse = Type.Object({
   status: Type.Literal('accepted'),
   channel: Type.String(),
@@ -46,7 +36,6 @@ export const RefreshBody = Type.Object({
   refreshToken: Type.String({ minLength: 20, maxLength: 200 }),
 });
 
-/** The public shape of a user. `passwordHash` and `googleSub` are absent by construction. */
 export const UserResponse = Type.Object({
   id: Type.String({ format: 'uuid' }),
   email: Type.Union([Type.String(), Type.Null()]),

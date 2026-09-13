@@ -127,6 +127,48 @@
       "when": 1789297897387,
       "tag": "0017_ambiguous_warlock",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1789301710887,
+      "tag": "0018_tough_lila_cheney",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1789301711887,
+      "tag": "0019_location_tree",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1789301717684,
+      "tag": "0020_parched_ultron",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1789303820287,
+      "tag": "0021_windy_cannonball",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1789303821287,
+      "tag": "0022_service_provider_backfill",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1789303900476,
+      "tag": "0023_sad_wild_child",
+      "breakpoints": true
     }
   ]
 }

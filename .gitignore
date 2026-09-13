@@ -6,10 +6,19 @@ coverage/
 
 # Service-account keys and anything else with a private key in it.
 secrets/
+*adminsdk*.json
 *-adminsdk-*.json
 *service-account*.json
+*serviceAccount*.json
+*firebase*.json
+!firebase.json
 !.env.example
 *.log
 logs/
 .DS_Store
 .vitest/
+
+# Excel & CSV data files
+*.xls
+*.xlsx
+*.csv

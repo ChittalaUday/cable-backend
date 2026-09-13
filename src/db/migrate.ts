@@ -1,10 +1,3 @@
-/**
- * Applies pending migrations (AGENTS.md §8).
- *
- * Migrations are generated with `pnpm db:generate`, reviewed as SQL, and
- * committed. A merged migration file is immutable — fix forward with a new one.
- * `drizzle-kit push` is for local scratch work and never touches a shared database.
- */
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, describe, expect, it } from 'vitest';
-import { customers, files, otpCodes, roles, tenants } from '@/db/schema';
+import { channels, customers, files, otpCodes, packages, roles, serviceProviders, services, tenants } from '@/db/schema';
 import { createTestDb, inRollback } from '@/test/db';
 
 const { db, close } = createTestDb();
@@ -34,6 +34,61 @@ describe('database integrity', () => {
       const value = { identifier, channel: 'whatsapp', codeHash: 'hash', maxAttempts: 5, expiresAt: new Date(Date.now() + 60_000) };
       await tx.insert(otpCodes).values(value);
       await expect(tx.insert(otpCodes).values(value)).rejects.toThrow();
+    });
+  });
+
+  it('lets two providers of one service use the same channel number', async () => {
+    await inRollback(db, async (tx) => {
+      const [tenant] = await tx.insert(tenants)
+        .values({ code: `C${randomUUID().replaceAll('-', '').slice(0, 4).toUpperCase()}`, name: 'Channel Test' })
+        .returning();
+
+      const [service] = await tx.insert(services)
+        .values({ tenantId: tenant!.id, name: 'Cable TV', slug: 'cable-tv', serviceType: 'cable' })
+        .returning();
+
+      const provider = async (slug: string) => (await tx.insert(serviceProviders)
+        .values({ tenantId: tenant!.id, serviceId: service!.id, name: slug, slug })
+        .returning())[0]!;
+
+      const act = await provider('act-digital');
+      const hathway = await provider('hathway');
+
+      const channel = (serviceProviderId: string) => ({
+        tenantId: tenant!.id,
+        serviceProviderId,
+        channelNumber: 101,
+        name: 'Channel 101',
+        slug: 'channel-101',
+      });
+
+      await tx.insert(channels).values(channel(act.id));
+
+      // Two MSOs both numbering something 101 is normal; on `service_id` it was
+      // a false conflict (docs/services-providers-packages.md §3).
+      await expect(tx.insert(channels).values(channel(hathway.id))).resolves.toBeDefined();
+      await expect(tx.insert(channels).values(channel(act.id))).rejects.toThrow();
+    });
+  });
+
+  it('refuses two packages with one slug under the same provider', async () => {
+    await inRollback(db, async (tx) => {
+      const [tenant] = await tx.insert(tenants)
+        .values({ code: `P${randomUUID().replaceAll('-', '').slice(0, 4).toUpperCase()}`, name: 'Package Test' })
+        .returning();
+
+      const [service] = await tx.insert(services)
+        .values({ tenantId: tenant!.id, name: 'Broadband', slug: 'broadband', serviceType: 'broadband' })
+        .returning();
+
+      const [provider] = await tx.insert(serviceProviders)
+        .values({ tenantId: tenant!.id, serviceId: service!.id, name: 'ACT', slug: 'act' })
+        .returning();
+
+      const value = { tenantId: tenant!.id, serviceProviderId: provider!.id, name: '100 Mbps', slug: '100-mbps' };
+      await tx.insert(packages).values(value);
+
+      await expect(tx.insert(packages).values(value)).rejects.toThrow();
     });
   });
 

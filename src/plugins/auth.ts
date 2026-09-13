@@ -2,7 +2,9 @@ import type { FastifyRequest } from 'fastify';
 import type { AccessTokenClaims } from '@/shared/security/tokens';
 import fp from 'fastify-plugin';
 import { env } from '@/config/env';
-import { AuthService, RevocationCache, SessionsService } from '@/modules/auth';
+import { AuthService } from '@/modules/auth/auth.service';
+import { RevocationCache } from '@/modules/auth/revocation.service';
+import { SessionsService } from '@/modules/auth/sessions.service';
 import { ERROR_CODES } from '@/shared/errors';
 import { unauthorized } from '@/shared/errors/domain-error';
 import { createTokenSigner } from '@/shared/security/tokens';
@@ -12,17 +14,14 @@ declare module 'fastify' {
     auth: AuthService;
     sessions: SessionsService;
     revocations: RevocationCache;
-    /** onRequest hook: verifies the token and populates `request.session`. */
     authenticate: (request: FastifyRequest) => Promise<void>;
   }
 
   interface FastifyRequest {
-    /** Present only after `authenticate`. Identity comes from the signed token, never a header. */
     session: AccessTokenClaims;
   }
 }
 
-/** The one place a bearer token is turned into an identity (AGENTS.md §4.6). */
 export default fp(async (app) => {
   const tokens = createTokenSigner({
     secret: env.JWT_SECRET,
@@ -55,8 +54,6 @@ export default fp(async (app) => {
     },
   }));
 
-  // Declared without a value: Fastify only needs the property to exist on the
-  // prototype, and a shared default object would be mutated across requests.
   app.decorateRequest('session');
 
   app.decorate('authenticate', async (request: FastifyRequest) => {
@@ -70,8 +67,6 @@ export default fp(async (app) => {
       claims = await tokens.verify(header.slice('Bearer '.length));
     }
     catch (error) {
-      // Expired is the ONE 401 that means "refresh and retry" rather than
-      // "sign out", so the client must be able to tell it apart (§7.1).
       const expired = (error as { code?: string }).code === 'ERR_JWT_EXPIRED';
       throw unauthorized(
         expired ? ERROR_CODES.AUTH_TOKEN_EXPIRED : ERROR_CODES.AUTH_TOKEN_INVALID,
@@ -84,7 +79,6 @@ export default fp(async (app) => {
 
     request.session = claims;
 
-    // Every log line for this request now names who made it (§4.6).
     request.log = request.log.child({
       userId: claims.sub,
       sessionId: claims.sid,

@@ -14,20 +14,6 @@ declare module 'fastify' {
   }
 }
 
-/**
- * Decorates `app.db` with Drizzle and owns the pool lifecycle.
- *
- * Registered with fastify-plugin so the decorator is visible to every module,
- * not just this plugin's encapsulation context.
- */
-/**
- * TLS for the database connection, per tier (AGENTS.md §2.1).
- *
- * `disable` locally and on staging, where Postgres is on the same host or a
- * private network. Production cannot reach `disable` — `assertTier` rejects it
- * at boot — and `verify-full` is the setting that actually checks the
- * certificate; `require` encrypts but would accept an impostor.
- */
 function sslOptions(): { ssl?: { rejectUnauthorized: boolean } } {
   switch (env.DATABASE_SSL) {
     case 'disable':
@@ -46,8 +32,6 @@ export default fp(async (app) => {
     ...sslOptions(),
   });
 
-  // Fail at boot rather than on the first request, so a bad DATABASE_URL never
-  // reaches a health check that reports "ok".
   const client = await pool.connect();
   client.release();
 

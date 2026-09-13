@@ -27,7 +27,6 @@ function fakeProvider(overrides: Partial<StorageProvider> = {}): StorageProvider
 
 describe('buildStorageKey', () => {
   it('never lets the client filename shape the path', () => {
-    // `../` traversal and collisions get in exactly here.
     const key = buildStorageKey('tenant-1', '../../etc/passwd');
 
     expect(key).not.toContain('..');
@@ -157,7 +156,6 @@ describe('storage service deduplication and lifecycle', () => {
     expect(res.userFile.originalName).toBe('avatar.png');
     expect(res.userFile.fileId).toBe(res.file.id);
 
-    // Confirm upload
     const confirmed = await service.confirmUpload(res.userFile.id, tenantId);
     expect(confirmed.file.status).toBe('ready');
     expect(confirmed.file.checksum).toBe(checksum);
@@ -174,7 +172,6 @@ describe('storage service deduplication and lifecycle', () => {
       allowedContentTypes: ['image/png'],
     });
 
-    // 1. Upload first file with a unique checksum
     const t1 = tenantAId;
     const first = await service.requestUpload({
       tenantId: t1,
@@ -186,11 +183,9 @@ describe('storage service deduplication and lifecycle', () => {
     createdUserFileIds.push(first.userFile.id);
     createdFileIds.push(first.file.id);
 
-    // Confirm the first file
     const confirmedFirst = await service.confirmUpload(first.userFile.id, t1);
     expect(confirmedFirst.file.status).toBe('ready');
 
-    // 2. Upload second file with same checksum from another tenant
     const t2 = tenantBId;
     const createUploadUrlSpy = vi.spyOn(provider, 'createUploadUrl');
 
@@ -203,7 +198,6 @@ describe('storage service deduplication and lifecycle', () => {
     });
     createdUserFileIds.push(second.userFile.id);
 
-    // Deduplication should be instant!
     expect(second.deduplicated).toBe(true);
     expect(second.userFile.originalName).toBe('duplicate_copy.png');
     expect(second.userFile.fileId).toBe(first.file.id);
@@ -230,7 +224,6 @@ describe('storage service deduplication and lifecycle', () => {
     const t1 = tenantAId;
     const t2 = tenantBId;
 
-    // Two clients request upload without knowing hash upfront
     const upload1 = await service.requestUpload({
       tenantId: t1,
       uploadedBy: null,
@@ -247,18 +240,14 @@ describe('storage service deduplication and lifecycle', () => {
     createdUserFileIds.push(upload1.userFile.id, upload2.userFile.id);
     createdFileIds.push(upload1.file.id, upload2.file.id);
 
-    // First upload confirms
     const confirmed1 = await service.confirmUpload(upload1.userFile.id, t1);
     expect(confirmed1.file.status).toBe('ready');
 
-    // Second upload confirms: head returns the exact same checksum!
     const confirmed2 = await service.confirmUpload(upload2.userFile.id, t2);
 
-    // confirmed2 should be relinked to confirmed1's physical file!
     expect(confirmed2.userFile.fileId).toBe(confirmed1.file.id);
     expect(confirmed2.file.id).toBe(confirmed1.file.id);
 
-    // The redundant storage object from upload2 should have been deleted
     expect(removeSpy).toHaveBeenCalledWith(upload2.file.storageKey);
   });
 
@@ -301,16 +290,12 @@ describe('storage service deduplication and lifecycle', () => {
     });
     createdUserFileIds.push(u2.userFile.id);
 
-    // Remove user 1's reference
     await service.remove(u1.userFile.id, t1);
     expect(removeSpy).not.toHaveBeenCalled();
 
-    // Remove user 2's reference
     await service.remove(u2.userFile.id, t2);
-    // Deletion is never on the request path of a write (AGENTS.md §1)
     expect(removeSpy).not.toHaveBeenCalled();
 
-    // Nightly cleanup cron prunes physical object once all user_files refs are gone
     const report = await service.verifyAndCleanupStorage({ gracePeriodMinutes: 0 });
     expect(report.orphanedFilesCleaned).toBeGreaterThanOrEqual(1);
     expect(removeSpy).toHaveBeenCalledWith(u1.file.storageKey);
@@ -351,7 +336,6 @@ describe('storage service deduplication and lifecycle', () => {
       expect(result.userFile.originalName).toBe('staged.png');
       expect(result.userFile.fileId).toBe(result.file.id);
 
-      // Verify provider.put was called with the staged buffer
       expect(putSpy).toHaveBeenCalledTimes(1);
       expect(putSpy).toHaveBeenCalledWith(expect.objectContaining({
         key: result.file.storageKey,
@@ -359,7 +343,6 @@ describe('storage service deduplication and lifecycle', () => {
         contentType: 'image/png',
       }));
 
-      // Verify local temporary file was unlinked in finally block
       expect(unlinkSpy).toHaveBeenCalled();
     });
 
@@ -377,7 +360,6 @@ describe('storage service deduplication and lifecycle', () => {
 
       const payload = Buffer.from(`unique-content-${randomUUID()}`);
 
-      // 1. First upload by Tenant A
       const first = await service.uploadWithLocalStaging({
         tenantId: tenantAId,
         uploadedBy: null,
@@ -391,7 +373,6 @@ describe('storage service deduplication and lifecycle', () => {
       expect(first.deduplicated).toBe(false);
       expect(putSpy).toHaveBeenCalledTimes(1);
 
-      // 2. Second upload of identical file by Tenant B
       const second = await service.uploadWithLocalStaging({
         tenantId: tenantBId,
         uploadedBy: null,
@@ -401,13 +382,11 @@ describe('storage service deduplication and lifecycle', () => {
       });
 
       createdUserFileIds.push(second.userFile.id);
-      // Deduplicated: no additional upload to cloud storage!
       expect(second.deduplicated).toBe(true);
       expect(second.file.id).toBe(first.file.id);
       expect(second.userFile.fileId).toBe(first.file.id);
       expect(second.userFile.tenantId).toBe(tenantBId);
       expect(second.userFile.originalName).toBe('tenant_b_copy.png');
-      // putSpy still only called once
       expect(putSpy).toHaveBeenCalledTimes(1);
     });
 
@@ -443,7 +422,6 @@ describe('storage service deduplication and lifecycle', () => {
         allowedContentTypes: ['image/png'],
       });
 
-      // Create a fresh pending upload
       const fresh = await service.requestUpload({
         tenantId: tenantAId,
         uploadedBy: null,
@@ -453,19 +431,17 @@ describe('storage service deduplication and lifecycle', () => {
       createdUserFileIds.push(fresh.userFile.id);
       createdFileIds.push(fresh.file.id);
 
-      // Run cron with 120 minutes grace period
       const report = await service.verifyAndCleanupStorage({ gracePeriodMinutes: 120 });
 
       expect(report.inFlightPendingPreserved).toBeGreaterThanOrEqual(1);
 
-      // Verify the in-flight file is still pending
       const { file } = await service.findOwned(fresh.userFile.id, tenantAId);
       expect(file.status).toBe('pending');
       expect(file.deletedAt).toBeNull();
     });
 
     it('flags missing storage objects as failed during integrity verification', async () => {
-      const headSpy = vi.fn(async () => null); // Object missing in cloud storage!
+      const headSpy = vi.fn(async () => null);
       const provider = fakeProvider({ head: headSpy });
 
       const service = new StorageService(db, {
@@ -476,7 +452,6 @@ describe('storage service deduplication and lifecycle', () => {
         allowedContentTypes: ['image/png'],
       });
 
-      // Directly upload a ready file
       const res = await service.uploadWithLocalStaging({
         tenantId: tenantAId,
         uploadedBy: null,
@@ -487,10 +462,8 @@ describe('storage service deduplication and lifecycle', () => {
       createdUserFileIds.push(res.userFile.id);
       createdFileIds.push(res.file.id);
 
-      // Set createdAt to past so it falls behind cutoffTime
       await db.update(files).set({ createdAt: new Date(Date.now() - 5000) }).where(eq(files.id, res.file.id));
 
-      // Run cron with gracePeriodMinutes: 0 to check all ready files
       const report = await service.verifyAndCleanupStorage({ gracePeriodMinutes: 0, verifyStorageIntegrity: true });
 
       expect(report.missingObjectsFlagged).toBeGreaterThanOrEqual(1);

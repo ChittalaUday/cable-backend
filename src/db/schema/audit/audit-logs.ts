@@ -3,7 +3,6 @@ import { audit } from '../schemas';
 
 export type AuditJson = Record<string, unknown>;
 
-/** Append-only business history. Application code never updates or deletes these rows. */
 export const auditLogs = audit.table('audit_logs', {
   id: uuid('id').primaryKey().defaultRandom(),
   tenantId: uuid('tenant_id'),

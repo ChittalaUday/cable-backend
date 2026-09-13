@@ -25,10 +25,6 @@ const ok = (name: string, detail: string): Check => ({ name, status: 'ok', detai
 const warn = (name: string, detail: string): Check => ({ name, status: 'warn', detail });
 const fail = (name: string, detail: string): Check => ({ name, status: 'fail', detail });
 
-/**
- * A degraded dependency is tolerable while developing and unacceptable in
- * production, so severity is a function of the tier rather than of the check.
- */
 function degraded(name: string, detail: string): Check {
   return isProduction ? fail(name, detail) : warn(name, detail);
 }
@@ -98,10 +94,6 @@ async function databaseChecks(app: BuiltApp): Promise<Check[]> {
   return checks;
 }
 
-/**
- * Pending migrations are the failure that looks like a working boot: the app
- * starts, then every query against a new column throws at runtime.
- */
 async function migrationsCheck(app: BuiltApp): Promise<Check> {
   const name = 'migrations';
 
@@ -126,7 +118,6 @@ async function migrationsCheck(app: BuiltApp): Promise<Check> {
     return ok(name, `${actual}/${expected} applied`);
   }
   catch (error) {
-    // 42P01 is undefined_table: the database has never been migrated at all.
     if ((error as { cause?: { code?: string } }).cause?.code === '42P01')
       return fail(name, 'none applied — run pnpm db:migrate');
 
@@ -228,7 +219,6 @@ function message(error: unknown): string {
 
 const ICON: Record<CheckStatus, string> = { ok: '✓', warn: '!', fail: '✗' };
 
-/** Logs the checklist at a level matching each result, then the verdict. */
 export function reportPreflight(app: BuiltApp, result: PreflightResult): void {
   const width = Math.max(...result.checks.map(check => check.name.length));
 

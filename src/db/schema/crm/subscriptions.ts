@@ -5,25 +5,22 @@ import { tenants } from '../tenancy/tenants';
 import { customerAddresses } from './customer-addresses';
 import { customers } from './customers';
 import { packages } from './packages';
-import { services } from './services';
+import { serviceProviders } from './service-providers';
 
-/**
- * Subscriber subscription / connection to a service and package.
- *
- * A customer can have multiple subscriptions across different services
- * (e.g. ACT Cable TV + Satya Fiber Broadband).
- *
- * `serviceAccountNumber` holds the upstream MSO / provider account number (e.g. `C2602498` from ACT),
- * completely decoupled from the tenant's public `customerCode` (`SSCN-000123`).
- */
 export const subscriptions = crm.table('subscriptions', {
   id: uuid('id').primaryKey().defaultRandom(),
   tenantId: uuid('tenant_id').notNull().references(() => tenants.id, { onDelete: 'cascade' }),
   customerId: uuid('customer_id').notNull().references(() => customers.id, { onDelete: 'cascade' }),
-  serviceId: uuid('service_id').notNull().references(() => services.id, { onDelete: 'restrict' }),
+  /**
+   * Written from the package at create time, never from the client.
+   *
+   * Denormalised on purpose: it is the supplier as of that day, and it has to
+   * survive the package being deactivated or the provider losing coverage
+   * there (docs/services-providers-packages.md §6).
+   */
+  serviceProviderId: uuid('service_provider_id').notNull().references(() => serviceProviders.id, { onDelete: 'restrict' }),
   packageId: uuid('package_id').notNull().references(() => packages.id, { onDelete: 'restrict' }),
 
-  /** Provider / MSO account number (e.g. `C2602498` given by ACT). */
   serviceAccountNumber: text('service_account_number').notNull(),
 
   status: text('status', { enum: SUBSCRIPTION_STATUSES }).notNull().default('active'),
@@ -37,7 +34,6 @@ export const subscriptions = crm.table('subscriptions', {
   installationAddressId: uuid('installation_address_id').references(() => customerAddresses.id, { onDelete: 'set null' }),
   installationAddress: text('installation_address'),
 
-  /** Dynamic metadata (e.g. MSO share due, LCO customer ID, IP assignment, VLAN, ONU port). */
   metadata: jsonb('metadata'),
 
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -45,7 +41,7 @@ export const subscriptions = crm.table('subscriptions', {
   deletedAt: timestamp('deleted_at', { withTimezone: true }),
 }, table => [
   index('subscriptions_tenant_customer_idx').on(table.tenantId, table.customerId),
-  index('subscriptions_tenant_service_idx').on(table.tenantId, table.serviceId),
+  index('subscriptions_tenant_provider_idx').on(table.tenantId, table.serviceProviderId),
   index('subscriptions_tenant_package_idx').on(table.tenantId, table.packageId),
   index('subscriptions_tenant_status_idx').on(table.tenantId, table.status),
   index('subscriptions_tenant_account_idx').on(table.tenantId, table.serviceAccountNumber),

@@ -1,25 +1,26 @@
-import { index, jsonb, numeric, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { index, jsonb, numeric, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
 import { BILLING_CYCLES, PACKAGE_TYPES } from '@/shared/constants/crm';
 import { crm } from '../schemas';
 import { tenants } from '../tenancy/tenants';
-import { services } from './services';
+import { serviceProviders } from './service-providers';
 
-/**
- * Packages linked to services for a tenant.
- *
- * A service can have multiple packages (e.g. basic cable pack, 100 Mbps broadband).
- * Dynamic attributes (Mbps speed, data limit, OTT apps, channel counts) are stored in `metadata`.
- */
 export const packages = crm.table('packages', {
   id: uuid('id').primaryKey().defaultRandom(),
   tenantId: uuid('tenant_id').notNull().references(() => tenants.id, { onDelete: 'cascade' }),
-  serviceId: uuid('service_id').notNull().references(() => services.id, { onDelete: 'cascade' }),
+  /**
+   * The SUPPLIER whose package this is — never the service.
+   *
+   * A price, an MSO share and a billing cycle are things a supplier sets. The
+   * service is reachable through the provider; a `service_id` copy here would
+   * be a second truth that goes stale the first time one is re-pointed
+   * (docs/services-providers-packages.md §3).
+   */
+  serviceProviderId: uuid('service_provider_id').notNull().references(() => serviceProviders.id, { onDelete: 'cascade' }),
 
   name: text('name').notNull(),
   slug: text('slug').notNull(),
   packageType: text('package_type', { enum: PACKAGE_TYPES }).notNull().default('base'),
 
-  /** Money is `numeric(12, 2)` in Postgres (AGENTS.md §8). */
   price: numeric('price', { precision: 12, scale: 2 }).notNull().default('0'),
   discount: numeric('discount', { precision: 12, scale: 2 }).notNull().default('0'),
   msoShare: numeric('mso_share', { precision: 12, scale: 2 }).notNull().default('0'),
@@ -28,7 +29,6 @@ export const packages = crm.table('packages', {
   billingCycle: text('billing_cycle', { enum: BILLING_CYCLES }).notNull().default('monthly'),
   description: text('description'),
 
-  /** Dynamic metadata (e.g. { downloadSpeedMbps: 100, ottApps: ['Hotstar'], channelsCount: 250 }). */
   metadata: jsonb('metadata'),
 
   status: text('status', { enum: ['active', 'inactive'] }).notNull().default('active'),
@@ -37,8 +37,8 @@ export const packages = crm.table('packages', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   deletedAt: timestamp('deleted_at', { withTimezone: true }),
 }, table => [
-  index('packages_tenant_service_idx').on(table.tenantId, table.serviceId),
-  index('packages_tenant_slug_idx').on(table.tenantId, table.slug),
+  unique('packages_provider_slug_uq').on(table.serviceProviderId, table.slug),
+  index('packages_tenant_provider_idx').on(table.tenantId, table.serviceProviderId),
   index('packages_tenant_status_idx').on(table.tenantId, table.status),
 ]);
 

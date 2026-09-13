@@ -20,7 +20,6 @@ describe('deriveTenantCode', () => {
   });
 
   it('returns null when nothing usable survives, instead of inventing a code', () => {
-    // An unrecognisable auto-generated code defeats the point of a public identifier.
     expect(deriveTenantCode('श्री')).toBeNull();
     expect(deriveTenantCode('')).toBeNull();
     expect(deriveTenantCode('   ')).toBeNull();
@@ -58,7 +57,6 @@ describe('nextAvailableTenantCode', () => {
   });
 
   it('never emits a variant that overflows the code pattern', () => {
-    // A 5-character base plus a suffix is 6 characters and must be rejected.
     expect(nextAvailableTenantCode('ABCDE', new Set(['ABCDE']))).toBeNull();
   });
 });
@@ -92,7 +90,6 @@ describe('parseCustomerCodeSeq', () => {
   });
 
   it('returns null when there is no numeric suffix', () => {
-    // Imported codes are not all sequential (§9), so the import must cope.
     expect(parseCustomerCodeSeq('SAT-ABC')).toBeNull();
     expect(parseCustomerCodeSeq('NOPREFIX')).toBeNull();
     expect(parseCustomerCodeSeq('')).toBeNull();

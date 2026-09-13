@@ -11,6 +11,21 @@ export interface AuditContext {
   userAgent?: string | null;
 }
 
+/**
+ * The context for a change nobody requested — a scheduled job, a migration.
+ *
+ * `actorType: 'system'` is what separates "the nightly job deleted this" from
+ * "a person deleted this" when someone asks why a file is gone.
+ */
+export function systemAuditContext(source: string): AuditContext {
+  return {
+    tenantId: null,
+    actorId: null,
+    actorType: 'system',
+    requestId: source,
+  };
+}
+
 export interface AuditEvent {
   action: string;
   entityType: string;
@@ -35,7 +50,6 @@ export interface AuditCursor {
 }
 
 export interface AuditQuery {
-  /** Required even for platform events: null explicitly means no tenant. */
   tenantId: string | null;
   entityType?: string;
   entityId?: string;

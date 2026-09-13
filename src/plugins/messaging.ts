@@ -1,14 +1,12 @@
-import type { MessagingProvider } from '@/modules/notifications';
+import type { MessagingProvider } from '@/modules/messaging/messaging.types';
 import fp from 'fastify-plugin';
 import { env, isTest } from '@/config/env';
-import {
-  createFcmProvider,
-  createLogProvider,
-  createOpenWaProvider,
-  createPlaceholderProvider,
-  MessagingService,
-  NotificationService,
-} from '@/modules/notifications';
+import { MessagingService } from '@/modules/messaging/messaging.service';
+import { createFcmProvider } from '@/modules/messaging/providers/fcm.provider';
+import { createLogProvider } from '@/modules/messaging/providers/log.provider';
+import { createOpenWaProvider } from '@/modules/messaging/providers/openwa.provider';
+import { createPlaceholderProvider } from '@/modules/messaging/providers/placeholder.provider';
+import { NotificationService } from '@/modules/notifications/notifications.service';
 
 declare module 'fastify' {
   interface FastifyInstance {
@@ -17,13 +15,6 @@ declare module 'fastify' {
   }
 }
 
-/**
- * Wires the messaging providers and the notification service (AGENTS.md §1).
- *
- * `MESSAGING_ENABLED=false` and every test run fall back to the log provider, so
- * no suite and no local run delivers a real message. That is the §1 kill switch:
- * it flips without a deploy.
- */
 export default fp(async (app) => {
   const providers: MessagingProvider[] = [];
 
@@ -38,8 +29,6 @@ export default fp(async (app) => {
     if (app.firebase)
       providers.push(createFcmProvider(app.firebase.messaging));
 
-    // Reserved channels with no provider yet. Registering them means a send
-    // fails with "set RESEND_API_KEY" rather than "unknown channel".
     providers.push(
       createPlaceholderProvider({ channel: 'sms', requiredEnv: ['SMS_PROVIDER', 'SMS_API_KEY'] }),
       createPlaceholderProvider({ channel: 'email', requiredEnv: ['RESEND_API_KEY'], plannedProvider: 'Resend' }),
@@ -53,8 +42,6 @@ export default fp(async (app) => {
     );
   }
   else {
-    // Log provider claims every channel, so local and test runs exercise the
-    // full routing path without a network call.
     providers.push(createLogProvider(line => app.log.warn(line)));
   }
 

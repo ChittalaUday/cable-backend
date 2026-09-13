@@ -1,2 +1,20 @@
+echo ">> Checking for secrets or service account keys in outgoing commits..."
+while read -r local_ref local_sha remote_ref remote_sha; do
+  if [ "$local_sha" = "0000000000000000000000000000000000000000" ]; then
+    continue
+  fi
+  if [ "$remote_sha" = "0000000000000000000000000000000000000000" ] || [ -z "$remote_sha" ]; then
+    RANGE="$local_sha"
+  else
+    RANGE="$remote_sha..$local_sha"
+  fi
+  FORBIDDEN_FILES=$(git log --name-only --format="" "$RANGE" 2>/dev/null | grep -iE '(adminsdk|service.*account|secrets/|\.env(\.|$))' | grep -v '\.env\.example' || true)
+  if [ -n "$FORBIDDEN_FILES" ]; then
+    echo "❌ SECURITY ALERT: Push blocked! Outgoing commits contain sensitive files or credentials:"
+    echo "$FORBIDDEN_FILES"
+    exit 1
+  fi
+done
+
 echo ">> Running tests..."
 pnpm test

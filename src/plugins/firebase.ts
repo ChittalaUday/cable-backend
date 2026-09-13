@@ -46,7 +46,6 @@ function findServiceAccountJson(): string | null {
       return path.join(root, match);
   }
   catch {
-    // Ignore error
   }
 
   return null;

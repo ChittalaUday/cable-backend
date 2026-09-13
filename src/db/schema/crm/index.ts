@@ -6,5 +6,7 @@ export * from './customers';
 export * from './equipment';
 export * from './package-channels';
 export * from './packages';
+export * from './service-coverage';
+export * from './service-providers';
 export * from './services';
 export * from './subscriptions';

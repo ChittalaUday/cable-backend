@@ -6,14 +6,6 @@ import { devices, rolePermissions, roles, tenantMemberships, tenants, users } fr
 import { hashPassword } from '@/shared/security/password';
 import { ALL_PERMISSION_KEYS, PERMISSIONS } from '@/shared/security/permissions';
 
-/**
- * Account and tenant shapes the auth flow has to tell apart (AGENTS.md §4).
- *
- * Every value is randomised: the suite runs in threads against ONE database, so
- * a fixed email or device id would make two files fight over a unique index.
- */
-
-/** Unique, never a real number — `999` is not an allocated Indian mobile prefix. */
 export function uniquePhone(): string {
   return `999${String(randomInt(0, 10_000_000)).padStart(7, '0')}`;
 }
@@ -30,15 +22,10 @@ export const TEST_PASSWORD = 'correct-horse-battery-staple';
 
 export interface SeededAuthData {
   password: string;
-  /** Email + password, member of both tenants with different roles. */
   active: { id: string; email: string; phone: string };
-  /** Google-only: no password hash at all. */
   googleOnly: { id: string; email: string };
-  /** `disabled_at` set — every session path must refuse it. */
   disabled: { id: string; email: string };
-  /** A second ordinary account for shared-device session tests. */
   other: { id: string; email: string };
-  /** Phone with no account yet: verifying an OTP must create one. */
   unknownPhone: string;
   tenantA: { id: string; code: string };
   tenantB: { id: string; code: string };
@@ -64,10 +51,6 @@ export async function seedRoles(db: TestDb): Promise<void> {
   }
 }
 
-/**
- * `cleanup` removes exactly what this inserted — never a table-wide truncate,
- * which would delete rows another test file is using in parallel.
- */
 export async function seedAuthData(db: TestDb): Promise<SeededAuthData> {
   await seedRoles(db);
 
@@ -93,14 +76,11 @@ export async function seedAuthData(db: TestDb): Promise<SeededAuthData> {
     .values({ email: uniqueEmail('other'), name: 'Other User', passwordHash })
     .returning();
 
-  // The same person, two tenants, two different roles — the case a `role`
-  // column on `users` could not represent (§4.1).
   await db.insert(tenantMemberships).values([
     { userId: active!.id, tenantId: tenantA!.id, roleId: SYSTEM_ROLES.ADMIN },
     { userId: active!.id, tenantId: tenantB!.id, roleId: SYSTEM_ROLES.CUSTOMER },
   ]);
 
-  // An inactive membership must not reach the token.
   await db.insert(tenantMemberships)
     .values({ userId: disabled!.id, tenantId: tenantA!.id, roleId: SYSTEM_ROLES.STAFF, status: 'suspended' });
 

@@ -1,4 +1,4 @@
-import type { MessagingService } from './messaging.service';
+import type { MessagingService } from '@/modules/messaging/messaging.service';
 import { randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -9,7 +9,6 @@ import { REDACTED_BODY } from './notifications.types';
 
 const { db, close } = createTestDb();
 
-/** Minimal stand-in: records sends, or fails on demand. No network, no provider. */
 function fakeMessaging(behaviour: 'ok' | 'fail' = 'ok') {
   const sent: { to: string; text: string; channel: string }[] = [];
   const messaging = {
@@ -68,7 +67,6 @@ describe('in-app notifications', () => {
     expect(row.status).toBe('sent');
     expect(row.sentAt).not.toBeNull();
     expect(row.readAt).toBeNull();
-    // Nothing left the system.
     expect(sent).toHaveLength(0);
   });
 
@@ -111,7 +109,6 @@ describe('in-app notifications', () => {
     const { service } = serviceWith();
     const row = await service.notify({ channel: 'in_app', type: 'x', body: 'b', tenantId, userId });
 
-    // A distinct error here would confirm the row exists (§4.5).
     await expect(service.markRead(row.id, randomUUID(), userId)).rejects.toThrow(/not found/i);
     await expect(service.markRead(row.id, tenantId, randomUUID())).rejects.toThrow(/not found/i);
   });
@@ -194,7 +191,6 @@ describe('transport notifications', () => {
       destination: '918309154716',
     });
 
-    // A notification table is not a place to keep credentials.
     expect(row.body).toBe(REDACTED_BODY);
     expect(row.body).not.toContain('123456');
     expect(sent[0]?.text).toBe('Your code is 123456');

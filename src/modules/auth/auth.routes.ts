@@ -14,17 +14,16 @@ import {
   VerifyOtpBody,
 } from './auth.schema';
 
-/**
- * Route declarations only (AGENTS.md §3): method, path, schema, hooks.
- * Every handler is a reference to a controller function.
- */
 const routes: FastifyPluginAsyncTypebox = async (app) => {
   const errorRef = { $ref: 'ErrorResponse#' };
 
+  // `public` is the opt-out from the global authenticate hook (plugins/tenant.ts):
+  // these four routes are how a caller gets a token in the first place.
   const signInLimit = {
     config: {
       rateLimit: { max: env.SIGN_IN_RATE_LIMIT_MAX, timeWindow: '1 minute' },
       cache: false as const,
+      public: true,
     },
   };
 
@@ -77,7 +76,6 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   }, controller.refresh);
 
   app.post('/auth/logout', {
-    onRequest: app.authenticate,
     config: { cache: false },
     schema: {
       tags: ['auth'],
@@ -88,7 +86,6 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   }, controller.logout);
 
   app.post('/auth/logout-all', {
-    onRequest: app.authenticate,
     config: { cache: false },
     schema: {
       tags: ['auth'],
@@ -98,8 +95,6 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   }, controller.logoutEverywhere);
 
   app.get('/auth/me', {
-    onRequest: app.authenticate,
-    // Session state must never be served from cache.
     config: { cache: false },
     schema: {
       tags: ['auth'],

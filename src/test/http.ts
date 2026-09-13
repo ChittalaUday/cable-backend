@@ -1,8 +1,3 @@
-/**
- * `inject`'s `json()` is `any`, which turns every assertion into an unchecked
- * member access. One permissive shape keeps the tests readable and still lets
- * the compiler catch a misspelt field.
- */
 export interface AuthBody {
   accessToken: string;
   refreshToken: string;
@@ -22,7 +17,6 @@ export interface AuthBody {
   version: string;
   channel: string;
   expiresInSeconds: number;
-  /** Error responses (§7.1). */
   code: string;
   message: string;
 }

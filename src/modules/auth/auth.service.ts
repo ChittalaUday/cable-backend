@@ -1,22 +1,24 @@
 import type { DeviceInfo, SessionsService } from './sessions.service';
 import type { Session, User } from '@/db/schema';
-import type { MessagingService } from '@/modules/notifications';
+import type { AuditContext } from '@/modules/audit/audit.types';
+import type { MessagingService } from '@/modules/messaging/messaging.service';
 import type { Database } from '@/plugins/database';
 import type { AccessTokenClaims, TokenSigner } from '@/shared/security/tokens';
 import { randomUUID } from 'node:crypto';
 import { and, desc, eq, isNull, or, sql } from 'drizzle-orm';
 import { otpCodes, tenantMemberships, users } from '@/db/schema';
-import { normalisePhone, to10DigitPhone } from '@/modules/notifications';
+import { audit } from '@/modules/audit/audit.service';
+import { normalisePhone, to10DigitPhone } from '@/modules/messaging/messaging.service';
 import { ERROR_CODES } from '@/shared/errors';
-import { badRequest, forbidden, unauthorized } from '@/shared/errors/domain-error';
+import { badRequest, DomainError, forbidden, unauthorized } from '@/shared/errors/domain-error';
 import { generateOtp, hashOtp, otpMatches } from '@/shared/security/otp';
 import { hashPassword, verifyPassword } from '@/shared/security/password';
 
-/**
- * Burns the same CPU on an unknown account as a real verify would, so the two
- * cannot be told apart with a stopwatch. Built on first use, not at module
- * load: hashing costs ~10ms and every entry point imports this module.
- */
+/** The error code a caller was refused with, for the audit row. */
+function reasonOf(error: unknown): string {
+  return error instanceof DomainError ? error.code : 'UNKNOWN';
+}
+
 let dummyPasswordHash: Promise<string> | null = null;
 
 async function unknownAccountHash(): Promise<string> {
@@ -38,13 +40,6 @@ export interface AuthTokens {
   expiresIn: number;
 }
 
-/**
- * The user as callers outside this module see them.
- *
- * The service returns this rather than a row, so `passwordHash` and `googleSub`
- * never leave the module at all — the response schema is the second line of
- * defence, not the only one.
- */
 export interface PublicUser {
   id: string;
   email: string | null;
@@ -80,13 +75,6 @@ export interface LoginInput {
   device: DeviceInfo;
 }
 
-/**
- * Sign-in (AGENTS.md §4.3, §4.3.1).
- *
- * Email signs in with a password; phone signs in with an OTP. A phone number is
- * not a secret, and a second password on the same account is a second thing to
- * leak, so there is no phone + password path.
- */
 export class AuthService {
   constructor(
     private readonly db: Database,
@@ -106,18 +94,22 @@ export class AuthService {
     return toPublicUser(user);
   }
 
-  async requestOtp(input: RequestOtpInput): Promise<{ channel: 'whatsapp' | 'sms' }> {
+  async requestOtp(input: RequestOtpInput, context: AuditContext): Promise<{ channel: 'whatsapp' | 'sms' }> {
     const identifier = normalisePhone(input.phone, this.deps.config.defaultCountryCode);
     const channel = input.channel ?? 'whatsapp';
 
-    await this.assertNotResendingTooSoon(identifier);
+    try {
+      await this.assertNotResendingTooSoon(identifier);
+    }
+    catch (error) {
+      await this.record(context, { action: 'auth.otp.refused', actorId: null, entityId: identifier, metadata: { channel, reason: reasonOf(error) } });
+      throw error;
+    }
 
     const code = generateOtp(this.deps.config.otpLength);
     const expiresAt = new Date(Date.now() + this.deps.config.otpTtlSeconds * 1000);
 
     await this.db.transaction(async (tx) => {
-      // One live code per identifier: requesting again kills the previous, so a
-      // stolen older message is useless.
       await tx.update(otpCodes)
         .set({ supersededAt: new Date() })
         .where(and(
@@ -141,41 +133,52 @@ export class AuthService {
       text: `${code} is your Satya Cable verification code. It expires in ${Math.round(this.deps.config.otpTtlSeconds / 60)} minutes.`,
     });
 
+    // The code itself is never in the row — `sanitizeAuditValue` redacts keys
+    // that look like one, and nothing here hands it a key that does.
+    await this.record(context, { action: 'auth.otp.requested', actorId: null, entityId: identifier, metadata: { channel } });
+
     return { channel };
   }
 
-  async verifyOtp(input: VerifyOtpInput): Promise<AuthTokens & { user: PublicUser }> {
+  async verifyOtp(input: VerifyOtpInput, context: AuditContext): Promise<AuthTokens & { user: PublicUser }> {
     const identifier = normalisePhone(input.phone, this.deps.config.defaultCountryCode);
+
+    const failed = async (error: unknown): Promise<never> => {
+      await this.record(context, { action: 'auth.otp.failed', actorId: null, entityId: identifier, metadata: { reason: reasonOf(error) } });
+      throw error;
+    };
+
     const record = await this.findLiveOtp(identifier);
 
     if (!record)
-      throw unauthorized(ERROR_CODES.OTP_EXPIRED, 'No active code for this number');
+      await failed(unauthorized(ERROR_CODES.OTP_EXPIRED, 'No active code for this number'));
 
-    if (record.attempts >= record.maxAttempts)
-      throw badRequest(ERROR_CODES.OTP_TOO_MANY_ATTEMPTS, 'Too many attempts. Request a new code.');
+    if (record!.attempts >= record!.maxAttempts)
+      await failed(badRequest(ERROR_CODES.OTP_TOO_MANY_ATTEMPTS, 'Too many attempts. Request a new code.'));
 
-    if (!otpMatches(hashOtp(input.code, identifier), record.codeHash)) {
-      // Counted before the failure is returned, so guesses are always capped.
+    if (!otpMatches(hashOtp(input.code, identifier), record!.codeHash)) {
       await this.db.update(otpCodes)
         .set({ attempts: sql`${otpCodes.attempts} + 1` })
-        .where(eq(otpCodes.id, record.id));
+        .where(eq(otpCodes.id, record!.id));
 
-      throw unauthorized(ERROR_CODES.OTP_INVALID, 'Incorrect code');
+      await failed(unauthorized(ERROR_CODES.OTP_INVALID, 'Incorrect code'));
     }
 
     await this.db.update(otpCodes)
       .set({ consumedAt: new Date() })
-      .where(eq(otpCodes.id, record.id));
+      .where(eq(otpCodes.id, record!.id));
 
     const user = await this.findOrCreateByPhone(identifier);
-    return this.startSession(user, input.device);
+    const session = await this.startSession(user, input.device).catch(failed);
+
+    await this.record(context, { action: 'auth.otp.verified', actorId: user.id, entityId: user.id, metadata: { identifier, device: input.device.clientDeviceId } });
+
+    return session;
   }
 
-  async login(input: LoginInput): Promise<AuthTokens & { user: PublicUser }> {
+  async login(input: LoginInput, context: AuditContext): Promise<AuthTokens & { user: PublicUser }> {
     const identifier = input.identifier.trim().toLowerCase();
 
-    // `to10DigitPhone` extracts digits, so an email would be looked up as a
-    // phone: `admin2024@satya.in` becomes `912024`, reaching whoever owns it.
     const asPhone = identifier.includes('@')
       ? null
       : to10DigitPhone(identifier);
@@ -184,45 +187,118 @@ export class AuthService {
       asPhone === null ? eq(users.email, identifier) : or(eq(users.email, identifier), eq(users.phone, asPhone)),
     ).limit(1);
 
-    // Same error AND same cost as a wrong password: returning early here made
-    // an unknown account ~9x faster to probe, which is the same enumeration
-    // oracle the matching message exists to close.
+    // A failed sign-in is the event a security review actually looks for, so it
+    // is recorded against the identifier that was tried — the account it names
+    // need not exist.
+    const failed = async (error: unknown): Promise<never> => {
+      await this.record(context, {
+        action: 'auth.login.failed',
+        actorId: user?.id ?? null,
+        entityId: user?.id ?? identifier,
+        metadata: { identifier, reason: reasonOf(error), device: input.device.clientDeviceId },
+      });
+      throw error;
+    };
+
     if (!user) {
       await verifyPassword(input.password, await unknownAccountHash());
-      throw unauthorized(ERROR_CODES.AUTH_CREDENTIALS_INVALID, 'Invalid credentials');
+      await failed(unauthorized(ERROR_CODES.AUTH_CREDENTIALS_INVALID, 'Invalid credentials'));
     }
 
-    if (user.passwordHash === null)
-      throw unauthorized(ERROR_CODES.AUTH_PASSWORD_NOT_SET, 'This account signs in with Google');
+    if (user!.passwordHash === null)
+      await failed(unauthorized(ERROR_CODES.AUTH_PASSWORD_NOT_SET, 'This account signs in with Google'));
 
-    if (!await verifyPassword(input.password, user.passwordHash))
-      throw unauthorized(ERROR_CODES.AUTH_CREDENTIALS_INVALID, 'Invalid credentials');
+    if (!await verifyPassword(input.password, user!.passwordHash!))
+      await failed(unauthorized(ERROR_CODES.AUTH_CREDENTIALS_INVALID, 'Invalid credentials'));
 
-    return this.startSession(user, input.device);
+    const session = await this.startSession(user!, input.device).catch(failed);
+
+    await this.record(context, {
+      action: 'auth.login.succeeded',
+      actorId: user!.id,
+      entityId: user!.id,
+      metadata: { identifier, device: input.device.clientDeviceId },
+    });
+
+    return session;
   }
 
-  async refresh(refreshToken: string): Promise<AuthTokens> {
-    const { session, refreshToken: next } = await this.sessions.rotate(refreshToken);
+  /**
+   * Replaying a rotated token revokes the session (AGENTS.md §4.6) — the one
+   * refresh failure worth waking someone for, so the reason code goes in the row.
+   */
+  async refresh(refreshToken: string, context: AuditContext): Promise<AuthTokens> {
+    let userId: string | null = null;
+    let sessionId: string | null = null;
 
-    const [user] = await this.db.select().from(users).where(eq(users.id, session.userId));
-    if (!user)
-      throw unauthorized(ERROR_CODES.AUTH_REFRESH_INVALID, 'Refresh token is not valid');
+    try {
+      const { session, refreshToken: next } = await this.sessions.rotate(refreshToken, async (replayed) => {
+        // Every other session on this account is about to be distrusted too, so
+        // this row is the one a reviewer traces the incident from.
+        sessionId = replayed.id;
+        userId = replayed.userId;
+        await this.record(context, {
+          action: 'auth.token.reuse_detected',
+          actorId: replayed.userId,
+          entityId: replayed.id,
+          metadata: { deviceId: replayed.deviceId },
+        });
+      });
 
-    this.assertUsable(user);
-    await this.assertCredentialsUnchanged(user, session);
+      userId = session.userId;
+      sessionId = session.id;
 
-    const claims = await this.claimsFor(user, session.id, session.deviceId);
-    const { token, expiresIn } = await this.deps.tokens.sign(claims);
+      const [user] = await this.db.select().from(users).where(eq(users.id, session.userId));
+      if (!user)
+        throw unauthorized(ERROR_CODES.AUTH_REFRESH_INVALID, 'Refresh token is not valid');
 
-    return { accessToken: token, refreshToken: next, expiresIn };
+      this.assertUsable(user);
+      await this.assertCredentialsUnchanged(user, session);
+
+      const claims = await this.claimsFor(user, session.id, session.deviceId);
+      const { token, expiresIn } = await this.deps.tokens.sign(claims);
+
+      await this.record(context, { action: 'auth.token.refreshed', actorId: user.id, entityId: session.id });
+
+      return { accessToken: token, refreshToken: next, expiresIn };
+    }
+    catch (error) {
+      await this.record(context, {
+        action: 'auth.token.refresh_failed',
+        actorId: userId,
+        entityId: sessionId ?? userId ?? 'unknown',
+        metadata: { reason: reasonOf(error) },
+      });
+      throw error;
+    }
   }
 
-  async logout(sessionId: string): Promise<void> {
+  async logout(sessionId: string, context: AuditContext): Promise<void> {
     await this.sessions.revoke(sessionId, 'logout');
+    await this.record(context, { action: 'auth.logout', actorId: context.actorId, entityId: sessionId });
   }
 
-  async logoutEverywhere(userId: string): Promise<number> {
-    return this.sessions.revokeAllForUser(userId, 'logout_all');
+  async logoutEverywhere(userId: string, context: AuditContext): Promise<number> {
+    const revoked = await this.sessions.revokeAllForUser(userId, 'logout_all');
+    await this.record(context, { action: 'auth.logout_all', actorId: userId, entityId: userId, metadata: { revokedSessions: revoked } });
+
+    return revoked;
+  }
+
+  /**
+   * Sign-in happens on public routes, so `context.actorId` is still null when
+   * the hook builds it — the actor is whoever this call just identified.
+   */
+  private async record(
+    context: AuditContext,
+    event: { action: string; actorId: string | null; entityId: string; metadata?: Record<string, unknown> },
+  ): Promise<void> {
+    await audit.log(this.db, { ...context, actorId: event.actorId }, {
+      action: event.action,
+      entityType: 'auth',
+      entityId: event.entityId,
+      metadata: event.metadata ?? null,
+    });
   }
 
   private async startSession(user: User, device: DeviceInfo): Promise<AuthTokens & { user: PublicUser }> {
@@ -237,12 +313,6 @@ export class AuthService {
     return { accessToken: token, refreshToken, expiresIn, user: toPublicUser(user) };
   }
 
-  /**
-   * Backstop for credentials changed out of band — the seeder, or an operator
-   * with psql (§4.6). A password-change endpoint must still call
-   * `revokeAllForUser(..., 'credentials_changed')` itself: that takes effect at
-   * once, this only at the next refresh.
-   */
   private async assertCredentialsUnchanged(user: User, session: Session): Promise<void> {
     if (session.issuedAt.getTime() >= user.credentialsChangedAt.getTime())
       return;
@@ -256,7 +326,6 @@ export class AuthService {
       throw forbidden(ERROR_CODES.AUTH_ACCOUNT_DISABLED, 'This account has been disabled');
   }
 
-  /** Memberships travel in the token so tenant validation needs no database read (§4.4). */
   private async claimsFor(user: User, sessionId: string, deviceId: string): Promise<AccessTokenClaims> {
     const rows = await this.db.select({
       tenantId: tenantMemberships.tenantId,

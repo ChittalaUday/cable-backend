@@ -19,11 +19,6 @@ export interface SessionsConfig {
   maxSessionsPerDevice: number;
 }
 
-/**
- * Called for every revoked session id. Wired to the revocation cache so a
- * revoked access token stops working immediately rather than at its next
- * refresh — without this, revocation only takes effect when the JWT expires.
- */
 export type OnRevoked = (sessionId: string) => Promise<void>;
 
 export interface IssuedSession {
@@ -31,17 +26,6 @@ export interface IssuedSession {
   refreshToken: string;
 }
 
-/**
- * Sessions and devices (AGENTS.md §4.6).
- *
- * A session is one ACCOUNT on one device. `(user_id, device_id)` is deliberately
- * not unique: several accounts may be signed in on one handset, and signing out
- * of one must not touch the others.
- *
- * ponytail: this owns the `devices` table because nothing else needs it yet.
- * When a `devices` module exists (blocking, listing, admin views), ownership
- * moves there and this calls its service.
- */
 export class SessionsService {
   constructor(
     private readonly db: Database,
@@ -61,9 +45,6 @@ export class SessionsService {
       .onConflictDoUpdate({
         target: devices.clientDeviceId,
         set: {
-          // Refreshed here rather than per request: at most once per login or
-          // refresh, which is enough to answer "when was this device active"
-          // without turning every read into a write (§4.6).
           lastSeenAt: new Date(),
           osVersion: info.osVersion ?? null,
           model: info.model ?? null,
@@ -105,16 +86,17 @@ export class SessionsService {
   }
 
   /**
-   * A token matching `prev_token_hash` has been replayed — the session is
-   * revoked and both the thief and the legitimate holder are signed out. You
-   * cannot tell them apart, and leaving the session alive favours the attacker.
+   * `onReuse` is called with the session a replayed token belonged to, before
+   * it is revoked — the caller cannot work that out afterwards, and "a refresh
+   * failed for an unknown session" is not a useful thing to find in an audit.
    */
-  async rotate(refreshToken: string): Promise<IssuedSession> {
+  async rotate(refreshToken: string, onReuse?: (session: Session) => Promise<void>): Promise<IssuedSession> {
     const hash = hashRefreshToken(refreshToken);
 
     const [replayed] = await this.db.select().from(sessions).where(and(eq(sessions.prevTokenHash, hash), isNull(sessions.revokedAt)));
 
     if (replayed) {
+      await onReuse?.(replayed);
       await this.revoke(replayed.id, 'reuse_detected');
       throw unauthorized(ERROR_CODES.AUTH_REFRESH_REUSED, 'Refresh token was already used');
     }
@@ -127,17 +109,10 @@ export class SessionsService {
     if (current.expiresAt.getTime() <= Date.now())
       throw unauthorized(ERROR_CODES.AUTH_REFRESH_INVALID, 'Refresh token has expired');
 
-    // Without this a blocked handset kept refreshing forever — only new
-    // sign-ins were refused. Here, not in the request hook: one read per
-    // refresh rather than one per request.
     await this.assertDeviceUsable(current.deviceId, current.id);
 
     const next = generateRefreshToken();
 
-    // Compare-and-swap, not an update by id. The SELECT above and this write
-    // are two round trips, so two requests carrying the same token both read it
-    // as current; without `refresh_token_hash = hash` both would win and one
-    // token would become two live ones. The loser now sees no row.
     const [rotated] = await this.db.update(sessions)
       .set({
         refreshTokenHash: hashRefreshToken(next),
@@ -158,7 +133,6 @@ export class SessionsService {
     return { session: rotated, refreshToken: next };
   }
 
-  /** Revoking is a state change, never a delete — a deleted session cannot be investigated. */
   async revoke(sessionId: string, reason: SessionRevokeReason): Promise<void> {
     await this.db.update(sessions)
       .set({ revokedAt: sql`coalesce(${sessions.revokedAt}, now())`, revokedReason: reason })

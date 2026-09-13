@@ -3,21 +3,19 @@ import { boolean, index, integer, jsonb, numeric, text, timestamp, unique, uuid 
 import { CHANNEL_GENRES, CHANNEL_RESOLUTIONS } from '@/shared/constants/crm';
 import { crm } from '../schemas';
 import { tenants } from '../tenancy/tenants';
-import { services } from './services';
+import { serviceProviders } from './service-providers';
 
-/**
- * TV / IPTV channel catalog.
- *
- * Each channel belongs to a service offering / provider (e.g. ACT Cable TV, IPTV).
- * Logical Channel Number (LCN) is bound directly to the service provider,
- * with a unique constraint ensuring no two channels share the same LCN under a provider.
- */
 export const channels = crm.table('channels', {
   id: uuid('id').primaryKey().defaultRandom(),
   tenantId: uuid('tenant_id').notNull().references(() => tenants.id, { onDelete: 'cascade' }),
-  serviceId: uuid('service_id').notNull().references(() => services.id, { onDelete: 'cascade' }),
+  /**
+   * The supplier whose lineup this channel is on.
+   *
+   * On the service, `unique(service_id, channel_number)` was a false conflict:
+   * two MSOs of the same service both number a channel 101, and both are right.
+   */
+  serviceProviderId: uuid('service_provider_id').notNull().references(() => serviceProviders.id, { onDelete: 'cascade' }),
 
-  /** Logical Channel Number (LCN) assigned by this service provider. */
   channelNumber: integer('channel_number').notNull(),
 
   name: text('name').notNull(),
@@ -34,15 +32,14 @@ export const channels = crm.table('channels', {
 
   status: text('status', { enum: ['active', 'inactive'] }).notNull().default('active'),
 
-  /** Provider-specific metadata (carrier frequency, audio PID, video PID, transponder, stream URL). */
   metadata: jsonb('metadata'),
 
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, table => [
-  unique('channels_service_number_unq').on(table.serviceId, table.channelNumber),
-  unique('channels_service_slug_unq').on(table.serviceId, table.slug),
-  index('channels_service_idx').on(table.serviceId),
+  unique('channels_provider_number_unq').on(table.serviceProviderId, table.channelNumber),
+  unique('channels_provider_slug_unq').on(table.serviceProviderId, table.slug),
+  index('channels_provider_idx').on(table.serviceProviderId),
   index('channels_tenant_genre_idx').on(table.tenantId, table.genre),
   index('channels_languages_idx').using('gin', table.languages),
   index('channels_tenant_status_idx').on(table.tenantId, table.status),

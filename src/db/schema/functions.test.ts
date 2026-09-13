@@ -28,15 +28,12 @@ describe('crm.normalize_phone', () => {
       JOIN pg_namespace n ON n.oid = p.pronamespace
       WHERE n.nspname = 'crm' AND p.proname = 'normalize_phone'
     `);
-    // 'i' = immutable. A volatile function silently makes the index unusable.
     expect(result.rows[0]?.provolatile).toBe('i');
   });
 });
 
 describe('iam.scope_rank', () => {
   it('agrees with SCOPE_RANK in TypeScript for every scope', async () => {
-    // Two copies of a privilege ranking that drift is a security bug, so the
-    // SQL copy is asserted against the TypeScript one rather than trusted.
     for (const scope of PERMISSION_SCOPES) {
       const result = await db.execute<{ rank: number }>(sql`SELECT iam.scope_rank(${scope}) AS rank`);
       expect(result.rows[0]?.rank, `scope_rank(${scope})`).toBe(SCOPE_RANK[scope]);

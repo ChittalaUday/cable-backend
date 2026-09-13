@@ -1,19 +1,7 @@
-/**
- * The canonical permission catalogue (AGENTS.md §5).
- *
- * This repo is the source of truth. Clients mirror this file; a key that exists
- * only on a client is not a permission, it is a suggestion.
- */
-
-/** Access boundaries a grant can carry. */
 export const PERMISSION_SCOPES = ['OWN', 'ASSIGNED', 'TEAM', 'AREA', 'LOCATION', 'ALL'] as const;
 
 export type PermissionScope = (typeof PERMISSION_SCOPES)[number];
 
-/**
- * Scope ranking: a higher rank includes everything below it.
- * ALL > LOCATION > AREA > TEAM > ASSIGNED > OWN
- */
 export const SCOPE_RANK: Record<PermissionScope, number> = {
   OWN: 1,
   ASSIGNED: 2,
@@ -23,7 +11,6 @@ export const SCOPE_RANK: Record<PermissionScope, number> = {
   ALL: 6,
 };
 
-/** `resource.action` keys. Values are the wire format and never change once shipped. */
 export const PERMISSIONS = {
   USERS_VIEW: 'users.view',
   USERS_CREATE: 'users.create',
@@ -44,6 +31,12 @@ export const PERMISSIONS = {
   STAFF_CREATE: 'staff.create',
   STAFF_UPDATE: 'staff.update',
   STAFF_DELETE: 'staff.delete',
+
+  LOCATIONS_VIEW: 'locations.view',
+  LOCATIONS_CREATE: 'locations.create',
+  LOCATIONS_UPDATE: 'locations.update',
+  LOCATIONS_DELETE: 'locations.delete',
+  LOCATIONS_CONFIGURE: 'locations.configure',
 
   CONNECTIONS_VIEW: 'connections.view',
   CONNECTIONS_CREATE: 'connections.create',
@@ -101,10 +94,6 @@ export type PermissionKey = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
 
 export const ALL_PERMISSION_KEYS = Object.values(PERMISSIONS) as PermissionKey[];
 
-/**
- * True when `granted` reaches at least as far as `required`.
- * Pure comparison of the hierarchy — it says nothing about a specific record.
- */
 export function scopeReaches(granted: PermissionScope, required: PermissionScope): boolean {
   return SCOPE_RANK[granted] >= SCOPE_RANK[required];
 }

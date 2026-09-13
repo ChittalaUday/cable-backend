@@ -91,7 +91,8 @@ Tables are namespaced by domain — nothing is in `public`:
 | `tenancy` | tenants, tenant_memberships, membership_areas, membership_locations |
 | `auth` | users, sessions, devices |
 | `iam` | roles, role_permissions |
-| `crm` | customers |
+| `crm` | customers, customer_addresses, services, service_providers, service_coverage, packages, channels, subscriptions |
+| `geo` | location_categories, location_schemas, location_schema_levels, locations, location_aliases |
 | `notify` | notifications |
 | `media` | files |
 | `analytics` | views only (dashboard aggregates) |
@@ -124,6 +125,51 @@ Caching is Redis with a 300s TTL: `GET` reads it, a successful
 Declare new tables through a schema object in `src/db/schema/schemas.ts`
 (`crm.table(...)`), never `pgTable(...)`. See AGENTS.md §8.2.
 
+## Locations
+
+Addresses are a **tenant-configured tree**, not fixed `area`/`building`/`floor`
+columns. One tenant runs `Area → Building → Block → Floor → Door`, the next runs
+`Village → Street → House`, and the same endpoints and the same UI serve both.
+
+Set one up in three calls (all need `Authorization` and `X-Tenant-Id`):
+
+```bash
+POST /api/v1/location-categories   {"name":"Building","slug":"building"}      # once per kind of place
+POST /api/v1/location-schemas      {"name":"Apartment","slug":"apartment",
+                                    "levels":[{"categoryId":"…"}, …]}         # root-first order
+POST /api/v1/location-schemas/:id/generate
+     {"parentId":"…","levels":[{"names":["A","B"],"nameFormat":"Block {label}","codeFormat":"{label}"},
+                               {"count":4,"nameFormat":"Floor {i}","codeFormat":"{parentCode}{i}"},
+                               {"count":4,"nameFormat":"{parentCode}{i2}","codeFormat":"{name}"}]}
+```
+
+That last call creates blocks, floors and doors as real rows — `A101`, `A102`,
+… — so they can be filtered, assigned to customers and permission-scoped. A
+customer's address points at one terminal node; everything above it is derived.
+
+`X-Tenant-Id` is only needed when you belong to more than one operator —
+otherwise the tenant comes from the token. Every route is authenticated by
+default; sign-in, `/health` and `/docs` are the exceptions.
+
+Staff see only the subtrees granted to their membership
+(`tenancy.membership_areas`), and a node added by someone without
+`locations.configure` lands as `pending` for review. Full rules in AGENTS.md
+§8.6; the endpoint table is §6.1.
+
+## Design docs
+
+`docs/` holds proposals agreed before they are built, and the long-form
+reference for a subsystem whose rule is too big for AGENTS.md. AGENTS.md stays
+the contract for what exists; a doc here is either what is being decided, or the
+detail behind a rule AGENTS.md states in a paragraph. Each says which.
+
+- [`services-providers-packages.md`](docs/services-providers-packages.md) —
+  services → providers → packages, and which locations each is sold in.
+  **Proposal, not built.**
+- [`audit-trail.md`](docs/audit-trail.md) — what `audit.audit_logs` records, how
+  to audit a new endpoint, and the test that fails if you forget.
+  **Built**; the rule is AGENTS.md §6.0.
+
 ## Layout
 
 ```
@@ -132,6 +178,9 @@ src/
 ├── config/        env + app-wide constants
 ├── plugins/       database, auth, tenant, rbac, security, swagger, errors
 ├── modules/       one folder per resource: routes → controller → service
+│                 `x.routes.ts` is the entry: it builds the service and
+│                 registers `routes/` when a module has several route files.
+│                 No index.ts barrels — imports name the file they need.
 ├── db/            schema/ migrations/ seed/  (tables live in named PG schemas)
 ├── shared/        errors, security, pagination, types, utils
 └── jobs/          run by worker.ts, never by the API process

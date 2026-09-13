@@ -1,7 +1,5 @@
 import process from 'node:process';
 
-// Env is validated at import (config/env.ts), so the test defaults must exist
-// before any module that reads it is loaded.
 process.env.NODE_ENV = 'test';
 process.env.APP_ENV ??= 'local';
 process.env.JWT_SECRET ??= 'test-secret-at-least-32-characters-long!!';

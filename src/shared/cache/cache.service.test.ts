@@ -52,7 +52,6 @@ describe('cacheService', () => {
 
   it('misses for a different user', async () => {
     await cache.set(parts(), 'user-1 rows');
-    // Responses are permission-filtered, so sharing a key would leak rows.
     expect(await cache.get(parts({ userId: 'user-2' }))).toBeNull();
   });
 

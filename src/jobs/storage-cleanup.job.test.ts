@@ -1,5 +1,6 @@
 import type { FastifyBaseLogger } from 'fastify';
-import type { StorageCleanupReport, StorageService } from '@/modules/storage';
+import type { StorageService } from '@/modules/storage/storage.service';
+import type { StorageCleanupReport } from '@/modules/storage/storage.types';
 import { describe, expect, it, vi } from 'vitest';
 import { runStorageCleanupJob } from './storage-cleanup.job';
 

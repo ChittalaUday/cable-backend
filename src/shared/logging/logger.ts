@@ -44,8 +44,6 @@ export function createRotatingLogDestination(options: RotatingLogOptions): pino.
       else if (size > 0 && size + bytes > options.maxFileBytes)
         selectFile(nextDate, bytes);
 
-      // ponytail: synchronous local writes keep rotation atomic; move this to a
-      // Pino worker transport if measured logging latency becomes significant.
       appendFileSync(file, message, 'utf8');
       size += bytes;
     },

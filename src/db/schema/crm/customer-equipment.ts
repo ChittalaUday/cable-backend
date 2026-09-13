@@ -10,13 +10,6 @@ import { customers } from './customers';
 import { equipment } from './equipment';
 import { subscriptions } from './subscriptions';
 
-/**
- * Mapping between Customer / Subscription and Hardware Equipment Asset.
- *
- * Tracks the complete allocation and return lifecycle:
- * when assigned, which technician installed it, when returned upon cancellation,
- * physical condition upon return, deposit refunds, and collection technician.
- */
 export const customerEquipment = crm.table('customer_equipment', {
   id: uuid('id').primaryKey().defaultRandom(),
   tenantId: uuid('tenant_id').notNull().references(() => tenants.id, { onDelete: 'cascade' }),
@@ -29,7 +22,6 @@ export const customerEquipment = crm.table('customer_equipment', {
   assignedAt: timestamp('assigned_at', { withTimezone: true }).notNull().defaultNow(),
   assignedBy: uuid('assigned_by').references(() => users.id, { onDelete: 'set null' }),
 
-  /** Recorded when customer cancels and equipment is collected. */
   returnedAt: timestamp('returned_at', { withTimezone: true }),
   returnCondition: text('return_condition', { enum: EQUIPMENT_RETURN_CONDITIONS }),
   collectedBy: uuid('collected_by').references(() => users.id, { onDelete: 'set null' }),

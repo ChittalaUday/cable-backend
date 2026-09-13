@@ -11,32 +11,40 @@ import { createLogger } from '@/shared/logging/logger';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
-/**
- * Builds the application without listening.
- *
- * `server.ts` calls this and then listens; tests call it and use `inject()`,
- * so an end-to-end test needs no socket and no free port (AGENTS.md §10).
- */
+export interface RouteRecord { method: string | string[]; url: string }
+
+declare module 'fastify' {
+  interface FastifyInstance {
+    routeTable: RouteRecord[];
+  }
+}
+
 export async function buildApp() {
   const app = Fastify({
     loggerInstance: createLogger('api'),
-    // Only set when true: merely naming this option emits a Fastify 6
-    // deprecation warning on every boot, and its replacement takes a class.
     ...(isTest ? { disableRequestLogging: true } : {}),
     trustProxy: true,
     ajv: {
       customOptions: {
-        // A request carrying a field the schema does not declare is a client
-        // bug, and silently dropping it hides the bug until it matters.
         removeAdditional: false,
         allErrors: true,
       },
     },
   }).withTypeProvider<TypeBoxTypeProvider>();
 
+  /**
+   * Every route this app registers, for the audit-coverage check in
+   * `modules/audit/audited-routes.ts`. Declared before the autoloads because
+   * `onRoute` only fires for routes added after the hook.
+   */
+  const routeTable: RouteRecord[] = [];
+  app.decorate('routeTable', routeTable);
+  app.addHook('onRoute', (route) => {
+    routeTable.push({ method: route.method, url: route.url });
+  });
+
   await app.register(autoload, {
     dir: path.join(here, 'plugins'),
-    // Loaded in dependency order by fastify-plugin's `name`, not by filename.
     encapsulate: false,
     ignorePattern: /\.test\.ts$/,
   });
@@ -44,24 +52,18 @@ export async function buildApp() {
   await app.register(underPressure, {
     exposeStatusRoute: {
       url: '/health',
-      // A cached health check reports a database that is already gone.
-      routeOpts: { logLevel: 'warn', config: { cache: false } },
+      routeOpts: { logLevel: 'warn', config: { cache: false, public: true } },
     },
     healthCheck: async () => {
-      // A health check that does not touch the database reports "ok" while
-      // every request 500s.
       await app.db.execute('select 1');
       return true;
     },
     healthCheckInterval: 10_000,
   });
 
-  // Duplicated under the prefix on purpose: probes want an unversioned
-  // `/health` that survives a v2, but a client only knows `baseUrl`.
-  // `isUnderPressure()` reads the cached 10s check — no query per poll.
   app.get(`${API_PREFIX}/health`, {
     logLevel: 'warn',
-    config: { cache: false },
+    config: { cache: false, public: true },
     schema: {
       tags: ['health'],
       summary: 'Service health, under the API version prefix',
@@ -88,9 +90,6 @@ export async function buildApp() {
     dir: path.join(here, 'modules'),
     matchFilter: /\.routes\.(?:ts|js)$/,
     dirNameRoutePrefix: false,
-    // A module's `index.ts` is its public surface (§3), not a Fastify plugin.
-    // Autoload's default treats an index file as THE module for its directory
-    // and skips every sibling, which silently registers no routes at all.
     indexPattern: /^__never_matches__$/,
     options: { prefix: API_PREFIX },
     ignorePattern: /\.test\.(?:ts|js)$/,

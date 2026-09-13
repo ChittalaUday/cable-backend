@@ -3,11 +3,6 @@ import { check, primaryKey, text, timestamp } from 'drizzle-orm/pg-core';
 import { PERMISSION_SCOPES } from '@/shared/security/permissions';
 import { iam } from '../schemas';
 
-/**
- * A named bundle of permissions (AGENTS.md §5).
- *
- * These are the three backend-defined tenant membership roles.
- */
 export const roles = iam.table('roles', {
   id: text('id').primaryKey(),
   name: text('name').notNull(),
@@ -18,10 +13,6 @@ export const roles = iam.table('roles', {
   check('roles_known_id', sql`${table.id} IN ('admin', 'staff', 'customer')`),
 ]);
 
-/**
- * One permission grant on a role, carrying the scope it is granted at (§5).
- * The scope is what the service-layer check compares against the record.
- */
 export const rolePermissions = iam.table('role_permissions', {
   roleId: text('role_id').notNull().references(() => roles.id, { onDelete: 'cascade' }),
   permissionKey: text('permission_key').notNull(),

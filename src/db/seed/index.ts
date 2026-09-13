@@ -1,30 +1,22 @@
 import type { SystemRoleId } from '@/config/constants';
 import type { PermissionKey, PermissionScope } from '@/shared/security/permissions';
-/**
- * `pnpm db:seed`. Safe to re-run.
- *
- * Accounts are created through the API; this seeder installs fixed roles,
- * permission grants, and initial tenants only.
- */
 import process from 'node:process';
-import { sql } from 'drizzle-orm';
+import { eq, or, sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import pg from 'pg';
 import { SYSTEM_ROLES } from '@/config/constants';
 import { env } from '@/config/env';
-import { rolePermissions, roles, tenants } from '@/db/schema';
+import * as schema from '@/db/schema';
+import { rolePermissions, roles, tenantMemberships, tenants, users } from '@/db/schema';
+import { hashPassword } from '@/shared/security/password';
 import {
   ALL_PERMISSION_KEYS,
-
   PERMISSIONS,
-
 } from '@/shared/security/permissions';
+import { seedLocations } from './seed-locations';
 
 const EVERYTHING = ALL_PERMISSION_KEYS.map(key => [key, 'ALL'] as [PermissionKey, PermissionScope]);
 
-/**
- * Admin holds the whole catalogue at ALL but remains confined to its tenant.
- */
 const GRANTS: Record<SystemRoleId, Array<[PermissionKey, PermissionScope]>> = {
   [SYSTEM_ROLES.ADMIN]: EVERYTHING,
 
@@ -32,6 +24,11 @@ const GRANTS: Record<SystemRoleId, Array<[PermissionKey, PermissionScope]>> = {
     [PERMISSIONS.CUSTOMERS_VIEW, 'AREA'],
     [PERMISSIONS.CUSTOMERS_CREATE, 'AREA'],
     [PERMISSIONS.CUSTOMERS_UPDATE, 'AREA'],
+    // The tree itself at AREA: staff see the subtrees their membership grants,
+    // and a node they add lands as `pending` for review (§8.6). Not
+    // LOCATIONS_CONFIGURE — defining levels is admin work.
+    [PERMISSIONS.LOCATIONS_VIEW, 'AREA'],
+    [PERMISSIONS.LOCATIONS_CREATE, 'AREA'],
     [PERMISSIONS.CONNECTIONS_VIEW, 'AREA'],
     [PERMISSIONS.CONNECTIONS_CREATE, 'AREA'],
     [PERMISSIONS.CONNECTIONS_UPDATE, 'AREA'],
@@ -56,6 +53,8 @@ const GRANTS: Record<SystemRoleId, Array<[PermissionKey, PermissionScope]>> = {
     [PERMISSIONS.TICKETS_CREATE, 'OWN'],
     [PERMISSIONS.PACKAGES_VIEW, 'ALL'],
     [PERMISSIONS.SERVICES_VIEW, 'ALL'],
+    // Deliberately no locations.*: a subscriber reads their own address off
+    // their own record, not by browsing the operator's tree.
     [PERMISSIONS.DEVICES_VIEW, 'OWN'],
     [PERMISSIONS.SESSIONS_VIEW, 'OWN'],
     [PERMISSIONS.SESSIONS_REVOKE, 'OWN'],
@@ -74,7 +73,7 @@ const TENANTS = [
 ];
 
 const pool = new pg.Pool({ connectionString: env.DATABASE_URL, max: 1 });
-const db = drizzle(pool);
+const db = drizzle(pool, { schema });
 
 try {
   for (const roleId of Object.keys(GRANTS) as SystemRoleId[]) {
@@ -92,10 +91,107 @@ try {
       });
   }
 
-  // DoNothing, not an upsert: `customer_seq` is a live counter (§8.1).
   await db.insert(tenants).values(TENANTS).onConflictDoNothing({ target: tenants.code });
 
   console.log(`✅ Seeded ${Object.keys(GRANTS).length} roles, ${TENANTS.length} tenants`);
+
+  const allTenants = await db.select().from(tenants);
+  const tenantMap = new Map(allTenants.map(t => [t.code, t.id]));
+
+  const ADMIN_PASSWORD = 'Admin@123456';
+
+  const ADMIN_ACCOUNTS = [
+    {
+      name: 'SSCN Admin',
+      email: 'admin@sscn.com',
+      phone: '9999900001',
+      password: ADMIN_PASSWORD,
+      tenantCodes: ['SSCN'],
+    },
+    {
+      name: 'NCB Admin',
+      email: 'admin@ncb.com',
+      phone: '9999900002',
+      password: ADMIN_PASSWORD,
+      tenantCodes: ['NCB'],
+    },
+    {
+      name: 'Uday Super Admin',
+      email: 'uday@sscn.com',
+      phone: '8309154716',
+      password: ADMIN_PASSWORD,
+      tenantCodes: ['SSCN', 'NCB'],
+    },
+  ];
+
+  for (const admin of ADMIN_ACCOUNTS) {
+    const passwordHash = await hashPassword(admin.password);
+
+    const [existing] = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(or(
+        eq(users.email, admin.email),
+        eq(users.phone, admin.phone),
+      ));
+
+    let userId: string;
+    if (existing) {
+      await db
+        .update(users)
+        .set({
+          name: admin.name,
+          email: admin.email,
+          phone: admin.phone,
+          passwordHash,
+          updatedAt: new Date(),
+        })
+        .where(eq(users.id, existing.id));
+      userId = existing.id;
+    }
+    else {
+      const [inserted] = await db
+        .insert(users)
+        .values({
+          name: admin.name,
+          email: admin.email,
+          phone: admin.phone,
+          passwordHash,
+        })
+        .returning({ id: users.id });
+      userId = inserted!.id;
+    }
+
+    for (const code of admin.tenantCodes) {
+      const tenantId = tenantMap.get(code);
+      if (tenantId === undefined)
+        continue;
+
+      await db
+        .insert(tenantMemberships)
+        .values({
+          userId,
+          tenantId,
+          roleId: SYSTEM_ROLES.ADMIN,
+          status: 'active',
+        })
+        .onConflictDoUpdate({
+          target: [tenantMemberships.userId, tenantMemberships.tenantId],
+          set: {
+            roleId: SYSTEM_ROLES.ADMIN,
+            status: 'active',
+            updatedAt: new Date(),
+          },
+        });
+    }
+  }
+
+  console.log(`✅ Seeded admin accounts for ${ADMIN_ACCOUNTS.length} users`);
+
+  const sscnTenantId = tenantMap.get('SSCN');
+  if (sscnTenantId !== undefined) {
+    await seedLocations(db, sscnTenantId);
+  }
 }
 catch (error) {
   console.error('❌ Seed failed:', error);

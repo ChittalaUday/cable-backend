@@ -13,6 +13,14 @@ else
   echo ">> Skipping branch protection."
 fi
 
+echo ">> Checking for staged secrets and credentials..."
+FORBIDDEN_STAGED=$(git diff --cached --name-only | grep -iE '(adminsdk|service.*account|secrets/|\.env(\.|$))' | grep -v '\.env\.example' || true)
+if [ -n "$FORBIDDEN_STAGED" ]; then
+  echo "❌ SECURITY ALERT: Commit blocked! Staged files contain sensitive credentials or secret files:"
+  echo "$FORBIDDEN_STAGED"
+  exit 1
+fi
+
 echo ">> Type checking..."
 pnpm type-check
 

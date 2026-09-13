@@ -1,7 +1,9 @@
-import type { StorageProvider } from '@/modules/storage';
+import type { StorageProvider } from '@/modules/storage/storage.types';
 import fp from 'fastify-plugin';
 import { csv, env } from '@/config/env';
-import { createR2Provider, createUnconfiguredStorage, StorageService } from '@/modules/storage';
+import { createR2Provider } from '@/modules/storage/providers/r2.provider';
+import { createUnconfiguredStorage } from '@/modules/storage/providers/unconfigured.provider';
+import { StorageService } from '@/modules/storage/storage.service';
 
 declare module 'fastify' {
   interface FastifyInstance {
@@ -9,13 +11,6 @@ declare module 'fastify' {
   }
 }
 
-/**
- * Wires object storage (AGENTS.md §8.4).
- *
- * Missing credentials leave the unconfigured provider in place rather than
- * failing boot: the API is useful without file uploads, and a call that needs
- * them says exactly which variables are missing.
- */
 export default fp(async (app) => {
   const hasR2 = env.R2_ACCOUNT_ID !== ''
     && env.R2_ACCESS_KEY_ID !== ''
