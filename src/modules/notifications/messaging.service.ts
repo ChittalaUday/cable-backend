@@ -2,6 +2,9 @@ import type { MessageChannel, MessagingProvider, OutboundMessage, SendResult } f
 import { ERROR_CODES } from '@/shared/errors';
 import { DomainError } from '@/shared/errors/domain-error';
 
+/** Channels whose destination is a phone number and therefore normalisable. */
+const PHONE_CHANNELS = new Set<MessageChannel>(['whatsapp', 'sms']);
+
 export interface MessagingServiceOptions {
   providers: MessagingProvider[];
   defaultChannel: MessageChannel;
@@ -18,11 +21,14 @@ export class MessagingService {
   private readonly byChannel = new Map<MessageChannel, MessagingProvider>();
 
   constructor(private readonly options: MessagingServiceOptions) {
-    // First provider registered for a channel wins, so ordering in the plugin
-    // is the precedence and there is no hidden priority rule.
+    // First provider registered for a channel wins, so ordering in the plugin is
+    // the precedence and there is no hidden priority rule. A configured provider
+    // always beats a placeholder, whatever the order — otherwise a stale
+    // placeholder registration could silently disable a working gateway.
     for (const provider of options.providers) {
       for (const channel of provider.channels) {
-        if (!this.byChannel.has(channel))
+        const current = this.byChannel.get(channel);
+        if (!current || (!current.configured && provider.configured))
           this.byChannel.set(channel, provider);
       }
     }
@@ -32,8 +38,19 @@ export class MessagingService {
     return this.options.defaultChannel;
   }
 
+  /** True only when a provider can actually deliver — a placeholder does not count. */
   supports(channel: MessageChannel): boolean {
-    return this.byChannel.has(channel);
+    return this.byChannel.get(channel)?.configured === true;
+  }
+
+  /** Channels that are routed at all, configured or not. */
+  get knownChannels(): MessageChannel[] {
+    return [...this.byChannel.keys()];
+  }
+
+  /** Name of the provider handling a channel, for logs and diagnostics. */
+  providerFor(channel: MessageChannel): string | null {
+    return this.byChannel.get(channel)?.name ?? null;
   }
 
   async send(message: Omit<OutboundMessage, 'channel'> & { channel?: MessageChannel }): Promise<SendResult> {
@@ -51,7 +68,11 @@ export class MessagingService {
     return provider.send({
       ...message,
       channel,
-      to: normalisePhone(message.to, this.options.defaultCountryCode),
+      // Only the phone channels take a phone number; an address or a device
+      // token must survive untouched.
+      to: PHONE_CHANNELS.has(channel)
+        ? normalisePhone(message.to, this.options.defaultCountryCode)
+        : message.to,
     });
   }
 }

@@ -9,7 +9,7 @@ export default defineConfig({
     url: process.env.DATABASE_URL ?? 'postgres://cable:cable@localhost:5432/cable',
   },
   // Only our own namespaces — never `public`, and never anything an extension owns.
-  schemaFilter: ['tenancy', 'auth', 'iam', 'crm'],
+  schemaFilter: ['tenancy', 'auth', 'iam', 'crm', 'notify', 'media', 'analytics'],
   strict: true,
   verbose: true,
 });

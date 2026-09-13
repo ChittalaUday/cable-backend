@@ -63,6 +63,13 @@ export const ERROR_CODES = {
   RESOURCE_CONFLICT: 'RESOURCE_CONFLICT',
   RESOURCE_IN_USE: 'RESOURCE_IN_USE',
 
+  // ─── Storage (§8.4) ─────────────────────────────────────────────────────────
+  STORAGE_NOT_CONFIGURED: 'STORAGE_NOT_CONFIGURED',
+  STORAGE_FILE_TOO_LARGE: 'STORAGE_FILE_TOO_LARGE',
+  STORAGE_TYPE_NOT_ALLOWED: 'STORAGE_TYPE_NOT_ALLOWED',
+  /** An upload URL was issued but nothing was uploaded to it. */
+  STORAGE_OBJECT_MISSING: 'STORAGE_OBJECT_MISSING',
+
   // ─── Infrastructure ─────────────────────────────────────────────────────────
   RATE_LIMIT_EXCEEDED: 'RATE_LIMIT_EXCEEDED',
   SERVER_ERROR: 'SERVER_ERROR',

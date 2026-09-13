@@ -24,6 +24,7 @@ export function createOpenWaProvider(config: OpenWaConfig): MessagingProvider {
   return {
     name: 'openwa',
     channels: ['whatsapp'],
+    configured: true,
 
     async send({ to, text }: OutboundMessage): Promise<SendResult> {
       const url = `${config.baseUrl}/api/sessions/${config.sessionId}/messages/send-text`;

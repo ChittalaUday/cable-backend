@@ -35,6 +35,20 @@ pnpm dev                      # http://localhost:5050 — docs at /docs
 Unit tests run without Docker. Database-backed tests need it, or
 `DATABASE_URL_TEST` pointing at an existing PostgreSQL 18.
 
+## Environments
+
+`NODE_ENV` is Node's flag; **`APP_ENV` is the tier** and decides policy.
+
+| | `local` | `staging` | `production` |
+|---|---|---|---|
+| DB TLS | disable | disable | **require / verify-full** |
+| 5xx body | message + stack | message + stack | code + requestId only |
+| CORS | any | any | explicit allowlist |
+| `/docs` | yes | yes | no |
+
+Production refuses to boot without TLS, a CORS allowlist and a 48-char
+`JWT_SECRET`. See AGENTS.md §2.1.
+
 ## Database schemas
 
 Tables are namespaced by domain — nothing is in `public`:
@@ -45,6 +59,9 @@ Tables are namespaced by domain — nothing is in `public`:
 | `auth` | users, sessions, devices |
 | `iam` | roles, role_permissions |
 | `crm` | customers |
+| `notify` | notifications |
+| `media` | files |
+| `analytics` | views only (dashboard aggregates) |
 
 Declare new tables through a schema object in `src/db/schema/schemas.ts`
 (`crm.table(...)`), never `pgTable(...)`. See AGENTS.md §8.2.

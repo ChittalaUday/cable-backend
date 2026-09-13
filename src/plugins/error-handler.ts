@@ -1,7 +1,7 @@
 import type { FastifyError, FastifyReply, FastifyRequest } from 'fastify';
 import { Type } from '@sinclair/typebox';
 import fp from 'fastify-plugin';
-import { isProduction } from '@/config/env';
+import { exposeErrorDetail } from '@/config/env';
 import { DomainError, ERROR_CODES } from '@/shared/errors';
 
 /**
@@ -20,7 +20,28 @@ export const ErrorResponse = Type.Object({
     field: Type.String(),
     issue: Type.String(),
   }))),
+  /**
+   * Diagnostics, present on local and staging only (§2.1). Production omits
+   * these entirely — a stack trace names file paths, library versions and query
+   * fragments, and `requestId` is how an incident is traced instead.
+   */
+  debug: Type.Optional(Type.Object({
+    name: Type.String(),
+    message: Type.String(),
+    stack: Type.Optional(Type.String()),
+    cause: Type.Optional(Type.String()),
+  })),
 }, { $id: 'ErrorResponse' });
+
+/** Diagnostics for a non-production response. Never called in production. */
+function debugOf(error: Error): { name: string; message: string; stack?: string; cause?: string } {
+  return {
+    name: error.name,
+    message: error.message,
+    ...(error.stack === undefined ? {} : { stack: error.stack }),
+    ...(error.cause === undefined ? {} : { cause: String(error.cause) }),
+  };
+}
 
 const STATUS_TEXT: Record<number, string> = {
   400: 'Bad Request',
@@ -91,14 +112,16 @@ export default fp(async (app) => {
     }
 
     if (status >= 500) {
+      // Logged in full on every tier. What changes is what the CLIENT sees.
       request.log.error({ err: error }, 'unhandled error');
+
       return reply.status(500).send({
         statusCode: 500,
         error: 'Internal Server Error',
         code: ERROR_CODES.SERVER_ERROR,
-        // A 5xx never leaks a stack trace or a driver message (§7).
-        message: isProduction ? 'Internal server error' : error.message,
+        message: exposeErrorDetail ? error.message : 'Internal server error',
         requestId: request.id,
+        ...(exposeErrorDetail ? { debug: debugOf(error) } : {}),
       });
     }
 

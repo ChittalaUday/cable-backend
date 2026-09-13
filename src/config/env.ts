@@ -13,11 +13,26 @@ import { Value } from '@sinclair/typebox/value';
  * runner — and only one of them is a Fastify instance.
  */
 const EnvSchema = Type.Object({
+  /**
+   * Node's own flag, for libraries that switch on it. Staging runs
+   * `NODE_ENV=production` so React, Fastify and friends behave as they will in
+   * production — the deployment tier is `APP_ENV`, below.
+   */
   NODE_ENV: Type.Union([
     Type.Literal('development'),
     Type.Literal('test'),
     Type.Literal('production'),
   ], { default: 'development' }),
+
+  /**
+   * The deployment tier (AGENTS.md §2.1). This, not NODE_ENV, decides whether
+   * connections must be encrypted and how much an error response reveals.
+   */
+  APP_ENV: Type.Union([
+    Type.Literal('local'),
+    Type.Literal('staging'),
+    Type.Literal('production'),
+  ], { default: 'local' }),
 
   PORT: Type.Integer({ minimum: 1, maximum: 65535, default: 5050 }),
   HOST: Type.String({ default: '0.0.0.0' }),
@@ -32,6 +47,15 @@ const EnvSchema = Type.Object({
 
   DATABASE_URL: Type.String({ minLength: 1 }),
   DATABASE_POOL_MAX: Type.Integer({ minimum: 1, maximum: 100, default: 10 }),
+  /**
+   * `disable` locally and on staging, where the database is on the same host or
+   * a private network. Production rejects `disable` at boot — see `assertTier`.
+   */
+  DATABASE_SSL: Type.Union([
+    Type.Literal('disable'),
+    Type.Literal('require'),
+    Type.Literal('verify-full'),
+  ], { default: 'disable' }),
 
   // A short secret is a broken secret, so the floor is enforced here rather than
   // documented and hoped for.
@@ -69,6 +93,22 @@ const EnvSchema = Type.Object({
   OTP_TTL_SECONDS: Type.Integer({ minimum: 60, maximum: 1800, default: 300 }),
   OTP_MAX_ATTEMPTS: Type.Integer({ minimum: 1, maximum: 10, default: 5 }),
   OTP_RESEND_COOLDOWN_SECONDS: Type.Integer({ minimum: 15, maximum: 600, default: 60 }),
+
+  // ─── Object storage: Cloudflare R2 (§8.4) ──────────────────────────────────
+  // Unset leaves the unconfigured provider in place: every call fails naming the
+  // variables it needs, rather than crashing inside the AWS SDK.
+  R2_ACCOUNT_ID: Type.String({ default: '' }),
+  R2_ACCESS_KEY_ID: Type.String({ default: '' }),
+  R2_SECRET_ACCESS_KEY: Type.String({ default: '' }),
+  R2_BUCKET: Type.String({ default: '' }),
+  /** Custom domain in front of a public bucket, if there is one. */
+  R2_PUBLIC_BASE_URL: Type.String({ default: '' }),
+
+  UPLOAD_URL_TTL_SECONDS: Type.Integer({ minimum: 60, maximum: 3600, default: 900 }),
+  DOWNLOAD_URL_TTL_SECONDS: Type.Integer({ minimum: 60, maximum: 86_400, default: 300 }),
+  MAX_UPLOAD_BYTES: Type.Integer({ minimum: 1024, default: 20 * 1024 * 1024 }),
+  /** Empty allows any type. An allowlist is the safer default in production. */
+  ALLOWED_UPLOAD_TYPES: Type.String({ default: 'image/jpeg,image/png,image/webp,application/pdf' }),
 });
 
 export type Env = Static<typeof EnvSchema>;
@@ -85,10 +125,51 @@ function loadEnv(): Env {
   }
 }
 
-export const env: Env = loadEnv();
+/**
+ * Production must not be reachable with the conveniences the other tiers rely
+ * on. These are checked at boot, because a missing `sslmode` discovered in
+ * production is discovered by the wrong person at the wrong time.
+ */
+function assertTier(config: Env): Env {
+  if (config.APP_ENV !== 'production')
+    return config;
 
-export const isProduction = env.NODE_ENV === 'production';
+  const problems: string[] = [];
+
+  if (config.DATABASE_SSL === 'disable')
+    problems.push('DATABASE_SSL must be "require" or "verify-full" in production');
+
+  if (config.CORS_ORIGINS.trim() === '')
+    problems.push('CORS_ORIGINS must list explicit origins in production');
+
+  if (config.JWT_SECRET.length < 48)
+    problems.push('JWT_SECRET must be at least 48 characters in production');
+
+  if (problems.length > 0)
+    throw new Error(`Production configuration rejected:\n${problems.map(p => `  ${p}`).join('\n')}`);
+
+  return config;
+}
+
+export const env: Env = assertTier(loadEnv());
+
+/** Deployment tier (§2.1). Prefer these over reading NODE_ENV. */
+export const isProduction = env.APP_ENV === 'production';
+export const isStaging = env.APP_ENV === 'staging';
+export const isLocal = env.APP_ENV === 'local';
+
+/** Node's flag, not the tier. Only for behaviour that is genuinely about tests. */
 export const isTest = env.NODE_ENV === 'test';
+
+/**
+ * Whether an error response may carry the real message, stack and cause.
+ *
+ * Local and staging: yes — staging exists to be diagnosed from, and a generic
+ * "Internal server error" there wastes the environment's whole purpose.
+ * Production: no. A stack trace names file paths, library versions and query
+ * fragments, and the `requestId` is how a real incident gets traced instead.
+ */
+export const exposeErrorDetail = !isProduction;
 
 /** Parse a comma-separated env value into a trimmed, non-empty list. */
 export function csv(value: string): string[] {

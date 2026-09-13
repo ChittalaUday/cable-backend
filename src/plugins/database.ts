@@ -20,10 +20,30 @@ declare module 'fastify' {
  * Registered with fastify-plugin so the decorator is visible to every module,
  * not just this plugin's encapsulation context.
  */
+/**
+ * TLS for the database connection, per tier (AGENTS.md §2.1).
+ *
+ * `disable` locally and on staging, where Postgres is on the same host or a
+ * private network. Production cannot reach `disable` — `assertTier` rejects it
+ * at boot — and `verify-full` is the setting that actually checks the
+ * certificate; `require` encrypts but would accept an impostor.
+ */
+function sslOptions(): { ssl?: { rejectUnauthorized: boolean } } {
+  switch (env.DATABASE_SSL) {
+    case 'disable':
+      return {};
+    case 'require':
+      return { ssl: { rejectUnauthorized: false } };
+    case 'verify-full':
+      return { ssl: { rejectUnauthorized: true } };
+  }
+}
+
 export default fp(async (app) => {
   const pool = new pg.Pool({
     connectionString: env.DATABASE_URL,
     max: env.DATABASE_POOL_MAX,
+    ...sslOptions(),
   });
 
   // Fail at boot rather than on the first request, so a bad DATABASE_URL never

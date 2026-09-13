@@ -1,20 +1,27 @@
 import type { MessagingProvider } from '@/modules/notifications';
 import fp from 'fastify-plugin';
 import { env, isTest } from '@/config/env';
-import { createLogProvider, createOpenWaProvider, MessagingService } from '@/modules/notifications';
+import {
+  createLogProvider,
+  createOpenWaProvider,
+  createPlaceholderProvider,
+  MessagingService,
+  NotificationService,
+} from '@/modules/notifications';
 
 declare module 'fastify' {
   interface FastifyInstance {
     messaging: MessagingService;
+    notifications: NotificationService;
   }
 }
 
 /**
- * Wires the messaging providers (AGENTS.md §1).
+ * Wires the messaging providers and the notification service (AGENTS.md §1).
  *
- * `MESSAGING_ENABLED=false` and test runs get the log provider, so no suite and
- * no local run ever delivers a real message. That is the kill switch rule — it
- * flips without a deploy.
+ * `MESSAGING_ENABLED=false` and every test run fall back to the log provider, so
+ * no suite and no local run delivers a real message. That is the §1 kill switch:
+ * it flips without a deploy.
  */
 export default fp(async (app) => {
   const providers: MessagingProvider[] = [];
@@ -26,14 +33,27 @@ export default fp(async (app) => {
       sessionId: env.MESSAGING_SESSION_ID,
       timeoutMs: env.MESSAGING_TIMEOUT_MS,
     }));
+
+    // Reserved channels with no provider yet. Registering them means a send
+    // fails with "set RESEND_API_KEY" rather than "unknown channel".
+    providers.push(
+      createPlaceholderProvider({ channel: 'sms', requiredEnv: ['SMS_PROVIDER', 'SMS_API_KEY'] }),
+      createPlaceholderProvider({ channel: 'email', requiredEnv: ['RESEND_API_KEY'], plannedProvider: 'Resend' }),
+      createPlaceholderProvider({ channel: 'push', requiredEnv: ['FCM_SERVICE_ACCOUNT'], plannedProvider: 'Firebase Cloud Messaging' }),
+    );
+  }
+  else {
+    // Log provider claims every channel, so local and test runs exercise the
+    // full routing path without a network call.
+    providers.push(createLogProvider(line => app.log.warn(line)));
   }
 
-  // Always last: it only serves channels no real provider claimed.
-  providers.push(createLogProvider(line => app.log.warn(line)));
-
-  app.decorate('messaging', new MessagingService({
+  const messaging = new MessagingService({
     providers,
     defaultChannel: env.MESSAGING_DEFAULT_CHANNEL,
     defaultCountryCode: env.DEFAULT_COUNTRY_CODE,
-  }));
-}, { name: 'messaging' });
+  });
+
+  app.decorate('messaging', messaging);
+  app.decorate('notifications', new NotificationService(app.db, messaging));
+}, { name: 'messaging', dependencies: ['database'] });

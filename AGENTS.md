@@ -113,6 +113,40 @@ two reading `process.env` raw.
 **Rule:** before adding any dependency, check whether Fastify, Drizzle, or
 `node:` stdlib already does it. Most of the time one of them does.
 
+### 2.1 Deployment tiers
+
+`NODE_ENV` is Node's flag, for libraries that switch on it. **`APP_ENV` is the
+deployment tier**, and it is what decides policy. Staging runs
+`NODE_ENV=production` with `APP_ENV=staging`, so libraries behave exactly as
+they will in production while the tier stays diagnosable.
+
+| | `local` | `staging` | `production` |
+|---|---|---|---|
+| Database TLS | `disable` | `disable` (private network) | **`require` or `verify-full`** |
+| 5xx response body | real message + stack + cause | real message + stack + cause | `"Internal server error"`, code + requestId only |
+| CORS | any origin | any origin | explicit allowlist, enforced at boot |
+| `/docs` | served | served | not served |
+| Log format | pino-pretty | JSON | JSON |
+| Messaging | log provider unless enabled | real provider | real provider |
+
+**Staging returns the real error on purpose.** An environment that hides its
+own stack traces cannot be debugged from, which is most of what staging is for.
+
+**Production returns nothing diagnostic.** A stack trace names file paths,
+library versions and query fragments — a map of the service handed to whoever
+asked. The `requestId` in every response is the trace: it is in the log line,
+and it is what a support ticket quotes.
+
+Both tiers **log the full error either way**. What changes is what the *client*
+sees, never what the operator can see.
+
+**Production is checked at boot, not at review time.** `assertTier()` in
+`config/env.ts` refuses to start when `DATABASE_SSL=disable`, `CORS_ORIGINS` is
+empty, or `JWT_SECRET` is under 48 characters. A missing `sslmode` found in
+production is found by the wrong person at the wrong time.
+
+Use `isProduction` / `isStaging` / `isLocal` / `exposeErrorDetail` from
+`config/env.ts`. Never branch on `process.env.NODE_ENV`.
 ---
 
 ## 3. Architecture: modular monolith, route → controller → service
@@ -980,6 +1014,9 @@ decision about whether customers' existing numbers matter, so it is yours.
 | `auth` | `users`, `sessions`, `devices`, `otp_codes` | `auth`, `users`, `devices` |
 | `iam` | `roles`, `role_permissions` | `roles`, `permissions` |
 | `crm` | `customers` | `customers` |
+| `notify` | `notifications` | `notifications` |
+| `media` | `files` | `storage` |
+| `analytics` | views only, no tables | cross-domain reads (§8.3) |
 | `drizzle` | migration bookkeeping | Drizzle Kit |
 
 Later domains get their own: `billing` (invoices, payments, collections),
@@ -1012,6 +1049,98 @@ gain. One schema per domain; a module's tables live in exactly one of them.
   not about referential integrity.
 - Schemas are not a security boundary here. Tenant isolation is `tenant_id` in
   every query (§4.5); do not let a namespace create the impression otherwise.
+
+### 8.3 Functions, views and read models
+
+**Views are named read shapes. Functions are pure helpers. Neither holds a
+business rule.**
+
+A rule implemented in SQL *and* in TypeScript is two implementations that
+drift — out of reach of the linter, the tests and code review. That is the same
+reason §8.1 rejects triggers for identifier generation.
+
+**Functions** (`db/schema/functions.ts` holds the typed call sites; the DDL is
+in a migration). A function belongs in the database only when something *in* the
+database needs it:
+
+| Function | Exists because |
+|---|---|
+| `crm.normalize_phone(text)` | An **expression index** needs it. `create index on crm.customers (crm.normalize_phone(phone))` makes a search for `83091 54716` hit `+91-8309154716`. Application code cannot supply a function to an index. |
+| `iam.scope_rank(text)` | Lets SQL compare §5 scopes. Mirrors `SCOPE_RANK` in TypeScript, and **a test asserts the two agree** — two copies of a privilege ranking that drift is a security bug. |
+
+Every such function is `IMMUTABLE` and `PARALLEL SAFE`. A volatile function
+silently makes its index unusable, which is a performance bug that looks like
+nothing at all — so that too is asserted in a test.
+
+**Views** live in the schema that owns the read. Cross-domain reads go in
+`analytics`, which owns no tables of its own:
+
+| View | Answers |
+|---|---|
+| `analytics.tenant_customer_stats` | The dashboard aggregate: counts by status, added this month, outstanding total — one row per tenant |
+| `notify.user_unread_counts` | The unread badge, defined once instead of retyped as a filter |
+| `analytics.messaging_health` | 24h delivery outcomes per channel, so a dead WhatsApp session shows as a failure rate rather than as silence |
+
+This is how §3's "no cross-module joins in raw SQL" stays workable. A dashboard
+genuinely spans domains; the answer is a named, reviewable view — not the same
+join re-derived in three services.
+
+**Rules:**
+
+- Views are **read-only**. Nothing writes through one.
+- View and function DDL lives in a **hand-written migration**; Drizzle declares
+  views with `.existing()`. An aggregate is more legible as SQL than as a query
+  builder, and a view definition is something you want to read in a diff.
+- **No custom `CREATE AGGREGATE`.** Postgres's built-in aggregates with
+  `FILTER (WHERE ...)` cover every case here; a custom aggregate is a C-level
+  commitment for something `count(*) FILTER (...)` already does.
+- Changing a view means a new migration with `CREATE OR REPLACE VIEW`. Column
+  types cannot change under `REPLACE` — a genuine reshape is `DROP` then
+  `CREATE`, and it must be checked against every caller.
+
+---
+
+### 8.4 Files and object storage
+
+**Bytes never pass through this service.** The client PUTs to a presigned URL
+and GETs from one; `media.files` is the index over those objects and the only
+thing that knows they exist. Proxying a 20 MB upload through the event loop of
+a CRUD service is how the CRUD gets slow.
+
+The upload handshake:
+
+```
+1. POST /files            → row status=pending, presigned PUT URL returned
+2. client PUT → R2        (direct; the API is not involved)
+3. POST /files/:id/confirm → HEAD the object, record its REAL size, status=ready
+```
+
+- **A row is never `ready` until step 3 verifies the object exists.** A client
+  that abandons an upload must not leave a record pointing at nothing.
+- **Size and content type come from storage, never from the client.** A client
+  reporting 1 KB and uploading 1 GB is exactly what the cap exists to stop, so
+  the cap is re-checked against the `HEAD` result and an oversized object is
+  deleted.
+- **The storage key is server-generated**: `{tenantId}/{yyyy}/{mm}/{uuid}{ext}`.
+  The client's filename is display metadata and never shapes the path — that is
+  how `../` traversal and collisions get in.
+- **Deletion is soft on the row, hard on the object.** The row outlives the
+  bytes so a dangling reference from a customer or ticket explains itself
+  instead of returning nothing.
+- **Unconfigured is a first-class state.** With no R2 credentials the
+  unconfigured provider stays in place and every call fails
+  `503 STORAGE_NOT_CONFIGURED` naming the variables — the API is useful without
+  uploads, and a missing config reads as a checklist item rather than a crash
+  inside the AWS SDK.
+
+Cloudflare R2 speaks the S3 API, so any S3-compatible bucket is a config change.
+Nothing outside `providers/r2.provider.ts` knows that.
+
+**Attachments:** a domain table references a file by id
+(`customers.photo_file_id`), keeping a real foreign key. If many-to-many
+attachments become necessary, add a `media.attachments` link table then — a
+polymorphic `owner_type`/`owner_id` pair would buy flexibility nothing needs yet
+and cost every FK guarantee.
 ---
 
 ## 9. Firestore → Postgres data migration
@@ -1222,6 +1351,10 @@ does not merge.
 - ❌ **DO NOT** edit a merged migration. Fix forward.
 - ❌ **DO NOT** declare a table with `pgTable(...)`. Use its schema object (§8.2).
 - ❌ **DO NOT** rely on `search_path`; every identifier is schema-qualified.
+- ❌ **DO NOT** put a business rule in a SQL function or view (§8.3).
+- ❌ **DO NOT** proxy file bytes through the API. Presign, then confirm (§8.4).
+- ❌ **DO NOT** trust a client-reported file size or content type.
+- ❌ **DO NOT** branch on `process.env.NODE_ENV`. Use the tier helpers (§2.1).
 - ❌ **DO NOT** run `drizzle-kit push` against a shared database.
 - ❌ **DO NOT** use `console.log`. Use the request logger.
 - ❌ **DO NOT** join across a module boundary in raw SQL because both tables share a database.
