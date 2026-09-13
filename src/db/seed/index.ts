@@ -1,20 +1,18 @@
-import type { SeedRoleId } from '@/config/constants';
+import type { SystemRoleId } from '@/config/constants';
 import type { PermissionKey, PermissionScope } from '@/shared/security/permissions';
 /**
  * `pnpm db:seed`. Safe to re-run.
  *
- * Every account but one is created through the API. The super admin is the
- * exception — `users.create` needs a caller who already holds it — so its
- * credentials come from `SUPER_ADMIN_*` and are never committed here.
+ * Accounts are created through the API; this seeder installs fixed roles,
+ * permission grants, and initial tenants only.
  */
 import process from 'node:process';
 import { sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import pg from 'pg';
-import { SUPER_ADMIN_ROLE_ID, SYSTEM_ROLES } from '@/config/constants';
+import { SYSTEM_ROLES } from '@/config/constants';
 import { env } from '@/config/env';
-import { rolePermissions, roles, tenants, users } from '@/db/schema';
-import { hashPassword } from '@/shared/security/password';
+import { rolePermissions, roles, tenants } from '@/db/schema';
 import {
   ALL_PERMISSION_KEYS,
 
@@ -25,13 +23,9 @@ import {
 const EVERYTHING = ALL_PERMISSION_KEYS.map(key => [key, 'ALL'] as [PermissionKey, PermissionScope]);
 
 /**
- * `super_admin` and `admin` both hold the whole catalogue at ALL; what separates
- * them is the tenant boundary, not the grants (§5) — `super_admin` crosses it,
- * `admin` is confined to their own tenant by stage 2.
+ * Admin holds the whole catalogue at ALL but remains confined to its tenant.
  */
-const GRANTS: Record<SeedRoleId, Array<[PermissionKey, PermissionScope]>> = {
-  [SUPER_ADMIN_ROLE_ID]: EVERYTHING,
-
+const GRANTS: Record<SystemRoleId, Array<[PermissionKey, PermissionScope]>> = {
   [SYSTEM_ROLES.ADMIN]: EVERYTHING,
 
   [SYSTEM_ROLES.STAFF]: [
@@ -68,8 +62,7 @@ const GRANTS: Record<SeedRoleId, Array<[PermissionKey, PermissionScope]>> = {
   ],
 };
 
-const ROLE_NAMES: Record<SeedRoleId, string> = {
-  [SUPER_ADMIN_ROLE_ID]: 'Super Admin',
+const ROLE_NAMES: Record<SystemRoleId, string> = {
   [SYSTEM_ROLES.ADMIN]: 'Admin',
   [SYSTEM_ROLES.STAFF]: 'Staff',
   [SYSTEM_ROLES.CUSTOMER]: 'Customer',
@@ -83,44 +76,11 @@ const TENANTS = [
 const pool = new pg.Pool({ connectionString: env.DATABASE_URL, max: 1 });
 const db = drizzle(pool);
 
-const MIN_SUPER_ADMIN_PASSWORD = 12;
-
-async function seedSuperAdmin() {
-  const email = env.SUPER_ADMIN_EMAIL.trim().toLowerCase();
-  const password = env.SUPER_ADMIN_PASSWORD;
-
-  if (!email || !password) {
-    console.log('ℹ️  SUPER_ADMIN_EMAIL/PASSWORD unset — skipping super admin');
-    return;
-  }
-
-  // Loud, not silent: a weak password on this account defeats every other check.
-  if (password.length < MIN_SUPER_ADMIN_PASSWORD)
-    throw new Error(`SUPER_ADMIN_PASSWORD must be at least ${MIN_SUPER_ADMIN_PASSWORD} characters`);
-
-  const passwordHash = await hashPassword(password);
-  const name = env.SUPER_ADMIN_NAME;
-
-  await db
-    .insert(users)
-    .values({ email, name, passwordHash, isSuperAdmin: true })
-    .onConflictDoUpdate({
-      target: users.email,
-      // Re-running with a changed password rotates it, and bumping
-      // `credentials_changed_at` revokes every session issued before (§4.6).
-      set: { name, passwordHash, isSuperAdmin: true, credentialsChangedAt: new Date(), updatedAt: new Date() },
-    });
-
-  console.log(`   super admin: ${email}`);
-}
-
 try {
-  // Keyed off GRANTS, not SYSTEM_ROLES, so `super_admin` is included — it is a
-  // real role row even though no membership may reference it.
-  for (const roleId of Object.keys(GRANTS) as SeedRoleId[]) {
+  for (const roleId of Object.keys(GRANTS) as SystemRoleId[]) {
     await db
       .insert(roles)
-      .values({ id: roleId, name: ROLE_NAMES[roleId], isSystem: true, tenantId: null })
+      .values({ id: roleId, name: ROLE_NAMES[roleId] })
       .onConflictDoUpdate({ target: roles.id, set: { name: ROLE_NAMES[roleId], updatedAt: new Date() } });
 
     await db
@@ -131,8 +91,6 @@ try {
         set: { scope: sql`excluded.scope` },
       });
   }
-
-  await seedSuperAdmin();
 
   // DoNothing, not an upsert: `customer_seq` is a live counter (§8.1).
   await db.insert(tenants).values(TENANTS).onConflictDoNothing({ target: tenants.code });

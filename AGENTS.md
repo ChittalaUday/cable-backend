@@ -360,8 +360,7 @@ users                    Global identity. ONE row per human, across all tenants.
   ├─ email               UNIQUE, nullable
   ├─ phone               UNIQUE, nullable          (CHECK: email IS NOT NULL OR phone IS NOT NULL)
   ├─ password_hash       nullable (null ⇒ Google-only account)
-  ├─ google_sub          UNIQUE, nullable
-  └─ is_super_admin      boolean — PLATFORM level, not tenant-scoped
+  └─ google_sub          UNIQUE, nullable
 
 tenants                  A cable operator.
 
@@ -382,11 +381,10 @@ customers                Tenant-scoped BUSINESS record.
 There is **one** `users` row and **two** `tenant_memberships` rows. Role is
 never a column on `users`.
 
-### 4.2 The four roles
+### 4.2 The three roles
 
 | Role | Scope | Who |
 |---|---|---|
-| `super_admin` | **Platform** — `users.is_super_admin`, no tenant | Us. Crosses tenant boundaries. |
 | `admin` | Tenant membership | The tenant owner/operator. Full control of their tenant. |
 | `staff` | Tenant membership | Tenant's field/office staff. Scope-limited (§5). |
 | `customer` | Tenant membership | The subscriber. Reads their own records only. |
@@ -413,7 +411,7 @@ service** (§1).
 
 **Tokens**
 - **Access token** — 15 min, JWT. Claims: `sub` (user id), `sid` (session id),
-  `did` (device id), `sa` (is_super_admin), `memberships` (array of
+  `did` (device id), `memberships` (array of
   `{tenantId, roleId}`).
 - **Refresh token** — 30 days, opaque random 256-bit value, **hashed at rest**.
   Belongs to a session, rotated on every use. Stored in encrypted storage on
@@ -492,10 +490,8 @@ No exceptions.**
 - A service function that touches a tenant-scoped table **must** take `tenantId`
   as a required parameter. Not optional. Not defaulted. With no repository layer
   to funnel through, this parameter is the isolation guarantee — treat it that way.
-- `super_admin` cross-tenant reads go through explicitly named service functions
-  (`listAllTenants`, `findCustomerAcrossTenants`) that are obviously unscoped at
-  the call site. There is no `if (isSuperAdmin) skip the filter` branch buried
-  inside a normal service function.
+- This API has no cross-tenant role or tenant-scope bypass. Platform
+  administration is a separate flow outside this identity and authorization model.
 - Postgres Row-Level Security is enabled on tenant-scoped tables as a
   **backstop**, not as the primary mechanism. Application code must be correct
   on its own.
@@ -701,9 +697,6 @@ Only the service-layer check stops them editing a customer in another area.
 to a permission map per `(user, tenant)`, cached in memory keyed by a `version`
 column on the membership. Bumping `version` invalidates it. The compiled map is
 server state — it is never shipped to a client to be enforced there.
-
-`super_admin` short-circuits stage 1 only. It still passes through tenant
-resolution, so cross-tenant access is deliberate and visible.
 
 ---
 
@@ -1400,7 +1393,6 @@ The loop for every single endpoint:
 | `X-Tenant-Id` missing on a tenant-scoped route | `400` |
 | **Record belongs to tenant B, requested by tenant A** | `404 RESOURCE_NOT_FOUND` — byte-identical to a genuinely missing row. A `403`, or a distinct code, confirms the row exists. |
 | Membership exists but `status` is `suspended` | `403` |
-| `super_admin` cross-tenant access | allowed, and asserted explicitly |
 | Non-existent `:id` | `404` |
 | Malformed `:id` (not a uuid) | `400`, from the schema |
 | Missing required body field / wrong type / unknown extra field | `400` |

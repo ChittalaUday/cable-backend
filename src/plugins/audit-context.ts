@@ -21,7 +21,7 @@ export function auditContextFor(request: FastifyRequest): AuditContext {
     tenantId: header(request, 'x-tenant-id'),
     actorId: session?.sub ?? null,
     actorSessionId: session?.sid ?? null,
-    actorType: session === undefined ? 'anonymous' : session.sa ? 'admin' : 'user',
+    actorType: session === undefined ? 'anonymous' : 'user',
     requestId: request.id,
     correlationId: header(request, 'x-correlation-id'),
     ipAddress: request.ip,

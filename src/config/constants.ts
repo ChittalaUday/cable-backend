@@ -21,9 +21,7 @@ export const DEVICE_MODEL_HEADER = 'x-device-model';
 /**
  * Tenant-assignable system role ids (§4.2). Seeded, never invented at runtime.
  *
- * `super_admin` is deliberately NOT here: this is what a membership's `role_id`
- * is validated against, and a platform role reachable through `POST
- * /memberships` is a privilege-escalation path, not a feature.
+ * A membership's `role_id` is restricted to these backend-defined roles.
  */
 export const SYSTEM_ROLES = {
   ADMIN: 'admin',
@@ -32,14 +30,6 @@ export const SYSTEM_ROLES = {
 } as const;
 
 export type SystemRoleId = (typeof SYSTEM_ROLES)[keyof typeof SYSTEM_ROLES];
-
-/**
- * Held via `users.is_super_admin`, never a membership (§4.2). The seeded row
- * exists only so `roles.view` can name it and show what it grants.
- */
-export const SUPER_ADMIN_ROLE_ID = 'super_admin';
-
-export type SeedRoleId = SystemRoleId | typeof SUPER_ADMIN_ROLE_ID;
 
 /** Tenant prefix shape (§8.1). */
 export const TENANT_CODE_PATTERN = /^[A-Z][A-Z0-9]{1,4}$/;

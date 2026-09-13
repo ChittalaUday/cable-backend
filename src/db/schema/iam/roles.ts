@@ -1,24 +1,21 @@
-import { boolean, index, primaryKey, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import { check, primaryKey, text, timestamp } from 'drizzle-orm/pg-core';
 import { PERMISSION_SCOPES } from '@/shared/security/permissions';
 import { iam } from '../schemas';
-import { tenants } from '../tenancy/tenants';
 
 /**
  * A named bundle of permissions (AGENTS.md §5).
  *
- * `tenantId` null means a system role shared by every tenant (`admin`, `staff`,
- * `customer`). A non-null `tenantId` is a custom role owned by that tenant.
+ * These are the three backend-defined tenant membership roles.
  */
 export const roles = iam.table('roles', {
   id: text('id').primaryKey(),
-  tenantId: uuid('tenant_id').references(() => tenants.id, { onDelete: 'cascade' }),
   name: text('name').notNull(),
   description: text('description'),
-  isSystem: boolean('is_system').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, table => [
-  index('roles_tenant_id_idx').on(table.tenantId),
+  check('roles_known_id', sql`${table.id} IN ('admin', 'staff', 'customer')`),
 ]);
 
 /**
@@ -31,6 +28,7 @@ export const rolePermissions = iam.table('role_permissions', {
   scope: text('scope', { enum: PERMISSION_SCOPES }).notNull(),
 }, table => [
   primaryKey({ columns: [table.roleId, table.permissionKey] }),
+  check('role_permissions_known_scope', sql`${table.scope} IN ('OWN', 'ASSIGNED', 'TEAM', 'AREA', 'LOCATION', 'ALL')`),
 ]);
 
 export type Role = typeof roles.$inferSelect;

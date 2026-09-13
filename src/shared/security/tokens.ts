@@ -25,8 +25,6 @@ export interface AccessTokenClaims {
   sid: string;
   /** Device id. */
   did: string;
-  /** Platform super admin. */
-  sa: boolean;
   memberships: MembershipClaim[];
 }
 

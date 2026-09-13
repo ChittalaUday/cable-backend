@@ -53,7 +53,6 @@ export const UserResponse = Type.Object({
   phone: Type.Union([Type.String(), Type.Null()]),
   name: Type.Union([Type.String(), Type.Null()]),
   photoUrl: Type.Union([Type.String(), Type.Null()]),
-  isSuperAdmin: Type.Boolean(),
 });
 
 export const TokensResponse = Type.Object({

@@ -1,20 +1,26 @@
-import type { FileRecord, StorageProvider } from './storage.types';
+import type { Buffer } from 'node:buffer';
+import type {
+  DirectUploadResult,
+  FileRecord,
+  LocalStagedUploadInput,
+  RequestUploadInput,
+  StorageCleanupOptions,
+  StorageCleanupReport,
+  StorageProvider,
+  UploadResult,
+  UserFileRecord,
+  UserFileWithFile,
+} from './storage.types';
 import type { Database } from '@/plugins/database';
-import { randomUUID } from 'node:crypto';
+import crypto, { randomUUID } from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
-import { and, eq, isNull } from 'drizzle-orm';
-import { files } from '@/db/schema';
+import { pipeline } from 'node:stream/promises';
+import { and, count, eq, isNull, lte, ne } from 'drizzle-orm';
+import { files, userFiles } from '@/db/schema';
 import { ERROR_CODES } from '@/shared/errors';
 import { DomainError, notFound } from '@/shared/errors/domain-error';
-
-export interface RequestUploadInput {
-  tenantId: string | null;
-  uploadedBy: string | null;
-  originalName: string;
-  contentType: string;
-  /** What the client says it will upload. Checked against the cap, then re-checked after. */
-  sizeBytes?: number;
-}
 
 export interface StorageServiceOptions {
   provider: StorageProvider;
@@ -25,11 +31,16 @@ export interface StorageServiceOptions {
 }
 
 /**
- * File metadata and presigned access (AGENTS.md §8.4).
+ * File metadata, presigned access, and content deduplication (AGENTS.md §8.4).
  *
- * Bytes never pass through this process: the client PUTs to a presigned URL and
- * GETs from one. Proxying uploads would put a 20 MB request on the event loop of
- * a service whose job is CRUD.
+ * Bytes can be:
+ * 1. Streamed directly to API, staged locally to verify content hash, deduplicated, and unlinked.
+ * 2. Uploaded directly to R2 via presigned URLs.
+ *
+ * Content deduplication:
+ * - `media.files` tracks unique physical objects keyed by content checksum (SHA-256).
+ * - `media.user_files` tracks tenant/user attachments pointing to a `files(id)`.
+ * - If an uploaded file's checksum already exists in storage, duplicate bytes are not stored.
  */
 export class StorageService {
   constructor(
@@ -53,33 +64,163 @@ export class StorageService {
   }
 
   /**
-   * Issues a presigned upload URL and records the file as `pending`.
-   *
-   * The row is not `ready` until `confirmUpload` verifies the object exists — a
-   * client that abandons the upload must not leave a record pointing at nothing.
+   * Upload flow with local staging and content hash verification:
+   * 1. Takes the incoming file stream and pipes it temporarily to a local temp file.
+   * 2. Computes the SHA-256 hash and exact byte size while streaming.
+   * 3. Checks if a physical file with this hash already exists with status 'ready':
+   *    - If exists: creates `media.user_files` linked to existing file (skips storage upload).
+   *    - If new: uploads file from local temp to cloud storage, marks 'ready', creates `media.user_files`.
+   * 4. In `finally`: unconditionally removes the temporary local file.
    */
-  async requestUpload(input: RequestUploadInput): Promise<{ file: FileRecord; uploadUrl: string; expiresAt: Date }> {
+  async uploadWithLocalStaging(input: LocalStagedUploadInput): Promise<DirectUploadResult> {
+    this.assertContentTypeAllowed(input.contentType);
+
+    const tempDir = path.join(os.tmpdir(), 'cable_uploads');
+    await fs.promises.mkdir(tempDir, { recursive: true });
+    const tempFilePath = path.join(tempDir, `${randomUUID()}.tmp`);
+
+    try {
+      const { checksum, sizeBytes } = await this.stageStreamToDisk(input, tempFilePath);
+
+      // Deduplication check: does a ready physical file with this checksum already exist?
+      const [existingReadyFile] = await this.db.select().from(files).where(and(
+        eq(files.checksum, checksum),
+        eq(files.status, 'ready'),
+        isNull(files.deletedAt),
+      )).limit(1);
+
+      if (existingReadyFile) {
+        const [userFile] = await this.db.insert(userFiles).values({
+          tenantId: input.tenantId,
+          uploadedBy: input.uploadedBy,
+          fileId: existingReadyFile.id,
+          originalName: input.originalName,
+          kind: input.kind ?? 'upload',
+          visibility: input.visibility ?? 'private',
+          metadata: input.metadata,
+        }).returning();
+
+        if (!userFile)
+          throw new Error('UserFile insert returned no row');
+
+        return { deduplicated: true, userFile, file: existingReadyFile };
+      }
+
+      // New file: upload from local temp file to storage provider
+      const storageKey = buildStorageKey(input.tenantId, input.originalName);
+      const fileBuffer = await fs.promises.readFile(tempFilePath);
+
+      await this.options.provider.put({
+        key: storageKey,
+        body: fileBuffer,
+        contentType: input.contentType,
+      });
+
+      const [newFile] = await this.db.insert(files).values({
+        storageKey,
+        bucket: this.options.provider.bucket,
+        contentType: input.contentType,
+        sizeBytes,
+        checksum,
+        status: 'ready',
+      }).returning();
+
+      if (!newFile)
+        throw new Error('File insert returned no row');
+
+      const [userFile] = await this.db.insert(userFiles).values({
+        tenantId: input.tenantId,
+        uploadedBy: input.uploadedBy,
+        fileId: newFile.id,
+        originalName: input.originalName,
+        kind: input.kind ?? 'upload',
+        visibility: input.visibility ?? 'private',
+        metadata: input.metadata,
+      }).returning();
+
+      if (!userFile)
+        throw new Error('UserFile insert returned no row');
+
+      return { deduplicated: false, userFile, file: newFile };
+    }
+    finally {
+      // Unconditionally remove the temporary local file
+      try {
+        await fs.promises.unlink(tempFilePath);
+      }
+      catch {
+        // Ignore if file doesn't exist
+      }
+    }
+  }
+
+  private async stageStreamToDisk(
+    input: LocalStagedUploadInput,
+    tempFilePath: string,
+  ): Promise<{ checksum: string; sizeBytes: number }> {
+    const writeStream = fs.createWriteStream(tempFilePath);
+    const hash = crypto.createHash('sha256');
+    let sizeBytes = 0;
+
+    input.stream.on('data', (chunk: Buffer) => {
+      sizeBytes += chunk.length;
+      if (sizeBytes > this.options.maxUploadBytes) {
+        input.stream.destroy(this.tooLarge(sizeBytes));
+      }
+      hash.update(chunk);
+    });
+
+    await pipeline(input.stream, writeStream);
+    const checksum = hash.digest('hex');
+    return { checksum, sizeBytes };
+  }
+
+  /**
+   * Requests an upload via presigned URL.
+   *
+   * If `input.checksum` matches an existing physical file with `status: 'ready'`,
+   * returns `{ deduplicated: true }` and creates a new `media.user_files` record
+   * immediately without requiring a storage upload.
+   *
+   * Otherwise, creates a `pending` row in `files` + `user_files` and returns
+   * a presigned PUT upload URL.
+   */
+  async requestUpload(input: RequestUploadInput): Promise<UploadResult> {
     this.assertContentTypeAllowed(input.contentType);
 
     if (input.sizeBytes != null && input.sizeBytes > this.options.maxUploadBytes)
       throw this.tooLarge(input.sizeBytes);
 
+    const match = await this.tryDeduplicate(input);
+    if (match !== null)
+      return { deduplicated: true, userFile: match.userFile, file: match.file };
+
     const storageKey = buildStorageKey(input.tenantId, input.originalName);
 
     const [file] = await this.db.insert(files).values({
-      tenantId: input.tenantId,
-      uploadedBy: input.uploadedBy,
       storageKey,
       bucket: this.options.provider.bucket,
-      originalName: input.originalName,
       contentType: input.contentType,
       sizeBytes: input.sizeBytes ?? null,
-      kind: 'upload',
+      checksum: input.checksum ?? null,
       status: 'pending',
     }).returning();
 
     if (!file)
       throw new Error('File insert returned no row');
+
+    const [userFile] = await this.db.insert(userFiles).values({
+      tenantId: input.tenantId,
+      uploadedBy: input.uploadedBy,
+      fileId: file.id,
+      originalName: input.originalName,
+      kind: input.kind ?? 'upload',
+      visibility: input.visibility ?? 'private',
+      metadata: input.metadata,
+    }).returning();
+
+    if (!userFile)
+      throw new Error('UserFile insert returned no row');
 
     const signed = await this.options.provider.createUploadUrl(
       storageKey,
@@ -87,17 +228,53 @@ export class StorageService {
       this.options.uploadUrlTtlSeconds,
     );
 
-    return { file, uploadUrl: signed.url, expiresAt: signed.expiresAt };
+    return {
+      deduplicated: false,
+      userFile,
+      file,
+      uploadUrl: signed.url,
+      expiresAt: signed.expiresAt,
+    };
+  }
+
+  private async tryDeduplicate(input: RequestUploadInput): Promise<{ userFile: UserFileRecord; file: FileRecord } | null> {
+    if (input.checksum == null || input.checksum === '')
+      return null;
+
+    const [existingFile] = await this.db.select().from(files).where(and(
+      eq(files.checksum, input.checksum),
+      eq(files.status, 'ready'),
+      isNull(files.deletedAt),
+    )).limit(1);
+
+    if (!existingFile)
+      return null;
+
+    const [userFile] = await this.db.insert(userFiles).values({
+      tenantId: input.tenantId,
+      uploadedBy: input.uploadedBy,
+      fileId: existingFile.id,
+      originalName: input.originalName,
+      kind: input.kind ?? 'upload',
+      visibility: input.visibility ?? 'private',
+      metadata: input.metadata,
+    }).returning();
+
+    if (!userFile)
+      throw new Error('UserFile insert returned no row');
+
+    return { userFile, file: existingFile };
   }
 
   /**
-   * Verifies the object landed, then marks the row `ready`.
-   *
-   * Size and content type come from storage, never from the client — a client
-   * that reports 1 KB and uploads 1 GB is exactly what the cap exists to stop.
+   * Verifies the object landed in storage, then marks the physical file `ready`.
    */
-  async confirmUpload(id: string, tenantId: string | null): Promise<FileRecord> {
-    const file = await this.findOwned(id, tenantId);
+  async confirmUpload(userFileId: string, tenantId: string | null): Promise<UserFileWithFile> {
+    const { userFile, file } = await this.findOwned(userFileId, tenantId);
+
+    if (file.status === 'ready')
+      return { userFile, file };
+
     const head = await this.options.provider.head(file.storageKey);
 
     if (!head) {
@@ -121,22 +298,50 @@ export class StorageService {
       throw this.tooLarge(head.sizeBytes);
     }
 
+    const resolvedChecksum = head.checksum ?? file.checksum;
+
+    if (resolvedChecksum != null && resolvedChecksum !== '') {
+      const [existingReadyFile] = await this.db.select().from(files).where(and(
+        eq(files.checksum, resolvedChecksum),
+        eq(files.status, 'ready'),
+        ne(files.id, file.id),
+      )).limit(1);
+
+      if (existingReadyFile) {
+        const [updatedUserFile] = await this.db.update(userFiles)
+          .set({ fileId: existingReadyFile.id, updatedAt: new Date() })
+          .where(eq(userFiles.id, userFile.id))
+          .returning();
+
+        if (this.options.provider.configured) {
+          await this.options.provider.remove(file.storageKey);
+        }
+
+        // Soft-delete the duplicate pending file record
+        await this.db.update(files)
+          .set({ status: 'deleted', deletedAt: new Date(), updatedAt: new Date() })
+          .where(eq(files.id, file.id));
+
+        return { userFile: updatedUserFile ?? userFile, file: existingReadyFile };
+      }
+    }
+
     const [ready] = await this.db.update(files)
       .set({
         status: 'ready',
         sizeBytes: head.sizeBytes,
-        checksum: head.checksum,
+        checksum: resolvedChecksum,
         updatedAt: new Date(),
       })
       .where(eq(files.id, file.id))
       .returning();
 
-    return ready ?? file;
+    return { userFile, file: ready ?? file };
   }
 
   /** Short-lived download URL for a private object. */
-  async downloadUrl(id: string, tenantId: string | null): Promise<{ url: string; expiresAt: Date }> {
-    const file = await this.findOwned(id, tenantId);
+  async downloadUrl(userFileId: string, tenantId: string | null): Promise<{ url: string; expiresAt: Date }> {
+    const { file } = await this.findOwned(userFileId, tenantId);
 
     if (file.status !== 'ready')
       throw notFound('File');
@@ -146,32 +351,146 @@ export class StorageService {
   }
 
   /**
-   * Soft-deletes the row and removes the object.
+   * Soft-deletes the user's file reference.
    *
-   * The row outlives the object on purpose: a dangling reference from a customer
-   * or ticket then explains itself instead of returning nothing.
+   * Physical cloud object deletion and orphaned file pruning are deferred to
+   * the nightly cleanup cron (never on the request path of a write, AGENTS.md §1).
    */
-  async remove(id: string, tenantId: string | null): Promise<void> {
-    const file = await this.findOwned(id, tenantId);
+  async remove(userFileId: string, tenantId: string | null): Promise<void> {
+    const { userFile } = await this.findOwned(userFileId, tenantId);
 
-    await this.options.provider.remove(file.storageKey);
-    await this.db.update(files)
-      .set({ status: 'deleted', deletedAt: new Date(), updatedAt: new Date() })
-      .where(eq(files.id, file.id));
+    // Soft-delete the user file reference
+    await this.db.update(userFiles)
+      .set({ deletedAt: new Date(), updatedAt: new Date() })
+      .where(eq(userFiles.id, userFile.id));
   }
 
-  /** Tenant-scoped lookup (§4.5): another tenant's file is indistinguishable from a missing one. */
-  private async findOwned(id: string, tenantId: string | null): Promise<FileRecord> {
-    const [file] = await this.db.select().from(files).where(and(
-      eq(files.id, id),
-      tenantId === null ? isNull(files.tenantId) : eq(files.tenantId, tenantId),
+  /** Tenant-scoped lookup (§4.5): returns UserFile joined with File. */
+  async findOwned(userFileId: string, tenantId: string | null): Promise<UserFileWithFile> {
+    const [row] = await this.db.select({
+      userFile: userFiles,
+      file: files,
+    })
+      .from(userFiles)
+      .innerJoin(files, eq(userFiles.fileId, files.id))
+      .where(and(
+        eq(userFiles.id, userFileId),
+        tenantId === null ? isNull(userFiles.tenantId) : eq(userFiles.tenantId, tenantId),
+        isNull(userFiles.deletedAt),
+      ));
+
+    if (!row)
+      throw notFound('File');
+
+    return row;
+  }
+
+  /**
+   * Nightly verification and cleanup cron:
+   * 1. Stale pending uploads: cleans up abandoned uploads where `expiresAt < now()` or older
+   *    than the grace period. Preserves in-flight pending uploads created recently.
+   * 2. Orphaned physical files: prunes physical objects where all user_files references were deleted.
+   * 3. Deleted physical files: prunes physical objects for files with status = 'deleted'.
+   * 4. Integrity verification: checks object existence in cloud storage for all active ready files.
+   */
+  async verifyAndCleanupStorage(options: StorageCleanupOptions = {}): Promise<StorageCleanupReport> {
+    const gracePeriodMinutes = options.gracePeriodMinutes ?? 120;
+    const verifyStorageIntegrity = options.verifyStorageIntegrity ?? true;
+    const cutoffTime = new Date(Date.now() - gracePeriodMinutes * 60 * 1000);
+    const now = new Date();
+
+    const pendingStats = await this.cleanupPendingFiles(cutoffTime, now);
+    const readyStats = await this.cleanupAndVerifyReadyFiles(cutoffTime, verifyStorageIntegrity);
+
+    return {
+      ...pendingStats,
+      ...readyStats,
+    };
+  }
+
+  private async cleanupPendingFiles(
+    cutoffTime: Date,
+    now: Date,
+  ): Promise<{ stalePendingCleaned: number; inFlightPendingPreserved: number }> {
+    let stalePendingCleaned = 0;
+    let inFlightPendingPreserved = 0;
+
+    const pendingFiles = await this.db.select().from(files).where(and(
+      eq(files.status, 'pending'),
       isNull(files.deletedAt),
     ));
 
-    if (!file)
-      throw notFound('File');
+    for (const pendingFile of pendingFiles) {
+      const isExpired = pendingFile.expiresAt !== null && pendingFile.expiresAt < now;
+      const isPastGracePeriod = pendingFile.createdAt < cutoffTime;
 
-    return file;
+      if (!isExpired && !isPastGracePeriod) {
+        inFlightPendingPreserved++;
+        continue;
+      }
+
+      if (this.options.provider.configured) {
+        const head = await this.options.provider.head(pendingFile.storageKey);
+        if (head !== null) {
+          await this.options.provider.remove(pendingFile.storageKey);
+        }
+      }
+
+      await this.db.update(files)
+        .set({ status: 'failed', deletedAt: new Date(), updatedAt: new Date() })
+        .where(eq(files.id, pendingFile.id));
+
+      stalePendingCleaned++;
+    }
+
+    return { stalePendingCleaned, inFlightPendingPreserved };
+  }
+
+  private async cleanupAndVerifyReadyFiles(
+    cutoffTime: Date,
+    verifyStorageIntegrity: boolean,
+  ): Promise<{ orphanedFilesCleaned: number; missingObjectsFlagged: number }> {
+    let orphanedFilesCleaned = 0;
+    let missingObjectsFlagged = 0;
+
+    const readyFiles = await this.db.select().from(files).where(and(
+      eq(files.status, 'ready'),
+      isNull(files.deletedAt),
+      lte(files.createdAt, cutoffTime),
+    ));
+
+    for (const readyFile of readyFiles) {
+      const [activeRefs] = await this.db.select({ total: count() })
+        .from(userFiles)
+        .where(and(
+          eq(userFiles.fileId, readyFile.id),
+          isNull(userFiles.deletedAt),
+        ));
+
+      const totalActive = Number(activeRefs?.total ?? 0);
+      if (totalActive === 0) {
+        if (this.options.provider.configured) {
+          await this.options.provider.remove(readyFile.storageKey);
+        }
+        await this.db.update(files)
+          .set({ status: 'deleted', deletedAt: new Date(), updatedAt: new Date() })
+          .where(eq(files.id, readyFile.id));
+
+        orphanedFilesCleaned++;
+      }
+      else if (verifyStorageIntegrity && this.options.provider.configured) {
+        const head = await this.options.provider.head(readyFile.storageKey);
+        if (head === null) {
+          await this.db.update(files)
+            .set({ status: 'failed', updatedAt: new Date() })
+            .where(eq(files.id, readyFile.id));
+
+          missingObjectsFlagged++;
+        }
+      }
+    }
+
+    return { orphanedFilesCleaned, missingObjectsFlagged };
   }
 
   private assertContentTypeAllowed(contentType: string): void {

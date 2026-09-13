@@ -1,4 +1,5 @@
-import { index, integer, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import { index, integer, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 import { auth } from '../schemas';
 
 export const OTP_PURPOSES = ['login', 'verify_phone'] as const;
@@ -38,6 +39,7 @@ export const otpCodes = auth.table('otp_codes', {
 }, table => [
   index('otp_codes_identifier_idx').on(table.identifier, table.createdAt.desc()),
   index('otp_codes_expires_at_idx').on(table.expiresAt),
+  uniqueIndex('otp_codes_one_active_idx').on(table.identifier, table.purpose).where(sql`${table.consumedAt} IS NULL AND ${table.supersededAt} IS NULL`),
 ]);
 
 export type OtpCode = typeof otpCodes.$inferSelect;

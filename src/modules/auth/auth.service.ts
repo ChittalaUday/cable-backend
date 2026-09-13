@@ -51,7 +51,6 @@ export interface PublicUser {
   phone: string | null;
   name: string | null;
   photoUrl: string | null;
-  isSuperAdmin: boolean;
 }
 
 export function toPublicUser(user: User): PublicUser {
@@ -61,7 +60,6 @@ export function toPublicUser(user: User): PublicUser {
     phone: user.phone,
     name: user.name,
     photoUrl: user.photoUrl,
-    isSuperAdmin: user.isSuperAdmin,
   };
 }
 
@@ -269,7 +267,6 @@ export class AuthService {
       sub: user.id,
       sid: sessionId,
       did: deviceId,
-      sa: user.isSuperAdmin,
       memberships: rows.map(row => ({ t: row.tenantId, r: row.roleId })),
     };
   }

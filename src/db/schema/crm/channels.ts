@@ -43,7 +43,6 @@ export const channels = crm.table('channels', {
   unique('channels_service_number_unq').on(table.serviceId, table.channelNumber),
   unique('channels_service_slug_unq').on(table.serviceId, table.slug),
   index('channels_service_idx').on(table.serviceId),
-  index('channels_service_number_idx').on(table.serviceId, table.channelNumber),
   index('channels_tenant_genre_idx').on(table.tenantId, table.genre),
   index('channels_languages_idx').using('gin', table.languages),
   index('channels_tenant_status_idx').on(table.tenantId, table.status),

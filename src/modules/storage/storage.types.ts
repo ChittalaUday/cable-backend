@@ -1,4 +1,23 @@
-export type { FileKind, FileRecord, FileStatus, FileVisibility } from '@/db/schema';
+import type { Readable } from 'node:stream';
+import type {
+  FileKind,
+  FileRecord,
+  FileStatus,
+  FileVisibility,
+  NewFileRecord,
+  NewUserFileRecord,
+  UserFileRecord,
+} from '@/db/schema';
+
+export type {
+  FileKind,
+  FileRecord,
+  FileStatus,
+  FileVisibility,
+  NewFileRecord,
+  NewUserFileRecord,
+  UserFileRecord,
+};
 
 export interface PutObject {
   key: string;
@@ -15,6 +34,78 @@ export interface ObjectHead {
   sizeBytes: number;
   contentType: string | null;
   checksum: string | null;
+}
+
+export interface RequestUploadInput {
+  tenantId: string | null;
+  uploadedBy: string | null;
+  originalName: string;
+  contentType: string;
+  /** What the client says it will upload. Checked against the cap, then re-checked after. */
+  sizeBytes?: number;
+  /** sha-256 of the content, if computed upfront by the client for instant deduplication. */
+  checksum?: string;
+  kind?: FileKind;
+  visibility?: FileVisibility;
+  metadata?: Record<string, unknown>;
+}
+
+export interface LocalStagedUploadInput {
+  tenantId: string | null;
+  uploadedBy: string | null;
+  originalName: string;
+  contentType: string;
+  kind?: FileKind;
+  visibility?: FileVisibility;
+  metadata?: Record<string, unknown>;
+  /** The incoming stream of bytes (from multipart upload or request body). */
+  stream: Readable;
+}
+
+export interface DirectUploadResult {
+  deduplicated: boolean;
+  userFile: UserFileRecord;
+  file: FileRecord;
+}
+
+export type UploadResult
+  = | {
+    deduplicated: true;
+    userFile: UserFileRecord;
+    file: FileRecord;
+  }
+  | {
+    deduplicated: false;
+    userFile: UserFileRecord;
+    file: FileRecord;
+    uploadUrl: string;
+    expiresAt: Date;
+  };
+
+export interface UserFileWithFile {
+  userFile: UserFileRecord;
+  file: FileRecord;
+}
+
+export interface StorageCleanupOptions {
+  /**
+   * Grace period in minutes for in-flight pending uploads.
+   * Pending files created within this window are preserved and never cleaned up by the cron.
+   * Default: 120 minutes (2 hours).
+   */
+  gracePeriodMinutes?: number;
+  /**
+   * If true, performs storage head verification for all active ready files.
+   * Default: true.
+   */
+  verifyStorageIntegrity?: boolean;
+}
+
+export interface StorageCleanupReport {
+  stalePendingCleaned: number;
+  inFlightPendingPreserved: number;
+  orphanedFilesCleaned: number;
+  missingObjectsFlagged: number;
 }
 
 /**

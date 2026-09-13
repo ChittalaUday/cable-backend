@@ -13,7 +13,6 @@ export interface AuthBody {
     email: string | null;
     phone: string | null;
     name: string | null;
-    isSuperAdmin: boolean;
   };
   memberships: { tenantId: string; roleId: string }[];
   sessionId: string;

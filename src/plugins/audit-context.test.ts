@@ -11,7 +11,7 @@ beforeAll(async () => {
   await app.register(auditContextPlugin);
   app.get('/context', {
     onRequest: async (request) => {
-      request.session = { sub: 'user-1', sid: 'session-1', did: 'device-1', sa: false, memberships: [] };
+      request.session = { sub: 'user-1', sid: 'session-1', did: 'device-1', memberships: [] };
     },
   }, async request => request.auditContext);
   await app.ready();

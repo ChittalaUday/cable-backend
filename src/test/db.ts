@@ -50,7 +50,7 @@ export async function inRollback(db: TestDb, body: (tx: TestDb) => Promise<void>
     });
   }
   catch (error) {
-    if (error instanceof Error && error.name.includes(ROLLBACK))
+    if (error instanceof Error && (error.name.includes(ROLLBACK) || error.message.includes(ROLLBACK)))
       return;
     throw error;
   }

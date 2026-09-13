@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { boolean, check, index, text, timestamp, uuid, varchar } from 'drizzle-orm/pg-core';
+import { check, index, text, timestamp, uuid, varchar } from 'drizzle-orm/pg-core';
 import { auth } from '../schemas';
 
 /**
@@ -25,9 +25,6 @@ export const users = auth.table('users', {
 
   name: text('name'),
   photoUrl: text('photo_url'),
-
-  /** Platform-level role (§4.2). Not tenant-scoped. */
-  isSuperAdmin: boolean('is_super_admin').notNull().default(false),
 
   /** Non-null disables every session everywhere (§4.6). */
   disabledAt: timestamp('disabled_at', { withTimezone: true }),

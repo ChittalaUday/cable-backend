@@ -1,3 +1,4 @@
+import { sql } from 'drizzle-orm';
 import { index, text, timestamp, uuid } from 'drizzle-orm/pg-core';
 import { auth } from '../schemas';
 import { devices } from './devices';
@@ -42,6 +43,7 @@ export const sessions = auth.table('sessions', {
   index('sessions_user_idx').on(table.userId),
   index('sessions_device_idx').on(table.deviceId),
   index('sessions_revoked_at_idx').on(table.revokedAt),
+  index('sessions_active_prev_token_idx').on(table.prevTokenHash).where(sql`${table.revokedAt} IS NULL AND ${table.prevTokenHash} IS NOT NULL`),
 ]);
 
 export type Session = typeof sessions.$inferSelect;

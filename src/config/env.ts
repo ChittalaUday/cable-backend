@@ -44,6 +44,10 @@ const EnvSchema = Type.Object({
     Type.Literal('debug'),
     Type.Literal('trace'),
   ], { default: 'info' }),
+  LOG_DIRECTORY: Type.String({ minLength: 1, default: './logs' }),
+  LOG_MAX_FILE_BYTES: Type.Integer({ minimum: 1024, default: 10 * 1024 * 1024 }),
+  LOG_RETENTION_DAYS: Type.Integer({ minimum: 1, maximum: 3650, default: 30 }),
+  LOG_CLEANUP_HOUR_UTC: Type.Integer({ minimum: 0, maximum: 23, default: 2 }),
 
   DATABASE_URL: Type.String({ minLength: 1 }),
   DATABASE_POOL_MAX: Type.Integer({ minimum: 1, maximum: 100, default: 10 }),
@@ -102,13 +106,6 @@ const EnvSchema = Type.Object({
   OTP_TTL_SECONDS: Type.Integer({ minimum: 60, maximum: 1800, default: 300 }),
   OTP_MAX_ATTEMPTS: Type.Integer({ minimum: 1, maximum: 10, default: 5 }),
   OTP_RESEND_COOLDOWN_SECONDS: Type.Integer({ minimum: 15, maximum: 600, default: 60 }),
-
-  // ─── Bootstrap super admin (§4.2) ──────────────────────────────────────────
-  // The one account the API cannot create: `users.create` needs a caller who
-  // already holds it. Read by the seeder only; unset means it is skipped.
-  SUPER_ADMIN_EMAIL: Type.String({ default: '' }),
-  SUPER_ADMIN_PASSWORD: Type.String({ default: '' }),
-  SUPER_ADMIN_NAME: Type.String({ default: 'Super Admin' }),
 
   // ─── Cache (§8.5) ──────────────────────────────────────────────────────────
   CACHE_ENABLED: Type.Boolean({ default: true }),

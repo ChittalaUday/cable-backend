@@ -1,7 +1,7 @@
 import type { TestDb } from './db';
 import { randomInt, randomUUID } from 'node:crypto';
 import { inArray } from 'drizzle-orm';
-import { SUPER_ADMIN_ROLE_ID, SYSTEM_ROLES } from '@/config/constants';
+import { SYSTEM_ROLES } from '@/config/constants';
 import { devices, rolePermissions, roles, tenantMemberships, tenants, users } from '@/db/schema';
 import { hashPassword } from '@/shared/security/password';
 import { ALL_PERMISSION_KEYS, PERMISSIONS } from '@/shared/security/permissions';
@@ -36,8 +36,8 @@ export interface SeededAuthData {
   googleOnly: { id: string; email: string };
   /** `disabled_at` set — every session path must refuse it. */
   disabled: { id: string; email: string };
-  /** Platform role via the flag, no membership anywhere. */
-  superAdmin: { id: string; email: string };
+  /** A second ordinary account for shared-device session tests. */
+  other: { id: string; email: string };
   /** Phone with no account yet: verifying an OTP must create one. */
   unknownPhone: string;
   tenantA: { id: string; code: string };
@@ -48,7 +48,6 @@ export interface SeededAuthData {
 
 export async function seedRoles(db: TestDb): Promise<void> {
   const grants = {
-    [SUPER_ADMIN_ROLE_ID]: ALL_PERMISSION_KEYS.map(key => [key, 'ALL'] as const),
     [SYSTEM_ROLES.ADMIN]: ALL_PERMISSION_KEYS.map(key => [key, 'ALL'] as const),
     [SYSTEM_ROLES.STAFF]: [[PERMISSIONS.CUSTOMERS_VIEW, 'AREA'] as const],
     [SYSTEM_ROLES.CUSTOMER]: [[PERMISSIONS.CUSTOMERS_VIEW, 'OWN'] as const],
@@ -56,7 +55,7 @@ export async function seedRoles(db: TestDb): Promise<void> {
 
   for (const [roleId, permissions] of Object.entries(grants)) {
     await db.insert(roles)
-      .values({ id: roleId, name: roleId, isSystem: true })
+      .values({ id: roleId, name: roleId })
       .onConflictDoNothing();
 
     await db.insert(rolePermissions)
@@ -90,8 +89,8 @@ export async function seedAuthData(db: TestDb): Promise<SeededAuthData> {
     .values({ email: uniqueEmail('disabled'), name: 'Disabled User', passwordHash, disabledAt: new Date() })
     .returning();
 
-  const [superAdmin] = await db.insert(users)
-    .values({ email: uniqueEmail('super'), name: 'Super Admin', passwordHash, isSuperAdmin: true })
+  const [other] = await db.insert(users)
+    .values({ email: uniqueEmail('other'), name: 'Other User', passwordHash })
     .returning();
 
   // The same person, two tenants, two different roles — the case a `role`
@@ -109,14 +108,14 @@ export async function seedAuthData(db: TestDb): Promise<SeededAuthData> {
     .values({ clientDeviceId: uniqueDeviceId(), platform: 'android', blockedAt: new Date() })
     .returning();
 
-  const userIds = [active!.id, googleOnly!.id, disabled!.id, superAdmin!.id];
+  const userIds = [active!.id, googleOnly!.id, disabled!.id, other!.id];
 
   return {
     password: TEST_PASSWORD,
     active: { id: active!.id, email: active!.email!, phone: active!.phone! },
     googleOnly: { id: googleOnly!.id, email: googleOnly!.email! },
     disabled: { id: disabled!.id, email: disabled!.email! },
-    superAdmin: { id: superAdmin!.id, email: superAdmin!.email! },
+    other: { id: other!.id, email: other!.email! },
     unknownPhone: uniquePhone(),
     tenantA: { id: tenantA!.id, code: tenantA!.code },
     tenantB: { id: tenantB!.id, code: tenantB!.code },

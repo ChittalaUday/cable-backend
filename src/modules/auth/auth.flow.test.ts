@@ -318,19 +318,6 @@ describe('access token', () => {
     expect(byTenant[data.tenantB.id]).toBe('customer');
   });
 
-  it('reports the platform role from the flag, not from a membership', async () => {
-    const { accessToken } = bodyOf((await login(data.superAdmin.email, data.password)));
-
-    const response = await app.inject({
-      method: 'GET',
-      url: '/api/v1/auth/me',
-      headers: { authorization: `Bearer ${accessToken}` },
-    });
-
-    expect(bodyOf(response).user.isSuperAdmin).toBe(true);
-    expect(bodyOf(response).memberships).toEqual([]);
-  });
-
   it('refuses a missing header', async () => {
     const response = await app.inject({ method: 'GET', url: '/api/v1/auth/me' });
 
@@ -351,7 +338,7 @@ describe('access token', () => {
 
   it('refuses a token signed with the wrong key', async () => {
     const { SignJWT } = await import('jose');
-    const forged = await new SignJWT({ sub: data.active.id, sid: 'x', did: 'y', sa: true, memberships: [] })
+    const forged = await new SignJWT({ sub: data.active.id, sid: 'x', did: 'y', memberships: [] })
       .setProtectedHeader({ alg: 'HS256' })
       .setIssuer('cable-backend')
       .setExpirationTime('1h')
@@ -436,7 +423,7 @@ describe('logout', () => {
   it('leaves another account on the same device signed in', async () => {
     const sharedDevice = uniqueDeviceId();
     const mine = bodyOf((await login(data.active.email, data.password, sharedDevice)));
-    const theirs = bodyOf((await login(data.superAdmin.email, data.password, sharedDevice)));
+    const theirs = bodyOf((await login(data.other.email, data.password, sharedDevice)));
 
     await app.inject({
       method: 'POST',

@@ -79,8 +79,7 @@ describe('credentials changed out of band', () => {
   it('refuses to refresh a session older than the last credential change', async () => {
     const { body } = await login(data.active.email, data.password);
 
-    // What `db:seed` does when SUPER_ADMIN_PASSWORD is rotated, and what a
-    // future password-change endpoint will do.
+    // What a future password-change endpoint will do.
     await withUserPatch(
       { passwordHash: await hashPassword('a-different-password'), credentialsChangedAt: new Date() },
       { passwordHash: await hashPassword(data.password), credentialsChangedAt: new Date(0) },

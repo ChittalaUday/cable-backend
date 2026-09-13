@@ -20,7 +20,8 @@ export const customers = crm.table('customers', {
    */
   customerCode: text('customer_code').notNull().unique(),
 
-  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  /** Nullable for imported subscribers that do not have a login account (§4.1). */
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
 
   alternatePhone: varchar('alternate_phone', { length: 10 }),
   whatsappNumber: varchar('whatsapp_number', { length: 10 }),
