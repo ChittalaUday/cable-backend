@@ -41,6 +41,17 @@ export const ERROR_CODES = {
   /** Key held, but the granted scope does not reach this record — stage 2. */
   PERM_SCOPE_DENIED: 'PERM_SCOPE_DENIED',
 
+  // ─── OTP (§4.3) ─────────────────────────────────────────────────────────────
+  OTP_INVALID: 'OTP_INVALID',
+  OTP_EXPIRED: 'OTP_EXPIRED',
+  OTP_TOO_MANY_ATTEMPTS: 'OTP_TOO_MANY_ATTEMPTS',
+  OTP_RESEND_TOO_SOON: 'OTP_RESEND_TOO_SOON',
+  /** Delivery failed at the provider. The OTP was NOT sent — never treat as success. */
+  OTP_DELIVERY_FAILED: 'OTP_DELIVERY_FAILED',
+  OTP_CHANNEL_UNAVAILABLE: 'OTP_CHANNEL_UNAVAILABLE',
+  /** Email OTP is deliberately switched off until an email provider is chosen. */
+  OTP_EMAIL_NOT_SUPPORTED: 'OTP_EMAIL_NOT_SUPPORTED',
+
   // ─── Validation ─────────────────────────────────────────────────────────────
   VALIDATION_FAILED: 'VALIDATION_FAILED',
 

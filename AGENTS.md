@@ -13,7 +13,11 @@ boundaries. It is not microservices, and splitting it is not a goal.
 **Phase 1 — what is actually built now.** Tenant-scoped CRUD and the auth that
 protects it: `auth`, `tenants`, `users`, `roles`, `permissions`, `devices`,
 `customers`, `services`, `packages`, `connections`, plus read aggregation for
-dashboards. Everything in this phase talks to Postgres and nothing else.
+dashboards.
+
+Phase 1 talks to Postgres and to exactly two outbound endpoints, both required
+by sign-in and both synchronous by nature: **Google** (ID-token verification)
+and the **self-hosted messaging server** (OTP delivery). Nothing else.
 
 **Deferred — reserved home, not built yet.** Each of these has a place to land
 so nobody improvises one later:
@@ -26,7 +30,9 @@ so nobody improvises one later:
 | Tickets | `modules/tickets` | 2 |
 | Inventory | `modules/inventory` | 2 |
 | File storage (R2/S3) | `plugins/storage.ts` | 3 |
-| Push (FCM) / Email | `modules/notifications` behind a provider interface | 3 |
+| SMS provider | a second `MessagingProvider` in `modules/notifications` | when a gateway is chosen |
+| Email (incl. email OTP) | `modules/notifications` behind a provider interface | when a provider is chosen |
+| Push (FCM) | `modules/notifications` | 3 |
 | Excel / CSV export | `modules/reports` | 3 |
 | SSE realtime | `modules/notifications` | 3 |
 | Sentry, Prometheus | `plugins/` | with production traffic |
@@ -38,9 +44,10 @@ written now, before anyone is under deadline pressure to skip them:
    behind an interface in `shared/` or a plugin. Swapping a provider is one
    file, and a test can substitute a fake without a network.
 2. **Never on the request path of a write.** A CRUD write does not wait on S3,
-   FCM or an SMTP server. It commits, then enqueues. The one unavoidable
-   exception is auth-time verification (Google ID token), which is synchronous
-   by nature.
+   FCM or an SMTP server. It commits, then enqueues. The unavoidable exceptions
+   are both at sign-in: Google ID-token verification, and OTP delivery — an OTP
+   the caller is told was sent must actually have been sent, so it cannot be
+   enqueued and forgotten.
 3. **Fails closed and loudly.** An integration that errors raises and is logged
    with the `requestId`. It never silently degrades a write into a partial
    success — a payment that recorded but never notified must be visible as
@@ -341,6 +348,49 @@ Never put a password hash, a permission map, or PII in a JWT.
 
 Every token belongs to a **session**, and a session belongs to a device. That
 is what makes revocation and per-request attribution possible — see §4.6.
+
+### 4.3.1 Phone sign-in and OTP
+
+**Email signs in with a password. Phone signs in with an OTP.** A phone number
+is not a secret and a second password on the same account is a second thing to
+leak, so there is no phone + password path.
+
+```
+POST /api/v1/auth/otp/request  { phone, channel? }   → 202, always
+POST /api/v1/auth/otp/verify   { phone, code, ... }  → tokens
+```
+
+**Delivery is a service, not a vendor.** `modules/notifications` exposes a
+channel (`whatsapp` | `sms`); callers never name a provider. Today WhatsApp is
+served by a self-hosted **OpenWA** instance
+(`POST /api/sessions/{id}/messages/send-text`, `X-API-Key`, `chatId` =
+`<digits>@c.us`). An SMS gateway becomes a second `MessagingProvider` and an env
+change — no caller is touched.
+
+`MESSAGING_ENABLED=false`, and every test run, fall back to the log provider:
+the OTP is written to the log and nothing is delivered. That is the §1 kill
+switch, and it is why the suite never touches the network.
+
+**Email OTP is deliberately off.** A request for one returns
+`400 OTP_EMAIL_NOT_SUPPORTED`. It is not unimplemented-by-accident — it stays
+off until an email provider is chosen, and the explicit code is how a client
+tells that apart from a bug.
+
+**Rules the OTP flow must follow:**
+
+- **`request` always answers `202`**, whether or not the phone is known.
+  Different responses for known and unknown numbers turn the endpoint into a
+  free user-enumeration oracle.
+- **Only the hash is stored**, never the code — an OTP row is a credential.
+- **One active OTP per phone.** Requesting again invalidates the previous code,
+  so a stolen older message is useless.
+- **Rate limited on two axes**: a resend cooldown
+  (`OTP_RESEND_COOLDOWN_SECONDS`) and an attempt cap (`OTP_MAX_ATTEMPTS`). A
+  6-digit code is 10⁶ guesses, which is minutes of brute force without a cap.
+- **Consumed exactly once**, inside the transaction that creates the session.
+- **Delivery failure is a `502 OTP_DELIVERY_FAILED`**, never a silent `202`. A
+  disconnected WhatsApp session is the likeliest production failure here, and
+  it needs a QR scan rather than a retry — so it must be visible.
 
 ### 4.4 Choosing the active tenant
 
@@ -1112,6 +1162,9 @@ does not merge.
 - ❌ **DO NOT** write `last_seen_at`/`last_used_at` on every request. Login and refresh only.
 - ❌ **DO NOT** delete a session row to revoke it. Set `revoked_at` and a reason.
 - ❌ **DO NOT** treat a device header as an authentication factor.
+- ❌ **DO NOT** let `auth/otp/request` reveal whether a phone is registered.
+- ❌ **DO NOT** store an OTP in plaintext, or report `202` when delivery failed.
+- ❌ **DO NOT** name a messaging vendor outside its provider file. Callers pick a channel.
 - ❌ **DO NOT** branch on `message` or reuse an error `code` for a new meaning — shipped app builds depend on both.
 - ❌ **DO NOT** return a tenant-specific error code for a cross-tenant record. It is `404 RESOURCE_NOT_FOUND`, same as missing.
 - ❌ **DO NOT** build a deferred capability early, or add an integration that skips the five rules in §1.

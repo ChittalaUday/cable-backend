@@ -17,7 +17,7 @@ pnpm install
 cp .env.example .env          # then set JWT_SECRET: openssl rand -base64 48
 pnpm db:up                    # PostgreSQL 18 in Docker
 pnpm db:migrate
-pnpm dev                      # http://localhost:5000 — docs at /docs
+pnpm dev                      # http://localhost:5050 — docs at /docs
 ```
 
 ## Commands

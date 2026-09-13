@@ -19,7 +19,7 @@ const EnvSchema = Type.Object({
     Type.Literal('production'),
   ], { default: 'development' }),
 
-  PORT: Type.Integer({ minimum: 1, maximum: 65535, default: 5000 }),
+  PORT: Type.Integer({ minimum: 1, maximum: 65535, default: 5050 }),
   HOST: Type.String({ default: '0.0.0.0' }),
   LOG_LEVEL: Type.Union([
     Type.Literal('fatal'),
@@ -48,6 +48,27 @@ const EnvSchema = Type.Object({
 
   RATE_LIMIT_MAX: Type.Integer({ minimum: 1, default: 300 }),
   RATE_LIMIT_WINDOW: Type.String({ default: '1 minute' }),
+
+  // ─── Messaging / OTP ───────────────────────────────────────────────────────
+  // The kill switch (§1 rule 5): false falls back to the log provider, so OTPs
+  // appear in the log and nothing is delivered. Flips without a deploy.
+  MESSAGING_ENABLED: Type.Boolean({ default: false }),
+  MESSAGING_BASE_URL: Type.String({ default: '' }),
+  MESSAGING_API_KEY: Type.String({ default: '' }),
+  MESSAGING_SESSION_ID: Type.String({ default: '' }),
+  MESSAGING_TIMEOUT_MS: Type.Integer({ minimum: 500, maximum: 30_000, default: 8000 }),
+  MESSAGING_DEFAULT_CHANNEL: Type.Union([
+    Type.Literal('whatsapp'),
+    Type.Literal('sms'),
+  ], { default: 'whatsapp' }),
+
+  /** Numbers are entered nationally as often as in E.164, so this fills the gap. */
+  DEFAULT_COUNTRY_CODE: Type.String({ pattern: '^[0-9]{1,4}$', default: '91' }),
+
+  OTP_LENGTH: Type.Integer({ minimum: 4, maximum: 8, default: 6 }),
+  OTP_TTL_SECONDS: Type.Integer({ minimum: 60, maximum: 1800, default: 300 }),
+  OTP_MAX_ATTEMPTS: Type.Integer({ minimum: 1, maximum: 10, default: 5 }),
+  OTP_RESEND_COOLDOWN_SECONDS: Type.Integer({ minimum: 15, maximum: 600, default: 60 }),
 });
 
 export type Env = Static<typeof EnvSchema>;
