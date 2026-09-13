@@ -24,7 +24,9 @@ export async function buildApp() {
       // Tokens and passwords must never reach a log line.
       redact: ['req.headers.authorization', 'req.headers.cookie', '*.password', '*.refreshToken'],
     },
-    disableRequestLogging: isTest,
+    // Only set when true: merely naming this option emits a Fastify 6
+    // deprecation warning on every boot, and its replacement takes a class.
+    ...(isTest ? { disableRequestLogging: true } : {}),
     trustProxy: true,
     ajv: {
       customOptions: {

@@ -28,6 +28,10 @@ export class CacheService {
     return this.config.ttlSeconds;
   }
 
+  async ping(): Promise<void> {
+    await this.redis.ping();
+  }
+
   async get(parts: CacheKeyParts): Promise<string | null> {
     return this.redis.get(await this.keyFor(parts));
   }

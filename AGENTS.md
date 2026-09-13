@@ -147,6 +147,41 @@ production is found by the wrong person at the wrong time.
 
 Use `isProduction` / `isStaging` / `isLocal` / `exposeErrorDetail` from
 `config/env.ts`. Never branch on `process.env.NODE_ENV`.
+
+### 2.2 Preflight
+
+`config/preflight.ts` runs on every boot, **before the server listens**. A
+failed check exits non-zero and the process never binds a port — a broken
+instance that accepts traffic is worse than one that never starts.
+
+| Check | Fails when |
+|---|---|
+| `environment` | `APP_ENV` and `NODE_ENV` disagree (warn) |
+| `jwt secret` | still an example value, or too short |
+| `database` | unreachable |
+| `database schemas` | a schema from §8.2 is missing |
+| `migrations` | fewer applied than on disk |
+| `cache` | Redis unreachable, or caching disabled |
+| `messaging` | enabled but its credentials are unset |
+| `object storage` | not configured |
+
+**Severity depends on the tier.** A missing Redis is a warning locally and a
+failure in production; the `degraded()` helper encodes that, so no check has to
+repeat the rule. Genuinely fatal things — no database, missing schemas, pending
+migrations, an example JWT secret — fail on every tier.
+
+**Pending migrations get their own check** because that is the failure that
+looks like a healthy boot: the process starts, and then every query touching a
+new column throws at runtime.
+
+`pnpm verify` runs the same checks without listening, so a deploy pipeline can
+gate on configuration before routing traffic.
+
+**Plugins must not throw on a degraded dependency.** A plugin that dies during
+boot kills the process before preflight can explain what is wrong — the
+operator gets a driver stack trace instead of "migrations: none applied — run
+pnpm db:migrate". Plugins degrade and log; preflight decides whether that is
+fatal.
 ---
 
 ## 3. Architecture: modular monolith, route → controller → service
@@ -1433,6 +1468,8 @@ does not merge.
 - ❌ **DO NOT** let a cache failure fail a request; degrade to the database (§8.5).
 - ❌ **DO NOT** cache with a tenant-scoped key unless the response really is identical for every user in it.
 - ❌ **DO NOT** write a comment that restates the code. Comment the why.
+- ❌ **DO NOT** throw from a plugin over a degraded dependency; degrade and let preflight decide (§2.2).
+- ❌ **DO NOT** add a required config value without a preflight check for it.
 - ❌ **DO NOT** run `drizzle-kit push` against a shared database.
 - ❌ **DO NOT** use `console.log`. Use the request logger.
 - ❌ **DO NOT** join across a module boundary in raw SQL because both tables share a database.

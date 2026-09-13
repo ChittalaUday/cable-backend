@@ -27,6 +27,7 @@ pnpm dev                      # http://localhost:5050 — docs at /docs
 | `pnpm dev` | API with hot reload |
 | `pnpm worker:dev` | Background worker (no jobs yet) |
 | `pnpm check-all` | lint + type-check + test. CI runs exactly this. |
+| `pnpm verify` | Startup config checks without listening. Gate deploys on this. |
 | `pnpm db:generate` | Generate a migration from schema changes |
 | `pnpm db:migrate` | Apply pending migrations |
 | `pnpm db:studio` | Browse the database |
@@ -47,6 +48,25 @@ because replaying a rotated refresh token revokes the session.
 
 Start with **Auth > OTP > Request code**, put the code in `otpCode`, then
 **Verify code**.
+
+## Startup checks
+
+The server verifies its configuration before it listens, and exits non-zero if
+anything required is missing:
+
+```
+✓ environment       APP_ENV=local NODE_ENV=development
+✓ jwt secret        64 characters
+✓ database          connected, ssl=disable
+✓ database schemas  7 present
+✓ migrations        5/5 applied
+✓ cache             redis reachable, ttl=300s prefix="cable:"
+✓ messaging         openwa · whatsapp sms(placeholder) email(placeholder) push(placeholder)
+! object storage    not configured — file endpoints return 503
+```
+
+`!` is a warning locally and a failure in production. `pnpm verify` runs the
+same checks without starting the server.
 
 ## Environments
 

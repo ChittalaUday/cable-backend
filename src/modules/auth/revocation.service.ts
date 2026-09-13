@@ -44,7 +44,9 @@ export class RevocationCache {
   }
 
   async start(): Promise<void> {
-    await this.load();
+    // A warm start is an optimisation, not a requirement. Failing here would
+    // stop the process before preflight can say WHY the database is unusable.
+    await this.load().catch(() => {});
 
     this.listener = await this.pool.connect();
     this.listener.on('notification', (message) => {

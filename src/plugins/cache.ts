@@ -23,8 +23,19 @@ export default fp(async (app) => {
     return;
   }
 
-  const redis = new Redis(env.REDIS_URL, { lazyConnect: true, maxRetriesPerRequest: 2 });
-  await redis.connect();
+  const redis = new Redis(env.REDIS_URL, {
+    lazyConnect: true,
+    maxRetriesPerRequest: 2,
+    // ioredis throws on an unhandled 'error' event otherwise, and a cache
+    // outage must not take the API down (§8.5).
+    enableOfflineQueue: false,
+  });
+  redis.on('error', () => {});
+
+  // Not fatal: the API degrades to reading Postgres, and preflight reports it.
+  await redis.connect().catch((error: unknown) => {
+    app.log.warn(`Redis unreachable at boot: ${error instanceof Error ? error.message : String(error)}`);
+  });
 
   const cache = new CacheService(redis, {
     prefix: env.CACHE_PREFIX,
