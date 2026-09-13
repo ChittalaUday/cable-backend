@@ -6,7 +6,8 @@ import underPressure from '@fastify/under-pressure';
 import Fastify from 'fastify';
 import { Type } from 'typebox';
 import { API_PREFIX, API_VERSION } from '@/config/constants';
-import { env, isProduction, isTest } from '@/config/env';
+import { isTest } from '@/config/env';
+import { createLogger } from '@/shared/logging/logger';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -18,14 +19,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
  */
 export async function buildApp() {
   const app = Fastify({
-    logger: {
-      level: env.LOG_LEVEL,
-      ...(isProduction || isTest
-        ? {}
-        : { transport: { target: 'pino-pretty', options: { translateTime: 'HH:MM:ss', ignore: 'pid,hostname' } } }),
-      // Tokens and passwords must never reach a log line.
-      redact: ['req.headers.authorization', 'req.headers.cookie', '*.password', '*.refreshToken'],
-    },
+    loggerInstance: createLogger('api'),
     // Only set when true: merely naming this option emits a Fastify 6
     // deprecation warning on every boot, and its replacement takes a class.
     ...(isTest ? { disableRequestLogging: true } : {}),

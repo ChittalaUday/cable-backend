@@ -6,12 +6,11 @@
  * 2. Services: Cable TV (ACT), Broadband Internet (Satya Fiber), IPTV
  * 3. Channels: TV / IPTV channels with Logical Channel Numbers (LCN)
  * 4. Packages: Cable TV packs + Broadband tiers with JSON metadata
- * 5. Users & Memberships: Seeds customer phone numbers directly into auth.users + tenant_memberships
- * 6. Customers: 764 customers with customer codes (SSCN-000001, ...) via crm.next_customer_code
- * 7. Customer Details: Extended flat/door, landmark, and KYC metadata
- * 8. Subscriptions: Linked to ACT Cable TV with serviceAccountNumber (C2602498, ...)
- * 9. Equipment: STB, Smart Card / VC, Remote, Adapter assets & customer mappings
- * 10. Account Transactions: 5,097 historical ledger entries from LCO deposit report
+ * 5. Customers: 764 customer records with customer codes and complete raw/parsed JSON metadata (userId kept null)
+ * 6. Customer Details: Extended flat/door, landmark, and KYC metadata
+ * 7. Subscriptions: Linked to ACT Cable TV with serviceAccountNumber (C2602498, ...)
+ * 8. Equipment: STB, Smart Card / VC, Remote, Adapter assets & customer mappings
+ * 9. Account Transactions: 5,097 historical ledger entries from LCO deposit report
  */
 
 import type { ChannelGenre, ChannelResolution, PackageType, TransactionType } from '@/shared/constants/crm';
@@ -35,7 +34,6 @@ import {
   subscriptions,
   tenantMemberships,
   tenants,
-  users,
 } from '@/db/schema';
 
 const pool = new pg.Pool({ connectionString: env.DATABASE_URL, max: 2 });
@@ -665,7 +663,23 @@ async function run() {
   const parsedCustomers = parseMsoHtml(htmlContent);
   console.log(`📋 Parsed ${parsedCustomers.length} customer records from MSO report`);
 
-  // Cache existing subscriptions and users
+  // Disconnect existing customer user_id links and clean up previous bulk customer accounts
+  await db
+    .update(customers)
+    .set({ userId: null })
+    .where(sql`${customers.tenantId} = ${tenant.id}`);
+
+  await db
+    .delete(tenantMemberships)
+    .where(sql`${tenantMemberships.tenantId} = ${tenant.id} AND ${tenantMemberships.roleId} = 'customer'`);
+
+  await db.execute(sql`
+    DELETE FROM auth.users
+    WHERE id NOT IN (SELECT user_id FROM tenancy.tenant_memberships)
+      AND id NOT IN (SELECT user_id FROM auth.sessions)
+  `);
+
+  // Cache existing subscriptions
   const existingSubs = await db
     .select({ id: subscriptions.id, customerId: subscriptions.customerId, acc: subscriptions.serviceAccountNumber })
     .from(subscriptions)
@@ -675,15 +689,7 @@ async function run() {
   for (const s of existingSubs)
     subByAccount.set(s.acc, { id: s.id, customerId: s.customerId });
 
-  const existingUsers = await db.select({ id: users.id, phone: users.phone }).from(users);
-  const userByPhone = new Map<string, string>();
-  for (const u of existingUsers) {
-    if (u.phone !== null)
-      userByPhone.set(u.phone, u.id);
-  }
-
   let insertedCustomers = 0;
-  let insertedUsers = 0;
   let insertedSubs = 0;
   let insertedEquipment = 0;
 
@@ -695,68 +701,34 @@ async function run() {
     const createdAtDate = parseCreatedDate(custRow.createdDate);
     const cleanedPhone = cleanPhone(custRow.mobileNo);
 
-    // Seed or resolve user in auth.users
-    let userId: string | null = null;
-    if (cleanedPhone !== null) {
-      const existingUserId = userByPhone.get(cleanedPhone);
-      if (existingUserId !== undefined) {
-        userId = existingUserId;
-      }
-      else {
-        const [newUser] = await db
-          .insert(users)
-          .values({
-            phone: cleanedPhone,
-            name: custRow.name,
-            createdAt: createdAtDate,
-            updatedAt: new Date(),
-          })
-          .onConflictDoUpdate({
-            target: users.phone,
-            set: { name: custRow.name, updatedAt: new Date() },
-          })
-          .returning();
-
-        userId = newUser!.id;
-        userByPhone.set(cleanedPhone, userId);
-        insertedUsers++;
-
-        // Add tenant_memberships
-        await db
-          .insert(tenantMemberships)
-          .values({
-            userId,
-            tenantId: tenant.id,
-            roleId: 'customer',
-            status: 'active',
-            createdAt: createdAtDate,
-            updatedAt: new Date(),
-          })
-          .onConflictDoNothing({ target: [tenantMemberships.userId, tenantMemberships.tenantId] });
-      }
-    }
+    // Keep all customer raw & parsed info in JSON metadata for verification by admin
+    const customerInfo = {
+      name: custRow.name,
+      mobileNo: custRow.mobileNo,
+      cleanedPhone,
+      accountNo: custRow.accountNo,
+      lcoCustomerId: custRow.lcoCustomerId,
+      serialNumber: custRow.serialNumber,
+      vcNumber: custRow.vcNumber,
+      packageStr: custRow.packageStr,
+      status: custRow.status,
+      msoShareDue: custRow.msoShareDue,
+      address: custRow.address,
+      createdDate: custRow.createdDate,
+      importedFrom: 'Customer_account_status_report_2026-09-08 14_09_35.xls',
+    };
 
     if (existingSub) {
       customerId = existingSub.customerId;
       subscriptionId = existingSub.id;
 
-      // Update userId if not linked
-      if (userId !== null) {
-        await db
-          .update(customers)
-          .set({ userId })
-          .where(sql`${customers.id} = ${customerId} AND ${customers.userId} IS NULL`);
-      }
-
-      // Update customer notes & metadata if not set
+      // Update customer with userId = null and complete metadata JSON
       await db
         .update(customers)
         .set({
+          userId: null,
           notes: 'Imported from ACT Digital MSO status report',
-          metadata: {
-            lcoCustomerId: custRow.lcoCustomerId,
-            msoShareDue: custRow.msoShareDue,
-          },
+          metadata: customerInfo,
         })
         .where(sql`${customers.id} = ${customerId}`);
 
@@ -803,20 +775,17 @@ async function run() {
       );
       const generatedCode = codeRes.rows[0]?.code ?? `SSCN-${Date.now()}`;
 
-      // Insert customer with combined metadata
+      // Insert customer with userId = null and full metadata JSON
       const [newCust] = await db
         .insert(customers)
         .values({
           tenantId: tenant.id,
           customerCode: generatedCode,
-          userId: userId!,
+          userId: null,
           status: custRow.status as 'active' | 'inactive',
           outstandingBalance: '0.00',
           notes: 'Imported from ACT Digital MSO status report',
-          metadata: {
-            lcoCustomerId: custRow.lcoCustomerId,
-            msoShareDue: custRow.msoShareDue,
-          },
+          metadata: customerInfo,
           createdAt: createdAtDate,
           updatedAt: new Date(),
         })
@@ -977,7 +946,7 @@ async function run() {
     }
   }
 
-  console.log(`✅ Customers Seeded: ${insertedCustomers} customers (${insertedUsers} auth users), ${insertedSubs} subscriptions, ${insertedEquipment} equipment assets`);
+  console.log(`✅ Customers Processed: ${parsedCustomers.length} records (${insertedCustomers} new customers), ${insertedSubs} new subscriptions, ${insertedEquipment} equipment assets`);
 
   // 6. Parse and Seed Ledger Transactions
   if (fs.existsSync(LEDGER_REPORT_PATH)) {

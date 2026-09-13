@@ -47,7 +47,9 @@ const EnvSchema = Type.Object({
   LOG_DIRECTORY: Type.String({ minLength: 1, default: './logs' }),
   LOG_MAX_FILE_BYTES: Type.Integer({ minimum: 1024, default: 10 * 1024 * 1024 }),
   LOG_RETENTION_DAYS: Type.Integer({ minimum: 1, maximum: 3650, default: 30 }),
-  LOG_CLEANUP_HOUR_UTC: Type.Integer({ minimum: 0, maximum: 23, default: 2 }),
+  LOG_CLEANUP_CRON: Type.String({ minLength: 1, default: '0 2 * * *' }),
+  STORAGE_CLEANUP_CRON: Type.String({ minLength: 1, default: '0 2 * * *' }),
+  JOB_HISTORY_RETENTION_DAYS: Type.Integer({ minimum: 1, maximum: 3650, default: 30 }),
 
   DATABASE_URL: Type.String({ minLength: 1 }),
   DATABASE_POOL_MAX: Type.Integer({ minimum: 1, maximum: 100, default: 10 }),

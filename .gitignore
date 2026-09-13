@@ -10,5 +10,6 @@ secrets/
 *service-account*.json
 !.env.example
 *.log
+logs/
 .DS_Store
 .vitest/

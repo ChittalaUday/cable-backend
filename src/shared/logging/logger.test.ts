@@ -1,0 +1,33 @@
+import { readdirSync, readFileSync } from 'node:fs';
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { runLogCleanupJob } from '@/jobs/log-cleanup.job';
+import { createRotatingLogDestination } from './logger';
+
+describe('local log storage', () => {
+  it('groups, rotates, and deletes logs by UTC date', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'cable-logs-'));
+    const destination = createRotatingLogDestination({
+      directory,
+      maxFileBytes: 12,
+      name: 'api',
+      now: () => new Date('2026-09-13T12:00:00Z'),
+    });
+
+    destination.write('123456\n');
+    destination.write('abcdef\n');
+    const current = path.join(directory, '2026-09-13');
+    const files = readdirSync(current);
+    expect(files).toHaveLength(2);
+    expect(files.map(file => readFileSync(path.join(current, file), 'utf8'))).toEqual(['123456\n', 'abcdef\n']);
+
+    const expired = path.join(directory, '2026-08-01');
+    await mkdir(expired);
+    await writeFile(path.join(expired, 'old.log'), 'old');
+    await runLogCleanupJob({ directory, retentionDays: 30, now: new Date('2026-09-13T12:00:00Z') });
+
+    expect(readdirSync(directory)).toEqual(['2026-09-13']);
+  });
+});

@@ -66,6 +66,8 @@ export default fp(async (app) => {
   app.addSchema(ErrorResponse);
 
   app.setErrorHandler((error: FastifyError, request: FastifyRequest, reply: FastifyReply) => {
+    request.log.error({ err: error }, 'request failed');
+
     // Services throw DomainError; they never know about HTTP (§3).
     if (error instanceof DomainError) {
       return reply.status(error.statusCode).send({
@@ -112,9 +114,6 @@ export default fp(async (app) => {
     }
 
     if (status >= 500) {
-      // Logged in full on every tier. What changes is what the CLIENT sees.
-      request.log.error({ err: error }, 'unhandled error');
-
       return reply.status(500).send({
         statusCode: 500,
         error: 'Internal Server Error',

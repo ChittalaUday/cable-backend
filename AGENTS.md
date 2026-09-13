@@ -26,6 +26,7 @@ so nobody improvises one later:
 |---|---|---|
 | Redis cache | `plugins/redis.ts` | when a measured query is actually hot |
 | BullMQ queue + worker | `jobs/`, `src/worker.ts` | with billing |
+| PostgreSQL-backed scheduled jobs (pg-boss) | `jobs/`, `src/worker.ts` | 1 |
 | Billing, invoices, payments, collections | `modules/billing`, `invoices`, `payments`, `collections` | 2 |
 | Tickets | `modules/tickets` | 2 |
 | Inventory | `modules/inventory` | 2 |
@@ -87,7 +88,7 @@ Search is `pg_trgm` in Postgres, not a search cluster.
 | Migrations | Drizzle Kit | §8 |
 | API versioning | `/api/v1` | §6 |
 | Deployment | Docker Compose + Nginx | Multi-stage build, non-root user |
-| Background work | Separate **worker process, same codebase** | `src/worker.ts`, `jobs/` |
+| Background work | **pg-boss** in a separate worker process | PostgreSQL-persisted schedules and execution history |
 
 ### Fastify plugins — use these, do not reimplement them
 
