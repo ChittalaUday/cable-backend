@@ -35,6 +35,20 @@ pnpm dev                      # http://localhost:5050 — docs at /docs
 Unit tests run without Docker. Database-backed tests need it, or
 `DATABASE_URL_TEST` pointing at an existing PostgreSQL 18.
 
+## Database schemas
+
+Tables are namespaced by domain — nothing is in `public`:
+
+| Schema | Tables |
+|---|---|
+| `tenancy` | tenants, tenant_memberships, membership_areas, membership_locations |
+| `auth` | users, sessions, devices |
+| `iam` | roles, role_permissions |
+| `crm` | customers |
+
+Declare new tables through a schema object in `src/db/schema/schemas.ts`
+(`crm.table(...)`), never `pgTable(...)`. See AGENTS.md §8.2.
+
 ## Layout
 
 ```
@@ -43,7 +57,7 @@ src/
 ├── config/        env + app-wide constants
 ├── plugins/       database, auth, tenant, rbac, security, swagger, errors
 ├── modules/       one folder per resource: routes → controller → service
-├── db/            schema/ migrations/ seed/
+├── db/            schema/ migrations/ seed/  (tables live in named PG schemas)
 ├── shared/        errors, security, pagination, types, utils
 └── jobs/          run by worker.ts, never by the API process
 ```

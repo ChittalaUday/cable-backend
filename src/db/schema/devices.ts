@@ -1,4 +1,5 @@
-import { index, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { index, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { auth } from './schemas';
 
 /**
  * One physical install of the app (AGENTS.md §4.6).
@@ -6,7 +7,7 @@ import { index, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
  * A device header is client-supplied data: it identifies an install for support
  * and revocation. It is NOT an authentication factor and grants nothing.
  */
-export const devices = pgTable('devices', {
+export const devices = auth.table('devices', {
   id: uuid('id').primaryKey().defaultRandom(),
 
   /** Stable opaque id the app generates once and keeps. */

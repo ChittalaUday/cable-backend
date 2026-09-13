@@ -1,5 +1,6 @@
-import { index, integer, pgTable, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
+import { index, integer, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
 import { roles } from './roles';
+import { tenancy } from './schemas';
 import { tenants } from './tenants';
 import { users } from './users';
 
@@ -9,7 +10,7 @@ import { users } from './users';
  * A user's ROLE lives here, not on `users`. The same person can be `admin` of
  * one tenant and `customer` of another: one users row, two membership rows.
  */
-export const tenantMemberships = pgTable('tenant_memberships', {
+export const tenantMemberships = tenancy.table('tenant_memberships', {
   id: uuid('id').primaryKey().defaultRandom(),
   userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
   tenantId: uuid('tenant_id').notNull().references(() => tenants.id, { onDelete: 'cascade' }),
@@ -35,7 +36,7 @@ export const tenantMemberships = pgTable('tenant_memberships', {
 ]);
 
 /** Area grants backing the AREA scope. */
-export const membershipAreas = pgTable('membership_areas', {
+export const membershipAreas = tenancy.table('membership_areas', {
   membershipId: uuid('membership_id').notNull().references(() => tenantMemberships.id, { onDelete: 'cascade' }),
   areaId: uuid('area_id').notNull(),
 }, table => [
@@ -43,7 +44,7 @@ export const membershipAreas = pgTable('membership_areas', {
 ]);
 
 /** Location grants backing the LOCATION scope. */
-export const membershipLocations = pgTable('membership_locations', {
+export const membershipLocations = tenancy.table('membership_locations', {
   membershipId: uuid('membership_id').notNull().references(() => tenantMemberships.id, { onDelete: 'cascade' }),
   locationId: uuid('location_id').notNull(),
 }, table => [

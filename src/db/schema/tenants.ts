@@ -1,9 +1,10 @@
-import { index, integer, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { index, integer, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { tenancy } from './schemas';
 
 /**
  * A cable operator. Every business record in the system belongs to exactly one.
  */
-export const tenants = pgTable('tenants', {
+export const tenants = tenancy.table('tenants', {
   id: uuid('id').primaryKey().defaultRandom(),
 
   /**

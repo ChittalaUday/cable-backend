@@ -195,7 +195,8 @@ src/
 │   └── notifications/  reports/                                      ← phase 3
 │
 ├── db/
-│   ├── schema/                   # Drizzle table definitions, one file per table
+│   ├── schema/                   # Drizzle tables, one file per table
+│   │   └── schemas.ts            # The PostgreSQL namespaces (§8.2)
 │   ├── migrations/               # Generated SQL — committed, never edited after merge
 │   └── seed/                     # Idempotent seeders + the Firestore import (§9)
 │
@@ -822,7 +823,11 @@ the status line was chosen for (§6, §10).
 
 **Migrations**
 - Generated with `drizzle-kit generate`, reviewed as SQL, committed.
-- **A merged migration file is immutable.** Fix it forward with a new one.
+- **A migration is immutable once it has run anywhere but a local scratch
+  database.** Fix it forward with a new one. Before that — a greenfield branch
+  whose migration has only ever touched a developer's own database — regenerating
+  is better than shipping an `ALTER` that every future setup replays for no
+  reason. The moment it reaches a shared environment, that door closes.
 - Every migration must be safe to run against a live table: no blocking
   `ALTER`s, add columns nullable first, backfill, then constrain.
 - `drizzle-kit push` is for local scratch work only. **Never against staging or
@@ -964,6 +969,49 @@ Default, unless you say otherwise (§9):
 The alternative — reissue every customer a clean `SCB-000001` code and publish a
 mapping — is cleaner going forward and is a reasonable call. It is a business
 decision about whether customers' existing numbers matter, so it is yours.
+
+### 8.2 PostgreSQL schemas
+
+**Every table lives in a named schema. Nothing lives in `public`.**
+
+| Schema | Holds | Owned by |
+|---|---|---|
+| `tenancy` | `tenants`, `tenant_memberships`, `membership_areas`, `membership_locations` | `tenants` |
+| `auth` | `users`, `sessions`, `devices`, `otp_codes` | `auth`, `users`, `devices` |
+| `iam` | `roles`, `role_permissions` | `roles`, `permissions` |
+| `crm` | `customers` | `customers` |
+| `drizzle` | migration bookkeeping | Drizzle Kit |
+
+Later domains get their own: `billing` (invoices, payments, collections),
+`ops` (tickets, inventory), `audit`.
+
+**Why.** The module boundaries in §3 are enforced in the import graph by the
+linter — but the linter cannot see SQL. A schema makes the same boundary
+visible where the query actually runs: `crm.customers JOIN auth.users` is
+legibly crossing a boundary in the statement, in an `EXPLAIN`, and in a
+slow-query log. Table names also stop competing for one namespace, so
+`billing.payments` and `ops.payments` can coexist if they ever need to.
+
+A schema is a **grouping by domain, not one per module** — `auth`, `users` and
+`devices` are three modules over one identity domain, and splitting their tables
+across three schemas would make every session lookup a cross-schema join for no
+gain. One schema per domain; a module's tables live in exactly one of them.
+
+**Rules:**
+
+- New tables are declared through a schema object from `db/schema/schemas.ts`
+  (`crm.table(...)`), never `pgTable(...)`. A `pgTable` call lands the table in
+  `public`, which is how the convention quietly erodes.
+- **Do not set a `search_path` and rely on it.** Drizzle fully qualifies every
+  identifier, and unqualified SQL that resolves by search order is a
+  wrong-table bug waiting for a session that connects differently.
+- Adding a schema means adding it to `schemaFilter` in `drizzle.config.ts`, or
+  Drizzle Kit will not see its tables — and will not notice they are missing.
+- Cross-schema foreign keys are fine and expected (`crm.customers.tenant_id →
+  tenancy.tenants.id`). The boundary rule is about *queries a module writes*,
+  not about referential integrity.
+- Schemas are not a security boundary here. Tenant isolation is `tenant_id` in
+  every query (§4.5); do not let a namespace create the impression otherwise.
 ---
 
 ## 9. Firestore → Postgres data migration
@@ -1172,6 +1220,8 @@ does not merge.
 - ❌ **DO NOT** use `customer_code` as a foreign key, or change `tenants.code` after creation.
 - ❌ **DO NOT** compute a sequence with `SELECT max(...) + 1`. Use `UPDATE … RETURNING`.
 - ❌ **DO NOT** edit a merged migration. Fix forward.
+- ❌ **DO NOT** declare a table with `pgTable(...)`. Use its schema object (§8.2).
+- ❌ **DO NOT** rely on `search_path`; every identifier is schema-qualified.
 - ❌ **DO NOT** run `drizzle-kit push` against a shared database.
 - ❌ **DO NOT** use `console.log`. Use the request logger.
 - ❌ **DO NOT** join across a module boundary in raw SQL because both tables share a database.

@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm';
-import { boolean, check, index, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { boolean, check, index, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { auth } from './schemas';
 
 /**
  * Global identity — ONE row per human, across every tenant (AGENTS.md §4.1).
@@ -8,7 +9,7 @@ import { boolean, check, index, pgTable, text, timestamp, uuid } from 'drizzle-o
  * membership in a tenant, because the same person can be an admin of one tenant
  * and a customer of another.
  */
-export const users = pgTable('users', {
+export const users = auth.table('users', {
   id: uuid('id').primaryKey().defaultRandom(),
 
   /** Sign-in identifier. At least one of email/phone must be present. */

@@ -1,4 +1,5 @@
-import { index, numeric, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { index, numeric, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { crm } from './schemas';
 import { tenants } from './tenants';
 import { users } from './users';
 
@@ -8,7 +9,7 @@ import { users } from './users';
  * `userId` is nullable: an imported subscriber has a business record but no
  * login account, and may never get one.
  */
-export const customers = pgTable('customers', {
+export const customers = crm.table('customers', {
   id: uuid('id').primaryKey().defaultRandom(),
   tenantId: uuid('tenant_id').notNull().references(() => tenants.id, { onDelete: 'cascade' }),
 

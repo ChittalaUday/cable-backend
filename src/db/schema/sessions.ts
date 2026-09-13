@@ -1,5 +1,6 @@
-import { index, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { index, text, timestamp, uuid } from 'drizzle-orm/pg-core';
 import { devices } from './devices';
+import { auth } from './schemas';
 import { users } from './users';
 
 export const SESSION_REVOKE_REASONS = [
@@ -19,7 +20,7 @@ export const SESSION_REVOKE_REASONS = [
  * signed in on one device, each with its own refresh token, and signing out of
  * one must not touch the others.
  */
-export const sessions = pgTable('sessions', {
+export const sessions = auth.table('sessions', {
   id: uuid('id').primaryKey().defaultRandom(),
   userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
   deviceId: uuid('device_id').notNull().references(() => devices.id, { onDelete: 'cascade' }),

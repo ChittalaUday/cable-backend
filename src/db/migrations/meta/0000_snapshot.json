@@ -1,12 +1,12 @@
 {
-  "id": "6aa4e712-60bf-4a47-933c-6b072e1bf77f",
+  "id": "d8ec09b7-4e82-4a15-b25c-c9f8183068b0",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
-    "public.customers": {
+    "crm.customers": {
       "name": "customers",
-      "schema": "",
+      "schema": "crm",
       "columns": {
         "id": {
           "name": "id",
@@ -210,6 +210,7 @@
           "name": "customers_tenant_id_tenants_id_fk",
           "tableFrom": "customers",
           "tableTo": "tenants",
+          "schemaTo": "tenancy",
           "columnsFrom": [
             "tenant_id"
           ],
@@ -223,6 +224,7 @@
           "name": "customers_user_id_users_id_fk",
           "tableFrom": "customers",
           "tableTo": "users",
+          "schemaTo": "auth",
           "columnsFrom": [
             "user_id"
           ],
@@ -236,6 +238,7 @@
           "name": "customers_created_by_users_id_fk",
           "tableFrom": "customers",
           "tableTo": "users",
+          "schemaTo": "auth",
           "columnsFrom": [
             "created_by"
           ],
@@ -260,9 +263,9 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.devices": {
+    "auth.devices": {
       "name": "devices",
-      "schema": "",
+      "schema": "auth",
       "columns": {
         "id": {
           "name": "id",
@@ -360,9 +363,9 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.membership_areas": {
+    "tenancy.membership_areas": {
       "name": "membership_areas",
-      "schema": "",
+      "schema": "tenancy",
       "columns": {
         "membership_id": {
           "name": "membership_id",
@@ -383,6 +386,7 @@
           "name": "membership_areas_membership_id_tenant_memberships_id_fk",
           "tableFrom": "membership_areas",
           "tableTo": "tenant_memberships",
+          "schemaTo": "tenancy",
           "columnsFrom": [
             "membership_id"
           ],
@@ -408,9 +412,9 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.membership_locations": {
+    "tenancy.membership_locations": {
       "name": "membership_locations",
-      "schema": "",
+      "schema": "tenancy",
       "columns": {
         "membership_id": {
           "name": "membership_id",
@@ -431,6 +435,7 @@
           "name": "membership_locations_membership_id_tenant_memberships_id_fk",
           "tableFrom": "membership_locations",
           "tableTo": "tenant_memberships",
+          "schemaTo": "tenancy",
           "columnsFrom": [
             "membership_id"
           ],
@@ -456,9 +461,9 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.tenant_memberships": {
+    "tenancy.tenant_memberships": {
       "name": "tenant_memberships",
-      "schema": "",
+      "schema": "tenancy",
       "columns": {
         "id": {
           "name": "id",
@@ -557,6 +562,7 @@
           "name": "tenant_memberships_user_id_users_id_fk",
           "tableFrom": "tenant_memberships",
           "tableTo": "users",
+          "schemaTo": "auth",
           "columnsFrom": [
             "user_id"
           ],
@@ -570,6 +576,7 @@
           "name": "tenant_memberships_tenant_id_tenants_id_fk",
           "tableFrom": "tenant_memberships",
           "tableTo": "tenants",
+          "schemaTo": "tenancy",
           "columnsFrom": [
             "tenant_id"
           ],
@@ -583,6 +590,7 @@
           "name": "tenant_memberships_role_id_roles_id_fk",
           "tableFrom": "tenant_memberships",
           "tableTo": "roles",
+          "schemaTo": "iam",
           "columnsFrom": [
             "role_id"
           ],
@@ -608,9 +616,9 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.role_permissions": {
+    "iam.role_permissions": {
       "name": "role_permissions",
-      "schema": "",
+      "schema": "iam",
       "columns": {
         "role_id": {
           "name": "role_id",
@@ -637,6 +645,7 @@
           "name": "role_permissions_role_id_roles_id_fk",
           "tableFrom": "role_permissions",
           "tableTo": "roles",
+          "schemaTo": "iam",
           "columnsFrom": [
             "role_id"
           ],
@@ -661,9 +670,9 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.roles": {
+    "iam.roles": {
       "name": "roles",
-      "schema": "",
+      "schema": "iam",
       "columns": {
         "id": {
           "name": "id",
@@ -733,6 +742,7 @@
           "name": "roles_tenant_id_tenants_id_fk",
           "tableFrom": "roles",
           "tableTo": "tenants",
+          "schemaTo": "tenancy",
           "columnsFrom": [
             "tenant_id"
           ],
@@ -749,9 +759,9 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.sessions": {
+    "auth.sessions": {
       "name": "sessions",
-      "schema": "",
+      "schema": "auth",
       "columns": {
         "id": {
           "name": "id",
@@ -869,6 +879,7 @@
           "name": "sessions_user_id_users_id_fk",
           "tableFrom": "sessions",
           "tableTo": "users",
+          "schemaTo": "auth",
           "columnsFrom": [
             "user_id"
           ],
@@ -882,6 +893,7 @@
           "name": "sessions_device_id_devices_id_fk",
           "tableFrom": "sessions",
           "tableTo": "devices",
+          "schemaTo": "auth",
           "columnsFrom": [
             "device_id"
           ],
@@ -906,9 +918,9 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.tenants": {
+    "tenancy.tenants": {
       "name": "tenants",
-      "schema": "",
+      "schema": "tenancy",
       "columns": {
         "id": {
           "name": "id",
@@ -996,9 +1008,9 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.users": {
+    "auth.users": {
       "name": "users",
-      "schema": "",
+      "schema": "auth",
       "columns": {
         "id": {
           "name": "id",
@@ -1124,14 +1136,19 @@
       "checkConstraints": {
         "users_identifier_present": {
           "name": "users_identifier_present",
-          "value": "\"users\".\"email\" IS NOT NULL OR \"users\".\"phone\" IS NOT NULL"
+          "value": "\"auth\".\"users\".\"email\" IS NOT NULL OR \"auth\".\"users\".\"phone\" IS NOT NULL"
         }
       },
       "isRLSEnabled": false
     }
   },
   "enums": {},
-  "schemas": {},
+  "schemas": {
+    "auth": "auth",
+    "crm": "crm",
+    "iam": "iam",
+    "tenancy": "tenancy"
+  },
   "sequences": {},
   "roles": {},
   "policies": {},
