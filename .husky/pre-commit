@@ -1,0 +1,20 @@
+echo ">> Checking branch name..."
+if [ -z "$SKIP_BRANCH_PROTECTION" ]; then
+  # symbolic-ref works before the first commit exists; rev-parse does not.
+  BRANCH=$(git symbolic-ref --short -q HEAD || echo "detached")
+  case "$BRANCH" in
+    main|master)
+      echo ">> Direct commits to $BRANCH are not allowed. Create a branch,"
+      echo "   or set SKIP_BRANCH_PROTECTION=1 for a deliberate exception."
+      exit 1
+      ;;
+  esac
+else
+  echo ">> Skipping branch protection."
+fi
+
+echo ">> Type checking..."
+pnpm type-check
+
+echo ">> Linting staged files..."
+pnpm exec lint-staged

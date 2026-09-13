@@ -1,0 +1,12 @@
+changed() {
+  git diff --name-only HEAD@{1} HEAD | grep -E "^$1" >/dev/null 2>&1
+}
+
+if changed 'pnpm-lock.yaml'; then
+  echo "📦 pnpm-lock.yaml changed — running pnpm install"
+  pnpm install
+fi
+
+if changed 'src/db/migrations'; then
+  echo "🗃️  Migrations changed — run: pnpm db:migrate"
+fi
