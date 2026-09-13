@@ -46,7 +46,8 @@ export async function buildApp() {
   await app.register(underPressure, {
     exposeStatusRoute: {
       url: '/health',
-      routeOpts: { logLevel: 'warn' },
+      // A cached health check reports a database that is already gone.
+      routeOpts: { logLevel: 'warn', config: { cache: false } },
     },
     healthCheck: async () => {
       // A health check that does not touch the database reports "ok" while
@@ -61,6 +62,10 @@ export async function buildApp() {
     dir: path.join(here, 'modules'),
     matchFilter: /\.routes\.(?:ts|js)$/,
     dirNameRoutePrefix: false,
+    // A module's `index.ts` is its public surface (§3), not a Fastify plugin.
+    // Autoload's default treats an index file as THE module for its directory
+    // and skips every sibling, which silently registers no routes at all.
+    indexPattern: /^__never_matches__$/,
     options: { prefix: '/api/v1' },
     ignorePattern: /\.test\.(?:ts|js)$/,
   });

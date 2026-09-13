@@ -1141,6 +1141,49 @@ Nothing outside `providers/r2.provider.ts` knows that.
 attachments become necessary, add a `media.attachments` link table then — a
 polymorphic `owner_type`/`owner_id` pair would buy flexibility nothing needs yet
 and cost every FK guarantee.
+
+### 8.5 Caching
+
+Redis, `CACHE_TTL_SECONDS` (default 300). **`GET` reads the cache; a successful
+`POST`/`PUT`/`PATCH`/`DELETE` invalidates it.**
+
+**Invalidation is by version counter, not by key deletion.** A mutation runs
+`INCR ver:<tenant>:<resource>`; cache keys embed that version, so the previous
+generation is orphaned in one O(1) command and expires on its own TTL.
+SCAN-and-delete is O(keyspace), races with concurrent writes, and gets slower
+exactly as the cache gets more useful.
+
+Key shape:
+
+```
+cable:v<version>:<tenantId>:<userId|tenant>:<url>
+cable:ver:<tenantId>:<resource>        ← the counter
+```
+
+**Keys include the user id by default.** Responses are permission-filtered
+(§5), so a key shared across users would serve one user's rows to another. A
+route whose response is identical for everyone in a tenant opts in with
+`config: { cache: { scope: 'tenant' } }` — that is a deliberate statement that
+the response carries no per-user filtering, and it is wrong for anything
+scope-limited.
+
+**Rules:**
+
+- `config: { cache: false }` on anything whose freshness is the point — auth,
+  sessions, anything reading its own write back immediately.
+- **A cache failure is never a request failure.** Every Redis call is wrapped;
+  a dead cache degrades to reading Postgres, it does not 500.
+- Invalidation is keyed on the URL's first path segment, so
+  `POST /customers` clears `GET /customers` *and* `GET /customers/:id`. A
+  mutation that affects a different resource must invalidate that one too,
+  explicitly, via `app.cache.invalidate()`.
+- **Never cache a response whose body depends on a header the key omits.**
+  Today the key covers tenant and user; anything else varying the body must
+  either be in the URL or opt out.
+- Responses carry `x-cache: HIT|MISS`, which is how you check this is working
+  rather than assuming it.
+- The Redis instance may be shared with other projects. `CACHE_PREFIX` and a
+  dedicated DB index in `REDIS_URL` are what keep the keyspaces apart.
 ---
 
 ## 9. Firestore → Postgres data migration
@@ -1224,6 +1267,38 @@ is checked by the linter, not by reviewer memory:
 
 TypeScript: `strict`, plus `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`,
 `noImplicitOverride`, `verbatimModuleSyntax`.
+
+### Comments
+
+**Comment why, never what.** The code already says what it does; a comment that
+restates it is a second thing to keep in sync, and it goes stale silently.
+
+Write a comment when:
+
+- A decision has a reason that is not visible locally — why this approach and
+  not the obvious one, what breaks if it changes.
+- Something looks wrong but is correct: a deliberate fail-closed branch, an
+  ordering that matters, a workaround for external behaviour.
+- A security or correctness invariant depends on the line (tenant scoping, a
+  constant-time compare, why a fast hash is right *here*).
+- A `ponytail:` marker: a deliberate shortcut with its ceiling and upgrade path.
+
+Do **not** write:
+
+- A JSDoc block on a function whose name and signature already say everything.
+  `/** Gets a user by id. */ getUserById(id)` is noise.
+- Section banners inside a short file, or `// imports`, `// helpers`.
+- A restatement of the next line, or a comment on every field of a schema whose
+  names are self-describing.
+- TODOs without an owner or a condition. Either do it or write it down as
+  `ponytail:` with the trigger.
+
+Prefer a clearer name over a comment explaining an unclear one. If a function
+needs three sentences to explain, the function is the problem.
+
+**Public API surfaces are the exception**: an exported service method, a shared
+type, or an error code benefits from one line saying what a caller needs to
+know — because the caller is not reading the body.
 
 ### Git hooks (Husky) — mirrors the mobile repo
 
@@ -1355,6 +1430,9 @@ does not merge.
 - ❌ **DO NOT** proxy file bytes through the API. Presign, then confirm (§8.4).
 - ❌ **DO NOT** trust a client-reported file size or content type.
 - ❌ **DO NOT** branch on `process.env.NODE_ENV`. Use the tier helpers (§2.1).
+- ❌ **DO NOT** let a cache failure fail a request; degrade to the database (§8.5).
+- ❌ **DO NOT** cache with a tenant-scoped key unless the response really is identical for every user in it.
+- ❌ **DO NOT** write a comment that restates the code. Comment the why.
 - ❌ **DO NOT** run `drizzle-kit push` against a shared database.
 - ❌ **DO NOT** use `console.log`. Use the request logger.
 - ❌ **DO NOT** join across a module boundary in raw SQL because both tables share a database.

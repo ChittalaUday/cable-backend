@@ -3,6 +3,7 @@ export * from './devices';
 export * from './media';
 export * from './memberships';
 export * from './notifications';
+export * from './otp-codes';
 export * from './roles';
 export * from './schemas';
 export * from './sessions';

@@ -27,5 +27,5 @@
     "baseUrl": ".",
     "paths": { "@/*": ["./src/*"] }
   },
-  "include": ["src/**/*", "drizzle.config.ts", "vitest.config.ts", "eslint.config.mjs"]
+  "include": ["src/**/*", "*.ts", "*.mjs", "*.js"]
 }

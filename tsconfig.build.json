@@ -4,6 +4,10 @@
     "rootDir": "./src",
     "sourceMap": false
   },
+  "tsc-alias": {
+    "resolveFullPaths": true,
+    "verbose": false
+  },
   "include": ["src/**/*"],
   "exclude": ["src/**/*.test.ts", "src/test/**/*"]
 }

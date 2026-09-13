@@ -1,0 +1,383 @@
+{
+  "info": {
+    "name": "Cable Backend \u2014 API v1",
+    "_postman_id": "b1f7c5a2-0e3d-4a91-9c4e-5d2f8a1b6c77",
+    "description": "Satya Cable & Broadband API.\n\nTokens are handled for you:\n- Any response containing `accessToken` is captured into the environment.\n- Before every authenticated request, the token is refreshed if it is missing or within 60s of expiry.\n- A rejected refresh clears the environment, because replaying a rotated refresh token revokes the session (AGENTS.md \u00a74.6).\n\nStart with **Auth > OTP > Request code**, then **Verify code**.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{accessToken}}",
+        "type": "string"
+      }
+    ]
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Keeps {{accessToken}} fresh so no request is sent with a dead token.",
+          "// Refreshes when the token is missing, or within 60s of expiry.",
+          "",
+          "const AUTH_PATHS = ['auth/login', 'auth/refresh', 'auth/otp/request', 'auth/otp/verify'];",
+          "const path = pm.request.url.getPath();",
+          "",
+          "if (AUTH_PATHS.some(p => path.endsWith(p))) {",
+          "    // Sign-in endpoints mint tokens; refreshing before them would be circular.",
+          "    return;",
+          "}",
+          "",
+          "const refreshToken = pm.environment.get('refreshToken');",
+          "const expiresAt = Number(pm.environment.get('accessTokenExpiresAt') || 0);",
+          "const accessToken = pm.environment.get('accessToken');",
+          "",
+          "const needsRefresh = !accessToken || Date.now() > (expiresAt - 60000);",
+          "",
+          "if (!needsRefresh) {",
+          "    return;",
+          "}",
+          "",
+          "if (!refreshToken) {",
+          "    console.warn('[auth] No refreshToken. Run \"OTP > Verify\" or \"Login\" first.');",
+          "    return;",
+          "}",
+          "",
+          "pm.sendRequest({",
+          "    url: pm.environment.get('baseUrl') + '/auth/refresh',",
+          "    method: 'POST',",
+          "    header: { 'content-type': 'application/json' },",
+          "    body: { mode: 'raw', raw: JSON.stringify({ refreshToken }) },",
+          "}, (err, res) => {",
+          "    if (err) {",
+          "        console.error('[auth] refresh request failed:', err);",
+          "        return;",
+          "    }",
+          "",
+          "    if (res.code !== 200) {",
+          "        // AUTH_REFRESH_REUSED means the session was revoked: the stored token is",
+          "        // dead and reusing it would revoke the new session too.",
+          "        const code = (res.json() || {}).code;",
+          "        console.error('[auth] refresh rejected:', res.code, code);",
+          "        pm.environment.unset('accessToken');",
+          "        pm.environment.unset('refreshToken');",
+          "        pm.environment.unset('accessTokenExpiresAt');",
+          "        return;",
+          "    }",
+          "",
+          "    const data = res.json();",
+          "    pm.environment.set('accessToken', data.accessToken);",
+          "    pm.environment.set('refreshToken', data.refreshToken);",
+          "    pm.environment.set('accessTokenExpiresAt', Date.now() + data.expiresIn * 1000);",
+          "    console.log('[auth] token refreshed, valid for', data.expiresIn, 's');",
+          "});"
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Captures tokens from any response that carries them, so Login, OTP Verify and",
+          "// Refresh all populate the environment without their own scripts.",
+          "",
+          "if (pm.response.code >= 200 && pm.response.code < 300) {",
+          "    let body = null;",
+          "    try { body = pm.response.json(); } catch (e) { body = null; }",
+          "",
+          "    if (body && body.accessToken) {",
+          "        pm.environment.set('accessToken', body.accessToken);",
+          "        pm.environment.set('accessTokenExpiresAt', Date.now() + (body.expiresIn || 900) * 1000);",
+          "        if (body.refreshToken) pm.environment.set('refreshToken', body.refreshToken);",
+          "        if (body.user && body.user.id) pm.environment.set('userId', body.user.id);",
+          "        console.log('[auth] tokens stored');",
+          "    }",
+          "",
+          "    if (body && body.sessionId) pm.environment.set('sessionId', body.sessionId);",
+          "}",
+          "",
+          "// Every error carries a machine-readable `code` (AGENTS.md \u00a77.1).",
+          "if (pm.response.code >= 400) {",
+          "    let body = null;",
+          "    try { body = pm.response.json(); } catch (e) { body = null; }",
+          "    if (body && body.code) {",
+          "        console.warn('[error]', pm.response.code, body.code, '-', body.message);",
+          "    }",
+          "}",
+          "",
+          "pm.test('no 5xx', function () {",
+          "    pm.expect(pm.response.code).to.be.below(500);",
+          "});"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "apiVersion",
+      "value": "v1"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "Health check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "description": "Reports ok only when the database is reachable.",
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "OTP",
+          "item": [
+            {
+              "name": "Request code",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "content-type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/auth/otp/request",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "auth",
+                    "otp",
+                    "request"
+                  ]
+                },
+                "description": "Always answers 202, registered or not \u2014 a different answer would be a user-enumeration oracle.\n\n502 OTP_DELIVERY_FAILED usually means the WhatsApp session is disconnected and needs a QR scan.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"phone\": \"{{phone}}\",\n  \"channel\": \"whatsapp\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "auth": {
+                  "type": "noauth"
+                }
+              }
+            },
+            {
+              "name": "Verify code",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "content-type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-device-id",
+                    "value": "{{deviceId}}"
+                  },
+                  {
+                    "key": "x-platform",
+                    "value": "{{platform}}"
+                  },
+                  {
+                    "key": "x-app-version",
+                    "value": "{{appVersion}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/auth/otp/verify",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "auth",
+                    "otp",
+                    "verify"
+                  ]
+                },
+                "description": "Sets accessToken and refreshToken on success.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"phone\": \"{{phone}}\",\n  \"code\": \"{{otpCode}}\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "auth": {
+                  "type": "noauth"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login (email or phone + password)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-device-id",
+                "value": "{{deviceId}}"
+              },
+              {
+                "key": "x-platform",
+                "value": "{{platform}}"
+              },
+              {
+                "key": "x-app-version",
+                "value": "{{appVersion}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "description": "Email accounts only. Phone accounts sign in with an OTP.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"identifier\": \"{{identifier}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        },
+        {
+          "name": "Refresh tokens",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/refresh",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "refresh"
+              ]
+            },
+            "description": "Rotates the refresh token. Replaying a rotated token returns 401 AUTH_REFRESH_REUSED and revokes the session.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        },
+        {
+          "name": "Me",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/auth/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "me"
+              ]
+            },
+            "description": "Signed-in user, session, device and tenant memberships."
+          }
+        },
+        {
+          "name": "Logout (this session)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/auth/logout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "logout"
+              ]
+            },
+            "description": "Other accounts signed in on the same device stay signed in."
+          }
+        },
+        {
+          "name": "Logout everywhere",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/auth/logout-all",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "logout-all"
+              ]
+            },
+            "description": "Revokes every session for this user across all devices."
+          }
+        }
+      ]
+    }
+  ]
+}

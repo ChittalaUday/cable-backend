@@ -1,4 +1,11 @@
+import path from 'node:path';
 import antfu from '@antfu/eslint-config';
+
+// Resolved from this file, not from process.cwd(). In a multi-root editor
+// workspace ESLint runs with the workspace root as its cwd, so a relative
+// tsconfig path silently finds nothing — type information degrades to `any` and
+// every typed rule starts reporting "Unexpected any value in conditional".
+const ROOT = import.meta.dirname;
 
 /**
  * Layer boundaries from AGENTS.md §3 are enforced here, not by reviewer memory.
@@ -10,11 +17,11 @@ export default antfu(
     // antfu relaxes rules when it thinks it is running in an editor. Lint must
     // behave identically on a laptop and in CI, so the detection is off.
     isInEditor: false,
-    typescript: { tsconfigPath: './tsconfig.json' },
+    typescript: { tsconfigPath: path.join(ROOT, 'tsconfig.json'), tsconfigRootDir: ROOT },
     stylistic: { indent: 2, quotes: 'single', semi: true },
     jsonc: false,
     yaml: false,
-    ignores: ['dist', 'coverage', 'node_modules', 'src/db/migrations'],
+    ignores: ['**/dist', '**/coverage', '**/node_modules', '**/src/db/migrations'],
   },
 
   // Code fences inside Markdown are examples, not compiled source.
@@ -61,7 +68,7 @@ export default antfu(
 
   // Type-aware rules need a real program, so they apply to compiled source only.
   {
-    files: ['src/**/*.ts'],
+    files: ['**/src/**/*.ts'],
     rules: {
       'ts/consistent-type-imports': 'error',
       'ts/no-floating-promises': 'error',
@@ -72,7 +79,7 @@ export default antfu(
 
   // §3: services are framework-free, so they stay testable without booting a server.
   {
-    files: ['src/modules/**/*.service.ts'],
+    files: ['**/src/modules/**/*.service.ts'],
     rules: {
       'no-restricted-imports': ['error', {
         paths: [{ name: 'fastify', message: 'Services are framework-free (§3). Take plain arguments, throw domain errors.' }],
@@ -86,7 +93,7 @@ export default antfu(
 
   // §3: no database access above the service layer.
   {
-    files: ['src/modules/**/*.controller.ts', 'src/modules/**/*.routes.ts', 'src/jobs/**/*.ts'],
+    files: ['**/src/modules/**/*.controller.ts', '**/src/modules/**/*.routes.ts', '**/src/jobs/**/*.ts'],
     rules: {
       'no-restricted-imports': ['error', {
         patterns: [
@@ -99,24 +106,31 @@ export default antfu(
 
   // ESM process entry points: top-level await is exactly what they are for.
   {
-    files: ['src/server.ts', 'src/worker.ts', 'src/db/migrate.ts'],
+    files: ['**/src/server.ts', '**/src/worker.ts', '**/src/db/migrate.ts'],
     rules: { 'antfu/no-top-level-await': 'off' },
+  },
+
+  // TypeBox pairs a schema const with a same-named inferred type on purpose;
+  // they occupy different namespaces and keeping one name is the whole point.
+  {
+    files: ['**/*.schema.ts', '**/src/shared/pagination/**'],
+    rules: { 'ts/no-redeclare': 'off' },
   },
 
   // §10: env is read in exactly one place.
   {
-    files: ['src/config/env.ts', 'drizzle.config.ts', 'vitest.config.ts', 'src/test/**/*.ts'],
+    files: ['**/src/config/env.ts', '**/drizzle.config.ts', '**/vitest.config.ts', '**/src/test/**/*.ts', '**/*.test.ts'],
     rules: { 'node/no-process-env': 'off' },
   },
 
   {
-    files: ['**/*.test.ts', 'src/test/**/*.ts'],
+    files: ['**/*.test.ts', '**/src/test/**/*.ts'],
     rules: { 'max-lines-per-function': 'off', 'ts/no-non-null-assertion': 'off', 'no-console': 'off' },
   },
 
   // Entry points and seeders report to a human on a terminal, not to a request logger.
   {
-    files: ['src/db/seed/**/*.ts', 'src/db/migrate.ts'],
+    files: ['**/src/db/seed/**/*.ts', '**/src/db/migrate.ts'],
     rules: { 'no-console': 'off' },
   },
 );

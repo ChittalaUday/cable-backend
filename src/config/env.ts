@@ -94,6 +94,12 @@ const EnvSchema = Type.Object({
   OTP_MAX_ATTEMPTS: Type.Integer({ minimum: 1, maximum: 10, default: 5 }),
   OTP_RESEND_COOLDOWN_SECONDS: Type.Integer({ minimum: 15, maximum: 600, default: 60 }),
 
+  // ─── Cache (§8.5) ──────────────────────────────────────────────────────────
+  CACHE_ENABLED: Type.Boolean({ default: true }),
+  REDIS_URL: Type.String({ default: 'redis://127.0.0.1:6379/2' }),
+  CACHE_TTL_SECONDS: Type.Integer({ minimum: 1, maximum: 86_400, default: 300 }),
+  CACHE_PREFIX: Type.String({ default: 'cable:' }),
+
   // ─── Object storage: Cloudflare R2 (§8.4) ──────────────────────────────────
   // Unset leaves the unconfigured provider in place: every call fails naming the
   // variables it needs, rather than crashing inside the AWS SDK.

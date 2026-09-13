@@ -30,10 +30,23 @@ pnpm dev                      # http://localhost:5050 — docs at /docs
 | `pnpm db:generate` | Generate a migration from schema changes |
 | `pnpm db:migrate` | Apply pending migrations |
 | `pnpm db:studio` | Browse the database |
-| `pnpm test` | Vitest. Database tests need Docker (Testcontainers). |
+| `pnpm test` | Vitest. Needs PostgreSQL and Redis. |
+| `pnpm build && pnpm start` | Production build and run |
 
-Unit tests run without Docker. Database-backed tests need it, or
-`DATABASE_URL_TEST` pointing at an existing PostgreSQL 18.
+Tests use the local PostgreSQL via `.env.test`, falling back to Testcontainers
+when that file is absent. Cache tests need Redis on `REDIS_URL`.
+
+## Postman
+
+`postman/` holds the collection and two environments. Import all three.
+
+Tokens are handled automatically: any response containing `accessToken` is
+captured, and before each authenticated request the token is refreshed if it is
+missing or within 60s of expiry. A rejected refresh clears the environment,
+because replaying a rotated refresh token revokes the session.
+
+Start with **Auth > OTP > Request code**, put the code in `otpCode`, then
+**Verify code**.
 
 ## Environments
 
@@ -62,6 +75,10 @@ Tables are namespaced by domain — nothing is in `public`:
 | `notify` | notifications |
 | `media` | files |
 | `analytics` | views only (dashboard aggregates) |
+
+Caching is Redis with a 300s TTL: `GET` reads it, a successful
+`POST`/`PUT`/`PATCH`/`DELETE` invalidates that resource. Responses carry
+`x-cache: HIT|MISS`. See AGENTS.md §8.5.
 
 Declare new tables through a schema object in `src/db/schema/schemas.ts`
 (`crm.table(...)`), never `pgTable(...)`. See AGENTS.md §8.2.
