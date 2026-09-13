@@ -1,0 +1,26 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "⚡ Backend: Dev Server (node-terminal)",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "pnpm dev",
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "⚡ Backend: Worker (node-terminal)",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "pnpm worker:dev",
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "⚡ Backend: Verify Preflight (node-terminal)",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "pnpm verify",
+      "cwd": "${workspaceFolder}"
+    }
+  ]
+}

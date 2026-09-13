@@ -49,7 +49,6 @@ export class SessionsService {
     private readonly onRevoked: OnRevoked = async () => {},
   ) {}
 
-  /** Records the device, refusing a blocked one before any session is created. */
   async upsertDevice(info: DeviceInfo): Promise<Device> {
     const [device] = await this.db.insert(devices)
       .values({
@@ -86,7 +85,6 @@ export class SessionsService {
     return device;
   }
 
-  /** Creates a session and its first refresh token. */
   async issue(userId: string, deviceId: string): Promise<IssuedSession> {
     await this.enforceDeviceLimit(deviceId);
 
@@ -107,8 +105,6 @@ export class SessionsService {
   }
 
   /**
-   * Rotates a refresh token.
-   *
    * A token matching `prev_token_hash` has been replayed — the session is
    * revoked and both the thief and the legitimate holder are signed out. You
    * cannot tell them apart, and leaving the session alive favours the attacker.
@@ -131,8 +127,17 @@ export class SessionsService {
     if (current.expiresAt.getTime() <= Date.now())
       throw unauthorized(ERROR_CODES.AUTH_REFRESH_INVALID, 'Refresh token has expired');
 
+    // Without this a blocked handset kept refreshing forever — only new
+    // sign-ins were refused. Here, not in the request hook: one read per
+    // refresh rather than one per request.
+    await this.assertDeviceUsable(current.deviceId, current.id);
+
     const next = generateRefreshToken();
 
+    // Compare-and-swap, not an update by id. The SELECT above and this write
+    // are two round trips, so two requests carrying the same token both read it
+    // as current; without `refresh_token_hash = hash` both would win and one
+    // token would become two live ones. The loser now sees no row.
     const [rotated] = await this.db.update(sessions)
       .set({
         refreshTokenHash: hashRefreshToken(next),
@@ -140,7 +145,11 @@ export class SessionsService {
         lastUsedAt: new Date(),
         expiresAt: new Date(Date.now() + this.config.refreshTtlDays * 86_400_000),
       })
-      .where(eq(sessions.id, current.id))
+      .where(and(
+        eq(sessions.id, current.id),
+        eq(sessions.refreshTokenHash, hash),
+        isNull(sessions.revokedAt),
+      ))
       .returning();
 
     if (!rotated)
@@ -158,7 +167,6 @@ export class SessionsService {
     await this.onRevoked(sessionId);
   }
 
-  /** Every session for a user, across every device. Never another user's. */
   async revokeAllForUser(userId: string, reason: SessionRevokeReason): Promise<number> {
     const rows = await this.db.update(sessions)
       .set({ revokedAt: new Date(), revokedReason: reason })
@@ -169,7 +177,6 @@ export class SessionsService {
     return rows.length;
   }
 
-  /** Every session on a device, across every user. */
   async revokeAllForDevice(deviceId: string, reason: SessionRevokeReason): Promise<number> {
     const rows = await this.db.update(sessions)
       .set({ revokedAt: new Date(), revokedReason: reason })
@@ -186,10 +193,18 @@ export class SessionsService {
     return session ?? null;
   }
 
-  /**
-   * Keeps a device from accumulating credentials nobody is watching: past the
-   * cap, the least recently used session is revoked.
-   */
+  private async assertDeviceUsable(deviceId: string, sessionId: string): Promise<void> {
+    const [device] = await this.db.select({ blockedAt: devices.blockedAt })
+      .from(devices)
+      .where(eq(devices.id, deviceId));
+
+    if (device?.blockedAt == null)
+      return;
+
+    await this.revoke(sessionId, 'device_blocked');
+    throw forbidden(ERROR_CODES.AUTH_DEVICE_BLOCKED, 'This device has been blocked');
+  }
+
   private async enforceDeviceLimit(deviceId: string): Promise<void> {
     const active = await this.db.select({ id: sessions.id }).from(sessions).where(and(eq(sessions.deviceId, deviceId), isNull(sessions.revokedAt))).orderBy(asc(sessions.lastUsedAt));
 

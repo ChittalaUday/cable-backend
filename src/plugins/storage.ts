@@ -28,6 +28,8 @@ export default fp(async (app) => {
         accessKeyId: env.R2_ACCESS_KEY_ID,
         secretAccessKey: env.R2_SECRET_ACCESS_KEY,
         bucket: env.R2_BUCKET,
+        ...(env.R2_ENDPOINT === '' ? {} : { endpoint: env.R2_ENDPOINT }),
+        ...(env.R2_JURISDICTION === '' ? {} : { jurisdiction: env.R2_JURISDICTION }),
         ...(env.R2_PUBLIC_BASE_URL === '' ? {} : { publicBaseUrl: env.R2_PUBLIC_BASE_URL }),
       })
     : createUnconfiguredStorage();

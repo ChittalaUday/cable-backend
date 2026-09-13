@@ -38,4 +38,6 @@ export interface StorageProvider {
   /** Direct write, for small artefacts the backend generates itself. */
   put: (object: PutObject) => Promise<void>;
   remove: (key: string) => Promise<void>;
+  /** Probes connectivity and bucket access for health and preflight checks. */
+  ping?: () => Promise<void>;
 }

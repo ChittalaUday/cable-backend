@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 import autoload from '@fastify/autoload';
 import underPressure from '@fastify/under-pressure';
 import Fastify from 'fastify';
+import { Type } from 'typebox';
+import { API_PREFIX, API_VERSION } from '@/config/constants';
 import { env, isProduction, isTest } from '@/config/env';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -60,6 +62,34 @@ export async function buildApp() {
     healthCheckInterval: 10_000,
   });
 
+  // Duplicated under the prefix on purpose: probes want an unversioned
+  // `/health` that survives a v2, but a client only knows `baseUrl`.
+  // `isUnderPressure()` reads the cached 10s check — no query per poll.
+  app.get(`${API_PREFIX}/health`, {
+    logLevel: 'warn',
+    config: { cache: false },
+    schema: {
+      tags: ['health'],
+      summary: 'Service health, under the API version prefix',
+      response: {
+        200: Type.Object({
+          status: Type.Literal('ok'),
+          version: Type.String(),
+        }),
+        503: Type.Object({
+          status: Type.Literal('unavailable'),
+          version: Type.String(),
+        }),
+      },
+      security: [],
+    },
+  }, async (_request, reply) => {
+    if (app.isUnderPressure())
+      return reply.status(503).send({ status: 'unavailable' as const, version: API_VERSION });
+
+    return reply.status(200).send({ status: 'ok' as const, version: API_VERSION });
+  });
+
   await app.register(autoload, {
     dir: path.join(here, 'modules'),
     matchFilter: /\.routes\.(?:ts|js)$/,
@@ -68,7 +98,7 @@ export async function buildApp() {
     // Autoload's default treats an index file as THE module for its directory
     // and skips every sibling, which silently registers no routes at all.
     indexPattern: /^__never_matches__$/,
-    options: { prefix: '/api/v1' },
+    options: { prefix: API_PREFIX },
     ignorePattern: /\.test\.(?:ts|js)$/,
   });
 

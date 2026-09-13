@@ -3,6 +3,11 @@ dist/
 coverage/
 .env
 .env.*
+
+# Service-account keys and anything else with a private key in it.
+secrets/
+*-adminsdk-*.json
+*service-account*.json
 !.env.example
 *.log
 .DS_Store

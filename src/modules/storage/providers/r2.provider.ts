@@ -3,6 +3,7 @@ import {
   DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
+  ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
@@ -13,6 +14,10 @@ export interface R2Config {
   accessKeyId: string;
   secretAccessKey: string;
   bucket: string;
+  /** Explicit endpoint override (e.g. jurisdiction-specific endpoint). */
+  endpoint?: string;
+  /** Jurisdiction for jurisdiction-specific endpoints (e.g. 'eu', 'fedramp'). */
+  jurisdiction?: string;
   /** Public base URL for a bucket served over a custom domain, if any. */
   publicBaseUrl?: string;
 }
@@ -25,9 +30,14 @@ export interface R2Config {
  * endpoint.
  */
 export function createR2Provider(config: R2Config): StorageProvider {
+  const endpoint = config.endpoint
+    ?? (config.jurisdiction !== undefined && config.jurisdiction !== ''
+      ? `https://${config.accountId}.${config.jurisdiction}.r2.cloudflarestorage.com`
+      : `https://${config.accountId}.r2.cloudflarestorage.com`);
+
   const client = new S3Client({
     region: 'auto',
-    endpoint: `https://${config.accountId}.r2.cloudflarestorage.com`,
+    endpoint,
     credentials: {
       accessKeyId: config.accessKeyId,
       secretAccessKey: config.secretAccessKey,
@@ -89,6 +99,10 @@ export function createR2Provider(config: R2Config): StorageProvider {
 
     async remove(key: string): Promise<void> {
       await client.send(new DeleteObjectCommand({ Bucket: config.bucket, Key: key }));
+    },
+
+    async ping(): Promise<void> {
+      await client.send(new ListObjectsV2Command({ Bucket: config.bucket, MaxKeys: 1 }));
     },
   };
 }

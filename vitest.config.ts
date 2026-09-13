@@ -19,6 +19,11 @@ export default defineConfig({
     hookTimeout: 120_000,
     testTimeout: 30_000,
     pool: 'threads',
+    // @fastify/autoload dynamically imports plugin files at runtime. Left
+    // external, that import is native Node's and the `@/` alias does not exist
+    // — every plugin fails with "Cannot find package '@/config'". Inlined, the
+    // import goes through Vite and resolves like every other one.
+    server: { deps: { inline: ['@fastify/autoload'] } },
     coverage: { provider: 'v8', include: ['src/**/*.ts'], exclude: ['src/**/*.test.ts', 'src/test/**'] },
   },
   resolve: {

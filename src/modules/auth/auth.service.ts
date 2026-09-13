@@ -1,15 +1,28 @@
 import type { DeviceInfo, SessionsService } from './sessions.service';
-import type { User } from '@/db/schema';
+import type { Session, User } from '@/db/schema';
 import type { MessagingService } from '@/modules/notifications';
 import type { Database } from '@/plugins/database';
 import type { AccessTokenClaims, TokenSigner } from '@/shared/security/tokens';
+import { randomUUID } from 'node:crypto';
 import { and, desc, eq, isNull, or, sql } from 'drizzle-orm';
 import { otpCodes, tenantMemberships, users } from '@/db/schema';
 import { normalisePhone } from '@/modules/notifications';
 import { ERROR_CODES } from '@/shared/errors';
 import { badRequest, forbidden, unauthorized } from '@/shared/errors/domain-error';
 import { generateOtp, hashOtp, otpMatches } from '@/shared/security/otp';
-import { verifyPassword } from '@/shared/security/password';
+import { hashPassword, verifyPassword } from '@/shared/security/password';
+
+/**
+ * Burns the same CPU on an unknown account as a real verify would, so the two
+ * cannot be told apart with a stopwatch. Built on first use, not at module
+ * load: hashing costs ~10ms and every entry point imports this module.
+ */
+let dummyPasswordHash: Promise<string> | null = null;
+
+async function unknownAccountHash(): Promise<string> {
+  dummyPasswordHash ??= hashPassword(randomUUID());
+  return dummyPasswordHash;
+}
 
 export interface AuthConfig {
   otpLength: number;
@@ -83,14 +96,6 @@ export class AuthService {
     private readonly deps: { messaging: MessagingService; tokens: TokenSigner; config: AuthConfig },
   ) {}
 
-  /**
-   * Issues and sends an OTP.
-   *
-   * The caller always reports 202 regardless of what happens in here for a known
-   * versus unknown number — different answers would turn this into a free
-   * user-enumeration oracle (§4.3.1). Delivery failure is the one exception: it
-   * throws, because an OTP nobody received must not read as sent.
-   */
   get otpTtlSeconds(): number {
     return this.deps.config.otpTtlSeconds;
   }
@@ -141,7 +146,6 @@ export class AuthService {
     return { channel };
   }
 
-  /** Verifies an OTP and issues tokens, creating the account if the number is new. */
   async verifyOtp(input: VerifyOtpInput): Promise<AuthTokens & { user: PublicUser }> {
     const identifier = normalisePhone(input.phone, this.deps.config.defaultCountryCode);
     const record = await this.findLiveOtp(identifier);
@@ -169,17 +173,26 @@ export class AuthService {
     return this.startSession(user, input.device);
   }
 
-  /** Email or phone plus a password. */
   async login(input: LoginInput): Promise<AuthTokens & { user: PublicUser }> {
     const identifier = input.identifier.trim().toLowerCase();
-    const asPhone = normalisePhone(identifier, this.deps.config.defaultCountryCode);
 
-    const [user] = await this.db.select().from(users).where(or(eq(users.email, identifier), eq(users.phone, asPhone)));
+    // `normalisePhone` strips non-digits, so an email would be looked up as a
+    // phone: `admin2024@satya.in` becomes `912024`, reaching whoever owns it.
+    const asPhone = identifier.includes('@')
+      ? null
+      : normalisePhone(identifier, this.deps.config.defaultCountryCode);
 
-    // The same error whether the account is missing or the password is wrong —
-    // telling them apart is an account-enumeration oracle.
-    if (!user)
+    const [user] = await this.db.select().from(users).where(
+      asPhone === null ? eq(users.email, identifier) : or(eq(users.email, identifier), eq(users.phone, asPhone)),
+    ).limit(1);
+
+    // Same error AND same cost as a wrong password: returning early here made
+    // an unknown account ~9x faster to probe, which is the same enumeration
+    // oracle the matching message exists to close.
+    if (!user) {
+      await verifyPassword(input.password, await unknownAccountHash());
       throw unauthorized(ERROR_CODES.AUTH_CREDENTIALS_INVALID, 'Invalid credentials');
+    }
 
     if (user.passwordHash === null)
       throw unauthorized(ERROR_CODES.AUTH_PASSWORD_NOT_SET, 'This account signs in with Google');
@@ -190,7 +203,6 @@ export class AuthService {
     return this.startSession(user, input.device);
   }
 
-  /** Rotates a refresh token and mints a matching access token. */
   async refresh(refreshToken: string): Promise<AuthTokens> {
     const { session, refreshToken: next } = await this.sessions.rotate(refreshToken);
 
@@ -199,6 +211,7 @@ export class AuthService {
       throw unauthorized(ERROR_CODES.AUTH_REFRESH_INVALID, 'Refresh token is not valid');
 
     this.assertUsable(user);
+    await this.assertCredentialsUnchanged(user, session);
 
     const claims = await this.claimsFor(user, session.id, session.deviceId);
     const { token, expiresIn } = await this.deps.tokens.sign(claims);
@@ -214,8 +227,6 @@ export class AuthService {
     return this.sessions.revokeAllForUser(userId, 'logout_all');
   }
 
-  // ── internals ──────────────────────────────────────────────────────────────
-
   private async startSession(user: User, device: DeviceInfo): Promise<AuthTokens & { user: PublicUser }> {
     this.assertUsable(user);
 
@@ -226,6 +237,20 @@ export class AuthService {
     const { token, expiresIn } = await this.deps.tokens.sign(claims);
 
     return { accessToken: token, refreshToken, expiresIn, user: toPublicUser(user) };
+  }
+
+  /**
+   * Backstop for credentials changed out of band — the seeder, or an operator
+   * with psql (§4.6). A password-change endpoint must still call
+   * `revokeAllForUser(..., 'credentials_changed')` itself: that takes effect at
+   * once, this only at the next refresh.
+   */
+  private async assertCredentialsUnchanged(user: User, session: Session): Promise<void> {
+    if (session.issuedAt.getTime() >= user.credentialsChangedAt.getTime())
+      return;
+
+    await this.sessions.revoke(session.id, 'credentials_changed');
+    throw unauthorized(ERROR_CODES.AUTH_SESSION_REVOKED, 'Credentials changed — sign in again');
   }
 
   private assertUsable(user: User): void {

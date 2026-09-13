@@ -133,9 +133,9 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{baseUrl}}/health",
+              "raw": "{{rootUrl}}/health",
               "host": [
-                "{{baseUrl}}"
+                "{{rootUrl}}"
               ],
               "path": [
                 "health"

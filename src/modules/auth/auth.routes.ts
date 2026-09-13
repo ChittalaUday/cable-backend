@@ -1,4 +1,5 @@
 import type { FastifyPluginAsyncTypebox } from '@fastify/type-provider-typebox';
+import { env } from '@/config/env';
 import * as controller from './auth.controller';
 import {
   DeviceHeaders,
@@ -20,10 +21,11 @@ import {
 const routes: FastifyPluginAsyncTypebox = async (app) => {
   const errorRef = { $ref: 'ErrorResponse#' };
 
-  // Sign-in endpoints are the cheapest thing to attack, so they carry their own
-  // limit rather than sharing the global one.
   const signInLimit = {
-    config: { rateLimit: { max: 10, timeWindow: '1 minute' }, cache: false as const },
+    config: {
+      rateLimit: { max: env.SIGN_IN_RATE_LIMIT_MAX, timeWindow: '1 minute' },
+      cache: false as const,
+    },
   };
 
   app.post('/auth/otp/request', {

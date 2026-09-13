@@ -5,6 +5,7 @@ export type { MessageChannel, MessagingProvider, OutboundMessage, SendResult } f
 export { NotificationService } from './notifications.service';
 export { REDACTED_BODY, TRANSPORT_CHANNELS } from './notifications.types';
 export type { InboxQuery, Notification, NotificationChannel, NotifyInput } from './notifications.types';
+export { createFcmProvider } from './providers/fcm.provider';
 export { createLogProvider } from './providers/log.provider';
 export { createOpenWaProvider } from './providers/openwa.provider';
 export { createPlaceholderProvider } from './providers/placeholder.provider';

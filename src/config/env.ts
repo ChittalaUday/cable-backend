@@ -72,6 +72,12 @@ const EnvSchema = Type.Object({
 
   RATE_LIMIT_MAX: Type.Integer({ minimum: 1, default: 300 }),
   RATE_LIMIT_WINDOW: Type.String({ default: '1 minute' }),
+  /**
+   * Sign-in is the cheapest thing to attack, so it gets its own ceiling (§2).
+   * Separate from RATE_LIMIT_MAX so it can be tightened during an incident
+   * without throttling the whole API.
+   */
+  SIGN_IN_RATE_LIMIT_MAX: Type.Integer({ minimum: 1, default: 10 }),
 
   // ─── Messaging / OTP ───────────────────────────────────────────────────────
   // The kill switch (§1 rule 5): false falls back to the log provider, so OTPs
@@ -86,6 +92,9 @@ const EnvSchema = Type.Object({
     Type.Literal('sms'),
   ], { default: 'whatsapp' }),
 
+  // Firebase Admin service account JSON path.
+  FIREBASE_SERVICE_ACCOUNT_PATH: Type.String({ default: '' }),
+
   /** Numbers are entered nationally as often as in E.164, so this fills the gap. */
   DEFAULT_COUNTRY_CODE: Type.String({ pattern: '^[0-9]{1,4}$', default: '91' }),
 
@@ -93,6 +102,13 @@ const EnvSchema = Type.Object({
   OTP_TTL_SECONDS: Type.Integer({ minimum: 60, maximum: 1800, default: 300 }),
   OTP_MAX_ATTEMPTS: Type.Integer({ minimum: 1, maximum: 10, default: 5 }),
   OTP_RESEND_COOLDOWN_SECONDS: Type.Integer({ minimum: 15, maximum: 600, default: 60 }),
+
+  // ─── Bootstrap super admin (§4.2) ──────────────────────────────────────────
+  // The one account the API cannot create: `users.create` needs a caller who
+  // already holds it. Read by the seeder only; unset means it is skipped.
+  SUPER_ADMIN_EMAIL: Type.String({ default: '' }),
+  SUPER_ADMIN_PASSWORD: Type.String({ default: '' }),
+  SUPER_ADMIN_NAME: Type.String({ default: 'Super Admin' }),
 
   // ─── Cache (§8.5) ──────────────────────────────────────────────────────────
   CACHE_ENABLED: Type.Boolean({ default: true }),
@@ -104,6 +120,8 @@ const EnvSchema = Type.Object({
   // Unset leaves the unconfigured provider in place: every call fails naming the
   // variables it needs, rather than crashing inside the AWS SDK.
   R2_ACCOUNT_ID: Type.String({ default: '' }),
+  R2_ENDPOINT: Type.String({ default: '' }),
+  R2_JURISDICTION: Type.String({ default: '' }),
   R2_ACCESS_KEY_ID: Type.String({ default: '' }),
   R2_SECRET_ACCESS_KEY: Type.String({ default: '' }),
   R2_BUCKET: Type.String({ default: '' }),

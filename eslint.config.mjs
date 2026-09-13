@@ -106,7 +106,7 @@ export default antfu(
 
   // ESM process entry points: top-level await is exactly what they are for.
   {
-    files: ['**/src/server.ts', '**/src/worker.ts', '**/src/verify.ts', '**/src/db/migrate.ts'],
+    files: ['**/src/server.ts', '**/src/worker.ts', '**/src/verify.ts', '**/src/db/migrate.ts', '**/src/db/seed/**/*.ts'],
     rules: { 'antfu/no-top-level-await': 'off' },
   },
 

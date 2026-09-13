@@ -39,8 +39,9 @@ export async function runPreflight(app: BuiltApp): Promise<PreflightResult> {
     jwtCheck(),
     ...await databaseChecks(app),
     await cacheCheck(app),
-    ...messagingChecks(app),
-    storageCheck(app),
+    ...await messagingChecks(app),
+    await firebaseCheck(app),
+    await storageCheck(app),
   ];
 
   return { checks, failed: checks.some(check => check.status === 'fail') };
@@ -148,7 +149,7 @@ async function cacheCheck(app: BuiltApp): Promise<Check> {
   }
 }
 
-function messagingChecks(app: BuiltApp): Check[] {
+async function messagingChecks(app: BuiltApp): Promise<Check[]> {
   const name = 'messaging';
 
   if (!env.MESSAGING_ENABLED)
@@ -164,15 +165,61 @@ function messagingChecks(app: BuiltApp): Check[] {
     .map(channel => `${channel}${app.messaging.supports(channel) ? '' : '(placeholder)'}`)
     .join(' ');
 
-  return [ok(name, `${app.messaging.providerFor('whatsapp') ?? 'none'} · ${channels}`)];
+  try {
+    const res = await fetch(`${env.MESSAGING_BASE_URL}/api/sessions/${env.MESSAGING_SESSION_ID}`, {
+      headers: { 'x-api-key': env.MESSAGING_API_KEY },
+      signal: AbortSignal.timeout(3000),
+    });
+
+    if (res.status === 401 || res.status === 403)
+      return [degraded(name, `OpenWA rejected API key (HTTP ${res.status})`)];
+
+    if (!res.ok)
+      return [degraded(name, `OpenWA session check returned HTTP ${res.status}`)];
+
+    const data = await res.json() as { status?: string; phone?: string };
+    if (data.status !== undefined && data.status !== 'ready')
+      return [warn(name, `OpenWA session status is '${data.status}' — requires attention · ${channels}`)];
+
+    const phoneStr = data.phone !== undefined && data.phone !== '' ? ` (${data.phone})` : '';
+    return [ok(name, `openwa connected${phoneStr} · ${channels}`)];
+  }
+  catch (error) {
+    return [degraded(name, `OpenWA unreachable at ${env.MESSAGING_BASE_URL}: ${message(error)}`)];
+  }
 }
 
-function storageCheck(app: BuiltApp): Check {
+async function firebaseCheck(app: BuiltApp): Promise<Check> {
+  const name = 'firebase';
+
+  if (!app.firebase)
+    return degraded(name, 'not configured — Firebase services are unavailable');
+
+  try {
+    const credential = app.firebase.app.options.credential as { getAccessToken?: () => Promise<unknown> } | undefined;
+    if (credential?.getAccessToken)
+      await credential.getAccessToken();
+
+    return ok(name, `Admin SDK verified for ${app.firebase.projectId}`);
+  }
+  catch (error) {
+    return degraded(name, `configured for ${app.firebase.projectId} but credential check failed: ${message(error)}`);
+  }
+}
+
+async function storageCheck(app: BuiltApp): Promise<Check> {
   const name = 'object storage';
 
-  return app.storage.configured
-    ? ok(name, `bucket configured, max ${Math.round(env.MAX_UPLOAD_BYTES / 1024 / 1024)}MB`)
-    : degraded(name, 'not configured — file endpoints return 503');
+  if (!app.storage.configured)
+    return degraded(name, 'not configured — file endpoints return 503');
+
+  try {
+    await app.storage.ping();
+    return ok(name, `bucket "${app.storage.bucket}" connected, max ${Math.round(env.MAX_UPLOAD_BYTES / 1024 / 1024)}MB`);
+  }
+  catch (error) {
+    return degraded(name, `configured for "${app.storage.bucket}" but unreachable: ${message(error)}`);
+  }
 }
 
 function message(error: unknown): string {

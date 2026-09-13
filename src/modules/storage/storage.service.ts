@@ -41,6 +41,17 @@ export class StorageService {
     return this.options.provider.configured;
   }
 
+  get bucket(): string {
+    return this.options.provider.bucket;
+  }
+
+  async ping(): Promise<void> {
+    if (!this.options.provider.configured)
+      throw new Error('Object storage is not configured');
+    if (this.options.provider.ping)
+      await this.options.provider.ping();
+  }
+
   /**
    * Issues a presigned upload URL and records the file as `pending`.
    *

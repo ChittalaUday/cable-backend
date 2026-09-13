@@ -2,6 +2,7 @@ import type { MessagingProvider } from '@/modules/notifications';
 import fp from 'fastify-plugin';
 import { env, isTest } from '@/config/env';
 import {
+  createFcmProvider,
   createLogProvider,
   createOpenWaProvider,
   createPlaceholderProvider,
@@ -34,12 +35,21 @@ export default fp(async (app) => {
       timeoutMs: env.MESSAGING_TIMEOUT_MS,
     }));
 
+    if (app.firebase)
+      providers.push(createFcmProvider(app.firebase.messaging));
+
     // Reserved channels with no provider yet. Registering them means a send
     // fails with "set RESEND_API_KEY" rather than "unknown channel".
     providers.push(
       createPlaceholderProvider({ channel: 'sms', requiredEnv: ['SMS_PROVIDER', 'SMS_API_KEY'] }),
       createPlaceholderProvider({ channel: 'email', requiredEnv: ['RESEND_API_KEY'], plannedProvider: 'Resend' }),
-      createPlaceholderProvider({ channel: 'push', requiredEnv: ['FCM_SERVICE_ACCOUNT'], plannedProvider: 'Firebase Cloud Messaging' }),
+      ...(app.firebase
+        ? []
+        : [createPlaceholderProvider({
+            channel: 'push',
+            requiredEnv: ['FIREBASE_SERVICE_ACCOUNT_PATH'],
+            plannedProvider: 'Firebase Cloud Messaging',
+          })]),
     );
   }
   else {
@@ -56,4 +66,4 @@ export default fp(async (app) => {
 
   app.decorate('messaging', messaging);
   app.decorate('notifications', new NotificationService(app.db, messaging));
-}, { name: 'messaging', dependencies: ['database'] });
+}, { name: 'messaging', dependencies: ['database', 'firebase'] });
