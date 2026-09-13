@@ -1,21 +1,43 @@
 {
-  // Use the workspace TypeScript (5.9), not the editor's bundled copy. A newer
-  // tsconfig read by an older tsserver reports errors the CLI never sees.
+  // Window-scoped settings (typescript.tsdk, eslint.workingDirectories) live in
+  // ../cable.code-workspace — VS Code ignores them here in a multi-root
+  // workspace. This one is kept so opening the folder on its own still works.
   "typescript.tsdk": "node_modules/typescript/lib",
-  "typescript.enablePromptUseWorkspaceTsdk": true,
   "typescript.preferences.importModuleSpecifier": "non-relative",
-  "typescript.tsserver.experimental.enableProjectDiagnostics": true,
 
-  "eslint.useFlatConfig": true,
-  // Multi-root workspaces otherwise run ESLint from the workspace root, where
-  // the tsconfig is not found and every typed rule degrades to `any`.
-  "eslint.workingDirectories": [{ "mode": "auto" }],
-  "eslint.validate": ["javascript", "typescript"],
-  "editor.codeActionsOnSave": { "source.fixAll.eslint": "explicit" },
+  "editor.tabSize": 2,
+  "editor.detectIndentation": false,
 
   // ESLint Stylistic formats; Prettier is deliberately not installed.
+  "prettier.enable": false,
   "editor.formatOnSave": false,
+  "editor.codeActionsOnSave": {
+    "source.fixAll.eslint": "explicit",
+    "source.organizeImports": "never"
+  },
+
+  // Same as the mobile repo: stylistic rules still auto-fix on save, they just
+  // do not decorate the editor with squiggles while you type.
+  "eslint.rules.customizations": [
+    { "rule": "style/*", "severity": "off", "fixable": true },
+    { "rule": "format/*", "severity": "off", "fixable": true },
+    { "rule": "*-indent", "severity": "off", "fixable": true },
+    { "rule": "*-spacing", "severity": "off", "fixable": true },
+    { "rule": "*-spaces", "severity": "off", "fixable": true },
+    { "rule": "*-order", "severity": "off", "fixable": true },
+    { "rule": "*-dangle", "severity": "off", "fixable": true },
+    { "rule": "*-newline", "severity": "off", "fixable": true },
+    { "rule": "*quotes", "severity": "off", "fixable": true },
+    { "rule": "*semi", "severity": "off", "fixable": true }
+  ],
+
+  "eslint.validate": ["javascript", "typescript", "json", "jsonc", "markdown"],
 
   "files.exclude": { "**/.DS_Store": true },
-  "search.exclude": { "dist": true, "coverage": true, "pnpm-lock.yaml": true }
+  "search.exclude": { "dist": true, "coverage": true, "pnpm-lock.yaml": true },
+
+  // SQL migrations are generated; do not reformat or lint them.
+  "files.associations": { "*.sql": "sql" },
+
+  "cSpell.enabled": false
 }
