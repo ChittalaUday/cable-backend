@@ -7,6 +7,9 @@
   "typescript.tsserver.experimental.enableProjectDiagnostics": true,
 
   "eslint.useFlatConfig": true,
+  // Multi-root workspaces otherwise run ESLint from the workspace root, where
+  // the tsconfig is not found and every typed rule degrades to `any`.
+  "eslint.workingDirectories": [{ "mode": "auto" }],
   "eslint.validate": ["javascript", "typescript"],
   "editor.codeActionsOnSave": { "source.fixAll.eslint": "explicit" },
 
