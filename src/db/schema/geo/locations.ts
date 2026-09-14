@@ -41,6 +41,7 @@ export const locations = geo.table('locations', {
   index('locations_tenant_category_idx').on(table.tenantId, table.categoryId),
   index('locations_tenant_schema_idx').on(table.tenantId, table.schemaId),
   index('locations_tenant_created_idx').on(table.tenantId, table.createdAt.desc()),
+  index('locations_code_trgm_idx').using('gin', sql`${table.code} gin_trgm_ops`),
 ]);
 
 export type Location = typeof locations.$inferSelect;

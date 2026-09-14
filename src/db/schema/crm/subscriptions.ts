@@ -1,3 +1,4 @@
+import { sql } from 'drizzle-orm';
 import { index, jsonb, numeric, text, timestamp, uuid } from 'drizzle-orm/pg-core';
 import { BILLING_CYCLES, SUBSCRIPTION_STATUSES } from '@/shared/constants/crm';
 import { locations } from '../geo/locations';
@@ -46,6 +47,9 @@ export const subscriptions = crm.table('subscriptions', {
   index('subscriptions_tenant_package_idx').on(table.tenantId, table.packageId),
   index('subscriptions_tenant_status_idx').on(table.tenantId, table.status),
   index('subscriptions_tenant_account_idx').on(table.tenantId, table.serviceAccountNumber),
+  index('subscriptions_search_trgm_idx').using('gin', sql`(
+    ${table.serviceAccountNumber} || ' ' || coalesce(${table.installationAddress}, '')
+  ) gin_trgm_ops`).where(sql`${table.deletedAt} IS NULL`),
   index('subscriptions_location_idx').on(table.locationId),
 ]);
 

@@ -42,6 +42,16 @@ export const EQUIPMENT_TYPES = [
 ] as const;
 export type EquipmentType = (typeof EQUIPMENT_TYPES)[number];
 
+export const BOX_EQUIPMENT_TYPES = [
+  'stb',
+  'ont',
+  'router',
+] as const;
+export type BoxEquipmentType = (typeof BOX_EQUIPMENT_TYPES)[number];
+
+export const TERMINAL_EQUIPMENT_TYPES = BOX_EQUIPMENT_TYPES;
+export type TerminalEquipmentType = BoxEquipmentType;
+
 export const EQUIPMENT_STATUSES = [
   'active',
   'standby',

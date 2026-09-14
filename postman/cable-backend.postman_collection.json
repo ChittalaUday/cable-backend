@@ -1,8 +1,8 @@
 {
   "info": {
-    "name": "Cable Backend \u2014 API v1",
+    "name": "Cable Backend — API v1",
     "_postman_id": "b1f7c5a2-0e3d-4a91-9c4e-5d2f8a1b6c77",
-    "description": "Satya Cable & Broadband API.\n\nTokens are handled for you:\n- Any response containing `accessToken` is captured into the environment.\n- Before every authenticated request, the token is refreshed if it is missing or within 60s of expiry.\n- A rejected refresh clears the environment, because replaying a rotated refresh token revokes the session (AGENTS.md \u00a74.6).\n\nStart with **Auth > OTP > Request code**, then **Verify code**.",
+    "description": "Satya Cable & Broadband API.\n\nTokens are handled for you:\n- Any response containing `accessToken` is captured into the environment.\n- Before every authenticated request, the token is refreshed if it is missing or within 60s of expiry.\n- A rejected refresh clears the environment, because replaying a rotated refresh token revokes the session (AGENTS.md §4.6).\n\nStart with **Auth > OTP > Request code**, then **Verify code**.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "auth": {
@@ -86,6 +86,8 @@
           "// Captures tokens from any response that carries them, so Login, OTP Verify and",
           "// Refresh all populate the environment without their own scripts.",
           "",
+          "const path = pm.request.url.getPath();",
+          "",
           "if (pm.response.code >= 200 && pm.response.code < 300) {",
           "    let body = null;",
           "    try { body = pm.response.json(); } catch (e) { body = null; }",
@@ -99,6 +101,7 @@
           "    }",
           "",
           "    if (body && body.sessionId) pm.environment.set('sessionId', body.sessionId);",
+          "    if (body && body.customer && body.customer.id) pm.environment.set('customerId', body.customer.id);",
           "",
           "    // `/auth/me` is the only response that names the caller's memberships.",
           "    // A member of more than one tenant MUST send x-tenant-id: without it every",
@@ -116,7 +119,18 @@
           "    }",
           "}",
           "",
-          "// Every error carries a machine-readable `code` (AGENTS.md \u00a77.1).",
+          "// On logout, clear session credentials from environment",
+          "if (path.endsWith('auth/logout') || path.endsWith('auth/logout-all')) {",
+          "    if (pm.response.code >= 200 && pm.response.code < 300) {",
+          "        pm.environment.unset('accessToken');",
+          "        pm.environment.unset('refreshToken');",
+          "        pm.environment.unset('accessTokenExpiresAt');",
+          "        pm.environment.unset('sessionId');",
+          "        console.log('[auth] session revoked, tokens cleared');",
+          "    }",
+          "}",
+          "",
+          "// Every error carries a machine-readable `code` (AGENTS.md §7.1).",
           "if (pm.response.code >= 400) {",
           "    let body = null;",
           "    try { body = pm.response.json(); } catch (e) { body = null; }",
@@ -143,7 +157,7 @@
       "name": "Health",
       "item": [
         {
-          "name": "Health check",
+          "name": "Health check (Root)",
           "request": {
             "method": "GET",
             "header": [],
@@ -156,11 +170,44 @@
                 "health"
               ]
             },
-            "description": "Reports ok only when the database is reachable.",
+            "description": "Root load balancer / container health check via underPressure.",
             "auth": {
               "type": "noauth"
             }
           }
+        },
+        {
+          "name": "Health check (API prefix)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "description": "Versioned service health check at `/api/v1/health`. Returns `{ status: \"ok\", version: \"1.0.0\" }`."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('health returns 200 ok', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    const body = pm.response.json();",
+                  "    pm.expect(body.status).to.eql('ok');",
+                  "    pm.expect(body.version).to.be.a('string');",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
@@ -191,7 +238,7 @@
                     "request"
                   ]
                 },
-                "description": "Always answers 202, registered or not \u2014 a different answer would be a user-enumeration oracle.\n\n502 OTP_DELIVERY_FAILED usually means the WhatsApp session is disconnected and needs a QR scan.",
+                "description": "Always answers 202, registered or not — a different answer would be a user-enumeration oracle.\n\n502 OTP_DELIVERY_FAILED usually means the WhatsApp session is disconnected and needs a QR scan.",
                 "body": {
                   "mode": "raw",
                   "raw": "{\n  \"phone\": \"{{phone}}\",\n  \"channel\": \"whatsapp\"\n}",
@@ -288,7 +335,7 @@
                 "login"
               ]
             },
-            "description": "Email accounts only. Phone accounts sign in with an OTP.\n\nSets `tenantId` from the FIRST membership only as a convenience for this collection. A real client with more than one must ask the user \u2014 see the Auth folder note.",
+            "description": "Email accounts only. Phone accounts sign in with an OTP.\n\nSets `tenantId` from the FIRST membership only as a convenience for this collection. A real client with more than one must ask the user — see the Auth folder note.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"identifier\": \"{{identifier}}\",\n  \"password\": \"{{password}}\"\n}",
@@ -342,7 +389,14 @@
           "name": "Me",
           "request": {
             "method": "GET",
-            "header": [],
+            "header": [
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}",
+                "description": "Send to populate the tenant-scoped customer profile when the user has memberships.",
+                "disabled": true
+              }
+            ],
             "url": {
               "raw": "{{baseUrl}}/auth/me",
               "host": [
@@ -353,7 +407,7 @@
                 "me"
               ]
             },
-            "description": "The signed-in user, the session, and every tenant they are a member of with the role they hold there.\n\nAlso carries `customer`: the subscriber record in the **active** tenant \u2014 its primary address, every subscription joined through package \u2192 provider \u2192 service, and a `summary` a home screen can render on its own.\n\n`customer` is `null` for staff (a login without a subscriber record), and for a caller who belongs to several tenants and sent no `x-tenant-id` \u2014 a customer record belongs to exactly one operator, so there is no single right answer."
+            "description": "The signed-in user, the session, and every tenant they are a member of with the role they hold there.\n\nAlso carries `customer`: the subscriber record in the **active** tenant — its primary address, every subscription joined through package → provider → service, and a `summary` a home screen can render on its own.\n\n`customer` is `null` for staff (a login without a subscriber record), and for a caller who belongs to several tenants and sent no `x-tenant-id` — a customer record belongs to exactly one operator, so there is no single right answer."
           }
         },
         {
@@ -393,15 +447,15 @@
           }
         }
       ],
-      "description": "Sign-in answers with `memberships`: every tenant this user may act in, each with `tenantId`, `tenantName` and the `roleId` they hold there.\n\nONE membership: the API infers the tenant and `X-Tenant-Id` is noise.\n\nSEVERAL: the client has to put the names in front of a human and send the chosen `X-Tenant-Id` on every request after that \u2014 without it a protected route answers 403, and `/auth/me` answers `customer: null` because there is no single right account to return."
+      "description": "Sign-in answers with `memberships`: every tenant this user may act in, each with `tenantId`, `tenantName` and the `roleId` they hold there.\n\nONE membership: the API infers the tenant and `X-Tenant-Id` is noise.\n\nSEVERAL: the client has to put the names in front of a human and send the chosen `X-Tenant-Id` on every request after that — without it a protected route answers 403, and `/auth/me` answers `customer: null` because there is no single right account to return."
     },
     {
       "name": "Locations",
-      "description": "Tenant-configured address tree (AGENTS.md \u00a78.6).\n\n`X-Tenant-Id` is sent on every request here; it is only REQUIRED when your account belongs to more than one operator \u2014 otherwise the tenant comes from the token. Leave `tenantId` empty in the environment if you have a single membership.\n\nOrder for a fresh tenant: create categories \u2192 create a schema over them \u2192 create a root \u2192 generate the subtree.",
+      "description": "Tenant-configured address tree (AGENTS.md §8.6).\n\n`X-Tenant-Id` is sent on every request here; it is only REQUIRED when your account belongs to more than one operator — otherwise the tenant comes from the token. Leave `tenantId` empty in the environment if you have a single membership.\n\nOrder for a fresh tenant: create categories → create a schema over them → create a root → generate the subtree.",
       "item": [
         {
           "name": "Configuration (admin)",
-          "description": "The hierarchy DEFINITION \u2014 needs `locations.configure`. Run these in order once per tenant.",
+          "description": "The hierarchy DEFINITION — needs `locations.configure`. Run these in order once per tenant.",
           "item": [
             {
               "name": "List categories",
@@ -422,7 +476,7 @@
                     "location-categories"
                   ]
                 },
-                "description": "The kinds of place this tenant has: Area, Building, Floor, Door \u2014 or Village, Street, House."
+                "description": "The kinds of place this tenant has: Area, Building, Floor, Door — or Village, Street, House."
               }
             },
             {
@@ -448,7 +502,7 @@
                     "location-categories"
                   ]
                 },
-                "description": "`config` is presentation only \u2014 the UI reads it. The hierarchy lives in a schema, not here.\n\nSaves `categoryId`.",
+                "description": "`config` is presentation only — the UI reads it. The hierarchy lives in a schema, not here.\n\nSaves `categoryId`.",
                 "body": {
                   "mode": "raw",
                   "raw": "{\n  \"name\": \"Building\",\n  \"slug\": \"building\",\n  \"config\": {\n    \"icon\": \"building\",\n    \"placeholder\": \"Select building\",\n    \"allowCustom\": true\n  }\n}",
@@ -556,7 +610,7 @@
               }
             },
             {
-              "name": "Create schema (Area \u2192 Building \u2192 Block \u2192 Floor \u2192 Door)",
+              "name": "Create schema (Area → Building → Block → Floor → Door)",
               "request": {
                 "method": "POST",
                 "header": [
@@ -578,7 +632,7 @@
                     "location-schemas"
                   ]
                 },
-                "description": "Levels are ordered root-first \u2014 the ORDER is the hierarchy.\n\nCreate the five categories first and set the `*CategoryId` variables, or paste ids directly.\n\nSaves `schemaId`.",
+                "description": "Levels are ordered root-first — the ORDER is the hierarchy.\n\nCreate the five categories first and set the `*CategoryId` variables, or paste ids directly.\n\nSaves `schemaId`.",
                 "body": {
                   "mode": "raw",
                   "raw": "{\n  \"name\": \"Apartment\",\n  \"slug\": \"apartment\",\n  \"description\": \"Multi-storey buildings with numbered flats\",\n  \"levels\": [\n    {\n      \"categoryId\": \"{{areaCategoryId}}\"\n    },\n    {\n      \"categoryId\": \"{{buildingCategoryId}}\"\n    },\n    {\n      \"categoryId\": \"{{blockCategoryId}}\"\n    },\n    {\n      \"categoryId\": \"{{floorCategoryId}}\"\n    },\n    {\n      \"categoryId\": \"{{doorCategoryId}}\",\n      \"isTerminal\": true\n    }\n  ]\n}",
@@ -628,7 +682,7 @@
                     "{{schemaId}}"
                   ]
                 },
-                "description": "Name/description/active only. Levels are not edited in place \u2014 nodes already reference them.",
+                "description": "Name/description/active only. Levels are not edited in place — nodes already reference them.",
                 "body": {
                   "mode": "raw",
                   "raw": "{\n  \"name\": \"Apartment complex\",\n  \"isActive\": true\n}",
@@ -664,7 +718,7 @@
               }
             },
             {
-              "name": "Generate a subtree (blocks \u2192 floors \u2192 doors)",
+              "name": "Generate a subtree (blocks → floors → doors)",
               "request": {
                 "method": "POST",
                 "header": [
@@ -688,7 +742,7 @@
                     "generate"
                   ]
                 },
-                "description": "One entry per level BELOW `parentId`, in schema order. Either `names` or `count` + a format.\n\nTokens: `{parent}`, `{parentCode}`, `{label}`, `{i}`, `{i2}`, `{i3}`, and `{name}` in `codeFormat`.\n`{parentCode}` cascades: block `A` \u2192 floor `A1` \u2192 door `A101`.\n\nThis example creates 2 blocks + 8 floors + 32 doors = 42 rows. Capped at 2000 per call.",
+                "description": "One entry per level BELOW `parentId`, in schema order. Either `names` or `count` + a format.\n\nTokens: `{parent}`, `{parentCode}`, `{label}`, `{i}`, `{i2}`, `{i3}`, and `{name}` in `codeFormat`.\n`{parentCode}` cascades: block `A` → floor `A1` → door `A101`.\n\nThis example creates 2 blocks + 8 floors + 32 doors = 42 rows. Capped at 2000 per call.",
                 "body": {
                   "mode": "raw",
                   "raw": "{\n  \"parentId\": \"{{locationId}}\",\n  \"levels\": [\n    {\n      \"names\": [\n        \"A\",\n        \"B\"\n      ],\n      \"nameFormat\": \"Block {label}\",\n      \"codeFormat\": \"{label}\"\n    },\n    {\n      \"count\": 4,\n      \"nameFormat\": \"Floor {i}\",\n      \"codeFormat\": \"{parentCode}{i}\"\n    },\n    {\n      \"count\": 4,\n      \"nameFormat\": \"{parentCode}{i2}\",\n      \"codeFormat\": \"{name}\"\n    }\n  ]\n}",
@@ -761,10 +815,34 @@
                       "value": "pending",
                       "description": "With categoryId, the review queue.",
                       "disabled": true
+                    },
+                    {
+                      "key": "coverageServiceId",
+                      "value": "{{serviceId}}",
+                      "description": "Only nodes where this service can be sold.",
+                      "disabled": true
+                    },
+                    {
+                      "key": "coverageProviderId",
+                      "value": "{{serviceProviderId}}",
+                      "description": "Only nodes where this provider can be sold.",
+                      "disabled": true
+                    },
+                    {
+                      "key": "schemaId",
+                      "value": "{{schemaId}}",
+                      "description": "Filter nodes by schema.",
+                      "disabled": true
+                    },
+                    {
+                      "key": "isActive",
+                      "value": "true",
+                      "description": "Filter active/inactive nodes.",
+                      "disabled": true
                     }
                   ]
                 },
-                "description": "`parentId=null` lists roots. There is no separate /children route \u2014 that is what this parameter is.\n\nEnable one of the disabled params for the other views:\n- `parentId={{locationId}}` \u2014 one level down.\n- `ancestorId={{locationId}}` \u2014 the whole subtree at any depth, the filter a customer dashboard uses.\n- `q=Sai` \u2014 name OR alias, so `Sai Apartments`, `SSA` and `Sri Sai Apt` all find the same building.\n- `categoryId` + `status=pending` \u2014 nodes a field operator added that nobody has approved yet."
+                "description": "`parentId=null` lists roots. There is no separate /children route — that is what this parameter is.\n\nEnable one of the disabled params for the other views:\n- `parentId={{locationId}}` — one level down.\n- `ancestorId={{locationId}}` — the whole subtree at any depth, the filter a customer dashboard uses.\n- `q=Sai` — name OR alias, so `Sai Apartments`, `SSA` and `Sri Sai Apt` all find the same building.\n- `categoryId` + `status=pending` — nodes a field operator added that nobody has approved yet."
               }
             },
             {
@@ -790,7 +868,7 @@
                     "locations"
                   ]
                 },
-                "description": "A ROOT needs `schemaId` and an unrestricted grant \u2014 it sits inside nobody\u2019s subtree:\n\n```json\n{ \"schemaId\": \"{{schemaId}}\", \"name\": \"Mandapeta\" }\n```\n\nA CHILD (the body below) inherits schema and category: the category is whatever the schema puts at the next level, so the client never picks one.\n\n`aliases` replaces the whole set.\n\nSaves `locationId`.",
+                "description": "A ROOT needs `schemaId` and an unrestricted grant — it sits inside nobody’s subtree:\n\n```json\n{ \"schemaId\": \"{{schemaId}}\", \"name\": \"Mandapeta\" }\n```\n\nA CHILD (the body below) inherits schema and category: the category is whatever the schema puts at the next level, so the client never picks one.\n\n`aliases` replaces the whole set.\n\nSaves `locationId`.",
                 "body": {
                   "mode": "raw",
                   "raw": "{\n  \"parentId\": \"{{locationId}}\",\n  \"name\": \"Sri Sai Apartments\",\n  \"aliases\": [\n    \"Sai Apartments\",\n    \"SSA\"\n  ],\n  \"latitude\": 16.8702,\n  \"longitude\": 81.9276\n}",
@@ -927,8 +1005,115 @@
       ]
     },
     {
+      "name": "Customers",
+      "description": "The staff view. Both routes are `customers.view`, so the SCOPE on the grant decides what comes back — an admin’s ALL is the tenant, a field operator’s LOCATION is their areas, a subscriber’s OWN is themselves.\n\nEvery LIST item carries all searchable customer, account, location and equipment values. DETAIL adds the full billing graph.",
+      "item": [
+        {
+          "name": "List customers",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/customers?limit=50",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "customers"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "50"
+                },
+                {
+                  "key": "q",
+                  "value": "Achanta",
+                  "description": "Customer, account, address, location or equipment value.",
+                  "disabled": true
+                },
+                {
+                  "key": "status",
+                  "value": "active",
+                  "disabled": true
+                },
+                {
+                  "key": "locationId",
+                  "value": "{{locationId}}",
+                  "description": "That node AND everything under it.",
+                  "disabled": true
+                },
+                {
+                  "key": "serviceProviderId",
+                  "value": "{{serviceProviderId}}",
+                  "description": "Customers holding a line from this provider.",
+                  "disabled": true
+                },
+                {
+                  "key": "packageId",
+                  "value": "{{packageId}}",
+                  "disabled": true
+                },
+                {
+                  "key": "cursor",
+                  "value": "{{nextCursor}}",
+                  "description": "Keyset cursor from previous page (pass nextCursor until null).",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Every row carries all searchable customer, service-account, location and equipment values. Add `q` to rank the same response shape by fuzzy relevance.\n\nSaves `customerId` from the first row."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code < 300) {",
+                  "    const body = pm.response.json();",
+                  "    const first = body.items && body.items[0];",
+                  "    if (first) pm.environment.set('customerId', first.id);",
+                  "    if (body.nextCursor) pm.environment.set('nextCursor', body.nextCursor);",
+                  "}"
+                ]
+              }
+            }
+          ]
+    },
+    {
+      "name": "Get one customer, fully resolved",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/customers/{{customerId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "customers",
+                "{{customerId}}"
+              ]
+            },
+            "description": "Everything a details page draws, in one response: the customer, the breadcrumb, every subscription with its service, provider and package expanded, the equipment on loan, the last 20 ledger lines and a summary.\n\nA customer id is a handle onto a graph. Walking it over the public endpoints would be six or more calls per page; this resolves it server-side where the joins are indexed.\n\nOut of your area answers 404, not 403 — whether a customer exists elsewhere is not something the caller should learn."
+          }
+        }
+      ]
+    },
+    {
       "name": "Catalogue",
-      "description": "Services \u2192 providers \u2192 packages, and where each is sold (docs/services-providers-packages.md).\n\nOrder for a fresh tenant: create a service \u2192 add its providers \u2192 add packages to a provider \u2192 set coverage \u2192 check availability at a location.",
+      "description": "Services → providers → packages, and where each is sold (docs/services-providers-packages.md).\n\nOrder for a fresh tenant: create a service → add its providers → add packages to a provider → set coverage → check availability at a location.",
       "item": [
         {
           "name": "Services & providers",
@@ -951,9 +1136,23 @@
                   ],
                   "path": [
                     "services"
+                  ],
+                  "query": [
+                    {
+                      "key": "status",
+                      "value": "active",
+                      "description": "active | inactive",
+                      "disabled": true
+                    },
+                    {
+                      "key": "q",
+                      "value": "Cable",
+                      "description": "Filter by name or slug",
+                      "disabled": true
+                    }
                   ]
                 },
-                "description": "Each row carries `providerCount` \u2014 how many active suppliers deliver it."
+                "description": "Each row carries `providerCount` — how many active suppliers deliver it."
               }
             },
             {
@@ -979,10 +1178,10 @@
                     "services"
                   ]
                 },
-                "description": "Name it for what it is \u2014 `Cable TV`, not `ACT Cable TV`. The brand belongs on the provider.\n\nSaves `serviceId`.",
+                "description": "Name it for what it is — `Cable TV`, not `ACT Cable TV`. The brand belongs on the provider.\n\nSaves `serviceId`.",
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"name\": \"Cable TV\",\n  \"slug\": \"cable-tv\",\n  \"serviceType\": \"cable\",\n  \"description\": \"Digital cable television\"\n}",
+                  "raw": "{\n  \"name\": \"Cable TV\",\n  \"slug\": \"cable-tv\",\n  \"icon\": \"tv\",\n  \"description\": \"Digital cable television\"\n}",
                   "options": {
                     "raw": {
                       "language": "json"
@@ -1025,7 +1224,7 @@
                     "{{serviceId}}"
                   ]
                 },
-                "description": "One service, with how many active providers deliver it.\n\n404 RESOURCE_NOT_FOUND for a service of another tenant \u2014 the same answer as missing, on purpose (AGENTS.md \u00a74.5)."
+                "description": "One service, with how many active providers deliver it.\n\n404 RESOURCE_NOT_FOUND for a service of another tenant — the same answer as missing, on purpose (AGENTS.md §4.5)."
               }
             },
             {
@@ -1052,7 +1251,7 @@
                     "{{serviceId}}"
                   ]
                 },
-                "description": "`slug` and `serviceType` are fixed \u2014 both are referenced by what already sells.",
+                "description": "`slug` and `serviceType` are fixed — both are referenced by what already sells.",
                 "body": {
                   "mode": "raw",
                   "raw": "{\n  \"description\": \"Digital cable, 250+ channels\"\n}",
@@ -1109,6 +1308,18 @@
                     {
                       "key": "serviceId",
                       "value": "{{serviceId}}"
+                    },
+                    {
+                      "key": "status",
+                      "value": "active",
+                      "description": "active | inactive",
+                      "disabled": true
+                    },
+                    {
+                      "key": "search",
+                      "value": "ACT",
+                      "description": "Filter by name, slug or code",
+                      "disabled": true
                     }
                   ]
                 },
@@ -1211,7 +1422,7 @@
                     "{{serviceProviderId}}"
                   ]
                 },
-                "description": "`serviceId` is not patchable \u2014 moving a provider would take its packages and every subscription with it.",
+                "description": "`serviceId` is not patchable — moving a provider would take its packages and every subscription with it.",
                 "body": {
                   "mode": "raw",
                   "raw": "{\n  \"isDefault\": true\n}",
@@ -1398,7 +1609,7 @@
                     "coverage"
                   ]
                 },
-                "description": "The narrowest level there is \u2014 it beats the provider and the service row at this node.\n\n`{ \"entries\": [] }` hands the package back to its provider\u2019s reach.",
+                "description": "The narrowest level there is — it beats the provider and the service row at this node.\n\n`{ \"entries\": [] }` hands the package back to its provider’s reach.",
                 "body": {
                   "mode": "raw",
                   "raw": "{\n  \"entries\": [\n    {\n      \"locationId\": \"{{locationId}}\"\n    }\n  ]\n}",
@@ -1455,7 +1666,7 @@
                     "availability"
                   ]
                 },
-                "description": "The add-customer wizard call: services \u2192 providers that reach this node \u2192 their active packages, already filtered. One request instead of three plus client-side guessing."
+                "description": "The add-customer wizard call: services → providers that reach this node → their active packages, already filtered. One request instead of three plus client-side guessing."
               }
             }
           ]
@@ -1490,10 +1701,34 @@
                     {
                       "key": "limit",
                       "value": "50"
+                    },
+                    {
+                      "key": "serviceId",
+                      "value": "{{serviceId}}",
+                      "description": "Filter by service joining through provider",
+                      "disabled": true
+                    },
+                    {
+                      "key": "packageType",
+                      "value": "base",
+                      "description": "base | addon | alacarte",
+                      "disabled": true
+                    },
+                    {
+                      "key": "status",
+                      "value": "active",
+                      "description": "active | inactive",
+                      "disabled": true
+                    },
+                    {
+                      "key": "q",
+                      "value": "ACT",
+                      "description": "Search by package name or slug",
+                      "disabled": true
                     }
                   ]
                 },
-                "description": "`?serviceId=` also works \u2014 it filters by joining through the provider."
+                "description": "`?serviceId=` also works — it filters by joining through the provider."
               }
             },
             {
@@ -1591,7 +1826,7 @@
                     "{{packageId}}"
                   ]
                 },
-                "description": "The provider is fixed \u2014 re-pointing a package rewrites what every subscriber is on.",
+                "description": "The provider is fixed — re-pointing a package rewrites what every subscriber is on.",
                 "body": {
                   "mode": "raw",
                   "raw": "{\n  \"price\": \"399.00\"\n}",
@@ -1652,10 +1887,40 @@
                     {
                       "key": "limit",
                       "value": "100"
+                    },
+                    {
+                      "key": "genre",
+                      "value": "Entertainment",
+                      "description": "Channel genre",
+                      "disabled": true
+                    },
+                    {
+                      "key": "resolution",
+                      "value": "HD",
+                      "description": "SD | HD | 4K",
+                      "disabled": true
+                    },
+                    {
+                      "key": "packageId",
+                      "value": "{{packageId}}",
+                      "description": "Narrow to what one package carries",
+                      "disabled": true
+                    },
+                    {
+                      "key": "inPackage",
+                      "value": "true",
+                      "description": "With packageId: true for package lineup, false for available to add",
+                      "disabled": true
+                    },
+                    {
+                      "key": "q",
+                      "value": "Star",
+                      "description": "Search channel name or slug",
+                      "disabled": true
                     }
                   ]
                 },
-                "description": "A provider\u2019s own lineup. Two MSOs may both number a channel 101."
+                "description": "A provider’s own lineup. Two MSOs may both number a channel 101."
               }
             },
             {
@@ -1683,7 +1948,7 @@
                     "channels"
                   ]
                 },
-                "description": "Replaces the bouquet. Every channel must belong to this package\u2019s provider; `[]` clears it.",
+                "description": "Replaces the bouquet. Every channel must belong to this package’s provider; `[]` clears it.",
                 "body": {
                   "mode": "raw",
                   "raw": "{\n  \"channels\": [\n    {\n      \"channelId\": \"{{channelId}}\",\n      \"isMandatory\": true\n    }\n  ]\n}",

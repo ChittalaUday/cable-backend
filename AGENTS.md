@@ -83,6 +83,7 @@ Search is `pg_trgm` in Postgres, not a search cluster.
 | Multi-tenancy | `tenant_id` everywhere; Postgres RLS later as a backstop | §4.5 |
 | Logging | **Pino** (built into Fastify) | — |
 | Docs | OpenAPI + Swagger UI | Generated from route schemas, never hand-written |
+| API testing & collection | **Postman v2.1** + **Newman** | Maintained in `postman/` with local and staging environments (§6.4) |
 | Money | Postgres `NUMERIC` + **decimal.js** | §8 |
 | Search | **Postgres + `pg_trgm`** | No search cluster |
 | Testing | **Vitest** + Fastify `inject()` + **Testcontainers** | §10 |
@@ -288,10 +289,15 @@ src/
 │   ├── types/                    # Cross-module types
 │   └── utils/                    # dates, strings, tenant-code.ts (§8.1)
 │
-└── jobs/                         # Scheduled/queued work. Run by worker.ts, NOT by the API process.
-    ├── billing.job.ts
-    ├── notification.job.ts
-    └── report.job.ts
+├── jobs/                         # Scheduled/queued work. Run by worker.ts, NOT by the API process.
+│   ├── billing.job.ts
+│   ├── notification.job.ts
+│   └── report.job.ts
+│
+└── postman/                      # Postman v2.1 collection and environments (§6.4)
+    ├── cable-backend.postman_collection.json
+    ├── cable-backend.local.postman_environment.json
+    └── cable-backend.staging.postman_environment.json
 ```
 
 **Inside a module:**
@@ -938,6 +944,37 @@ Three rules that are easy to get backwards:
   otherwise a tenant that configured nothing could sell nothing.
 - **Money is a decimal string on the wire** (§8), including `price`,
   `discount`, `mso_share`. A JSON number would round it.
+
+### 6.3 Customers — the shipped surface
+
+The staff and subscriber views of customer business records. Both routes require
+`customers.view`. The caller's grant SCOPE (§5) decides the rows returned — an
+admin's `ALL` covers the tenant, a staff member's `LOCATION` covers their assigned
+areas, and a subscriber's `OWN` returns themselves.
+
+| Method | Path | Permission | Notes |
+|---|---|---|---|
+| `GET` | `/customers` | `customers.view` | A page of customers with breadcrumbs and rollups. Keyset pagination via `?cursor=` (`nextCursor`). Filter with `?q=`, `?status=`, `?locationId=`, `?serviceProviderId=`, `?packageId=`, `?limit=`. |
+| `GET` | `/customers/:id` | `customers.view` | Fully resolved customer graph: subscriptions (service, provider, package), equipment on loan, and recent ledger transactions. |
+
+**Out of reach answers `404 RESOURCE_NOT_FOUND`, not `403`.** Whether a customer
+exists in an area the caller cannot access is not information the caller should learn (§4.5).
+
+### 6.4 API exploration and Postman
+
+The complete wire contract is maintained as an automated Postman v2.1 collection
+with pre-configured local and staging environments in [`postman/`](file:///Users/udaychittala/exp/cable-backend/postman):
+
+- **Collection:** [`postman/cable-backend.postman_collection.json`](file:///Users/udaychittala/exp/cable-backend/postman/cable-backend.postman_collection.json)
+- **Local environment:** [`postman/cable-backend.local.postman_environment.json`](file:///Users/udaychittala/exp/cable-backend/postman/cable-backend.local.postman_environment.json)
+- **Staging environment:** [`postman/cable-backend.staging.postman_environment.json`](file:///Users/udaychittala/exp/cable-backend/postman/cable-backend.staging.postman_environment.json)
+
+**Automated session handling in the collection:**
+- Any response returning `accessToken` automatically stores it and its expiry.
+- Before each request, tokens are checked and refreshed before expiration via `POST /auth/refresh`.
+- Successful logout via `POST /auth/logout` or `/auth/logout-all` automatically clears the environment tokens.
+- Newman can execute the entire collection headless against the running server:
+  `npx newman run postman/cable-backend.postman_collection.json -e postman/cable-backend.local.postman_environment.json`
 
 ---
 

@@ -27,6 +27,10 @@ export const users = auth.table('users', {
   check('users_identifier_present', sql`${table.email} IS NOT NULL OR ${table.phone} IS NOT NULL`),
   check('users_phone_ten_digits', sql`${table.phone} IS NULL OR ${table.phone} ~ '^[0-9]{10}$'`),
   index('users_disabled_at_idx').on(table.disabledAt),
+  // Staff search customers by name, and once a subscriber has a login it is
+  // THIS name the search has to match — see the note on `crm.customers.name`.
+  index('users_name_trgm_idx').using('gin', sql`${table.name} gin_trgm_ops`),
+  index('users_phone_trgm_idx').using('gin', sql`${table.phone} gin_trgm_ops`),
 ]);
 
 export type User = typeof users.$inferSelect;

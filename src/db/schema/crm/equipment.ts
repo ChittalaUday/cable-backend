@@ -1,3 +1,4 @@
+import { sql } from 'drizzle-orm';
 import { boolean, index, jsonb, numeric, text, timestamp, uuid } from 'drizzle-orm/pg-core';
 import {
   EQUIPMENT_INVENTORY_STATUSES,
@@ -38,6 +39,11 @@ export const equipment = crm.table('equipment', {
   index('equipment_tenant_mac_idx').on(table.tenantId, table.macAddress),
   index('equipment_tenant_inv_status_idx').on(table.tenantId, table.inventoryStatus),
   index('equipment_tenant_type_idx').on(table.tenantId, table.equipmentType),
+  index('equipment_search_trgm_idx').using('gin', sql`(
+    coalesce(${table.serialNumber}, '') || ' ' || coalesce(${table.vcNumber}, '') || ' ' ||
+    coalesce(${table.macAddress}, '') || ' ' || coalesce(${table.barcode}, '') || ' ' ||
+    coalesce(${table.brand}, '') || ' ' || coalesce(${table.model}, '') || ' ' || ${table.equipmentType}
+  ) gin_trgm_ops`),
 ]);
 
 export type Equipment = typeof equipment.$inferSelect;

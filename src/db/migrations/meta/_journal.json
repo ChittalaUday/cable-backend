@@ -225,6 +225,34 @@
       "when": 1789373439252,
       "tag": "0031_pale_ender_wiggin",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1789376761216,
+      "tag": "0032_melodic_famine",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1789378310233,
+      "tag": "0033_omniscient_red_ghost",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1789380465354,
+      "tag": "0034_shiny_moira_mactaggert",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1789384955074,
+      "tag": "0035_location_path_codes",
+      "breakpoints": true
     }
   ]
 }

@@ -8,4 +8,5 @@ export const locationPaths = geo.view('location_paths', {
   depth: integer('depth').notNull(),
   pathIds: uuid('path_ids').array().notNull(),
   path: text('path').notNull(),
+  codes: text('codes').array().notNull(),
 }).existing();
