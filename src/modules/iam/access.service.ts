@@ -3,7 +3,7 @@ import type * as schema from '@/db/schema';
 import type { AuditContext } from '@/modules/audit/audit.types';
 import type { PermissionKey, PermissionScope } from '@/shared/security/permissions';
 import { and, eq } from 'drizzle-orm';
-import { membershipAreas, membershipLocations, rolePermissions, tenantMemberships } from '@/db/schema';
+import { membershipLocations, rolePermissions, tenantMemberships } from '@/db/schema';
 import { widerScope } from '@/shared/security/scope';
 
 export interface AccessContext {
@@ -12,7 +12,6 @@ export interface AccessContext {
   membershipId: string;
   roleId: string;
   permissions: ReadonlyMap<PermissionKey, PermissionScope>;
-  areaIds: readonly string[];
   locationIds: readonly string[];
 }
 
@@ -66,15 +65,11 @@ export class AccessService {
     if (membership === undefined || membership.status !== 'active')
       return null;
 
-    const [grants, areas, locationGrants] = await Promise.all([
+    const [grants, locationGrants] = await Promise.all([
       this.db
         .select({ key: rolePermissions.permissionKey, scope: rolePermissions.scope })
         .from(rolePermissions)
         .where(eq(rolePermissions.roleId, membership.roleId)),
-      this.db
-        .select({ id: membershipAreas.areaId })
-        .from(membershipAreas)
-        .where(eq(membershipAreas.membershipId, membership.id)),
       this.db
         .select({ id: membershipLocations.locationId })
         .from(membershipLocations)
@@ -94,7 +89,6 @@ export class AccessService {
       membershipId: membership.id,
       roleId: membership.roleId,
       permissions,
-      areaIds: areas.map(a => a.id),
       locationIds: locationGrants.map(l => l.id),
     };
   }
@@ -104,9 +98,12 @@ export function scopeFor(context: AccessContext, key: PermissionKey): Permission
   return context.permissions.get(key) ?? null;
 }
 
+/**
+ * The subtree roots a caller may reach, for the one scope that points at the
+ * location tree. Resolved against `geo.location_ancestors`, so a grant on a
+ * coarse node covers everything under it — which is why there is no separate
+ * "area" grant: how coarse a node is, is the tenant's configuration.
+ */
 export function grantedNodes(context: AccessContext, scope: PermissionScope): readonly string[] {
-  if (scope === 'LOCATION')
-    return [...context.areaIds, ...context.locationIds];
-
-  return scope === 'AREA' ? context.areaIds : [];
+  return scope === 'LOCATION' ? context.locationIds : [];
 }

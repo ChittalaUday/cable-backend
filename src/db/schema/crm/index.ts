@@ -1,6 +1,5 @@
 export * from './account-transactions';
 export * from './channels';
-export * from './customer-addresses';
 export * from './customer-equipment';
 export * from './customers';
 export * from './equipment';

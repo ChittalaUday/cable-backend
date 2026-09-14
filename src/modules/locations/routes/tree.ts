@@ -4,6 +4,7 @@ import { paginated } from '@/shared/pagination';
 import { PERMISSIONS } from '@/shared/security/permissions';
 import * as controller from '../locations.controller';
 import {
+  AncestorResponse,
   CreateLocationBody,
   IdParams,
   ListLocationsQuery,
@@ -20,7 +21,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
     schema: {
       tags: ['locations'],
       summary: 'List locations',
-      description: '`parentId` lists children (`null` for roots), `ancestorId` lists a whole subtree, `q` matches name or alias.',
+      description: '`parentId` lists children (`null` for roots), `ancestorId` lists a whole subtree, `q` matches name or alias. `coverageServiceId` (plus `coverageProviderId` to narrow) returns only the nodes that level of the catalogue may be sold in — what a coverage picker offers.',
       querystring: ListLocationsQuery,
       response: { 200: paginated(LocationResponse), ...errors },
     },
@@ -46,6 +47,17 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
       response: { 200: LocationResponse, ...errors },
     },
   }, controller.get);
+
+  app.get('/locations/:id/ancestors', {
+    preHandler: app.requirePermission(PERMISSIONS.LOCATIONS_VIEW),
+    schema: {
+      tags: ['locations'],
+      summary: 'The chain from the root down to this node, for revealing it in a tree',
+      description: 'Root first, the node itself last. `siblingIndex` says which page of its own level each step is on, so a deep node can be opened without walking pages.',
+      params: IdParams,
+      response: { 200: Type.Array(AncestorResponse), ...errors },
+    },
+  }, controller.ancestors);
 
   app.patch('/locations/:id', {
     preHandler: app.requirePermission(PERMISSIONS.LOCATIONS_UPDATE),

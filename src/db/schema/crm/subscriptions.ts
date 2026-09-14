@@ -1,8 +1,8 @@
 import { index, jsonb, numeric, text, timestamp, uuid } from 'drizzle-orm/pg-core';
 import { BILLING_CYCLES, SUBSCRIPTION_STATUSES } from '@/shared/constants/crm';
+import { locations } from '../geo/locations';
 import { crm } from '../schemas';
 import { tenants } from '../tenancy/tenants';
-import { customerAddresses } from './customer-addresses';
 import { customers } from './customers';
 import { packages } from './packages';
 import { serviceProviders } from './service-providers';
@@ -11,13 +11,7 @@ export const subscriptions = crm.table('subscriptions', {
   id: uuid('id').primaryKey().defaultRandom(),
   tenantId: uuid('tenant_id').notNull().references(() => tenants.id, { onDelete: 'cascade' }),
   customerId: uuid('customer_id').notNull().references(() => customers.id, { onDelete: 'cascade' }),
-  /**
-   * Written from the package at create time, never from the client.
-   *
-   * Denormalised on purpose: it is the supplier as of that day, and it has to
-   * survive the package being deactivated or the provider losing coverage
-   * there (docs/services-providers-packages.md §6).
-   */
+
   serviceProviderId: uuid('service_provider_id').notNull().references(() => serviceProviders.id, { onDelete: 'restrict' }),
   packageId: uuid('package_id').notNull().references(() => packages.id, { onDelete: 'restrict' }),
 
@@ -31,7 +25,14 @@ export const subscriptions = crm.table('subscriptions', {
   billingCycle: text('billing_cycle', { enum: BILLING_CYCLES }).notNull().default('monthly'),
   price: numeric('price', { precision: 12, scale: 2 }).notNull().default('0'),
 
-  installationAddressId: uuid('installation_address_id').references(() => customerAddresses.id, { onDelete: 'set null' }),
+  /**
+   * Where the line is installed — the single source of truth for a
+   * subscription's address. Required: a line has to terminate somewhere, and
+   * coverage, routing and area-scoped permissions all read this and nothing else.
+   */
+  locationId: uuid('location_id').notNull().references(() => locations.id, { onDelete: 'restrict' }),
+
+  /** Free-text detail a technician needs on top of the node (door, landmark). Never queried. */
   installationAddress: text('installation_address'),
 
   metadata: jsonb('metadata'),
@@ -45,7 +46,7 @@ export const subscriptions = crm.table('subscriptions', {
   index('subscriptions_tenant_package_idx').on(table.tenantId, table.packageId),
   index('subscriptions_tenant_status_idx').on(table.tenantId, table.status),
   index('subscriptions_tenant_account_idx').on(table.tenantId, table.serviceAccountNumber),
-  index('subscriptions_address_idx').on(table.installationAddressId),
+  index('subscriptions_location_idx').on(table.locationId),
 ]);
 
 export type Subscription = typeof subscriptions.$inferSelect;

@@ -9,10 +9,11 @@ import { env } from '@/config/env';
 import {
   accountTransactions,
   channels,
-  customerAddresses,
   customerEquipment,
   customers,
   equipment,
+  locationCategories,
+  locations,
   packageChannels,
   packages,
   serviceProviders,
@@ -21,12 +22,14 @@ import {
   tenantMemberships,
   tenants,
 } from '@/db/schema';
+import { FLOOR_NAMES, parseAddress } from './parse-address';
+import { TIDCO_BUILDING, TIDCO_TOWN } from './seed-locations';
 
 const pool = new pg.Pool({ connectionString: env.DATABASE_URL, max: 2 });
 const db = drizzle(pool);
 
-const MSO_REPORT_PATH = path.resolve(process.cwd(), 'Customer_account_status_report_2026-09-08 14_09_35.xls');
-const LEDGER_REPORT_PATH = path.resolve(process.cwd(), 'LCODepositLedgerReport_2026-09-0814:09:51-0-1000000.csv');
+const MSO_REPORT_PATH = path.resolve(process.cwd(), 'data/Customer_account_status_report_2026-09-08 14_09_35.xls');
+const LEDGER_REPORT_PATH = path.resolve(process.cwd(), 'data/LCODepositLedgerReport_2026-09-0814:09:51-0-1000000.csv');
 
 interface ParsedCustomerRow {
   sNo: string;
@@ -184,6 +187,134 @@ function cleanPhone(rawPhone: string): string | null {
   return null;
 }
 
+/**
+ * The TIDCO tree, built from the addresses in the report rather than invented.
+ *
+ * Returns a lookup that answers "where does this address live" with the
+ * deepest node the address actually supports — a door for the 89% that parse
+ * in full, the apartment or the village for the rest, and the complex itself
+ * for a row that says nothing but `TIDCO`. Never null: `location_id` is
+ * required on a subscription, so the fallback chain has to bottom out at the
+ * town.
+ *
+ * Only the nodes the data mentions are created. Group A has 62 apartments in
+ * the file, not a round 80, and generating the missing ones would put flats in
+ * the tree that nobody has ever billed.
+ */
+async function buildLocationTree(tenantId: string, addresses: readonly string[]) {
+  const cats = await db
+    .select({ id: locationCategories.id, slug: locationCategories.slug })
+    .from(locationCategories)
+    .where(sql`${locationCategories.tenantId} = ${tenantId}`);
+
+  const categoryId = new Map(cats.map(c => [c.slug, c.id]));
+
+  const [town] = await db
+    .select({ id: locations.id, schemaId: locations.schemaId })
+    .from(locations)
+    .where(sql`${locations.tenantId} = ${tenantId} AND ${locations.name} = ${TIDCO_TOWN} AND ${locations.parentId} IS NULL`)
+    .limit(1);
+
+  if (town === undefined)
+    throw new Error(`Location "${TIDCO_TOWN}" not found — run \`pnpm db:seed\` before seeding MSO data`);
+
+  const schemaId = town.schemaId;
+
+  // Cached by parent+name, so 764 addresses cost one upsert per distinct node
+  // rather than one per row.
+  const cache = new Map<string, string>();
+
+  async function node(input: { parentId: string; category: string; name: string; code?: string }): Promise<string> {
+    const { parentId, name } = input;
+    const key = `${parentId}/${name}`;
+    const hit = cache.get(key);
+    if (hit !== undefined)
+      return hit;
+
+    const [existing] = await db
+      .select({ id: locations.id })
+      .from(locations)
+      .where(sql`${locations.tenantId} = ${tenantId} AND ${locations.parentId} = ${parentId} AND ${locations.name} = ${name}`)
+      .limit(1);
+
+    const id = existing?.id ?? (await db
+      .insert(locations)
+      .values({
+        tenantId,
+        schemaId,
+        categoryId: categoryId.get(input.category)!,
+        parentId,
+        name,
+        code: input.code ?? null,
+        source: 'import',
+        status: 'approved',
+        isActive: true,
+      })
+      .returning({ id: locations.id }))[0]!.id;
+
+    cache.set(key, id);
+    return id;
+  }
+
+  const buildingId = await node({ parentId: town.id, category: 'building', name: TIDCO_BUILDING, code: 'TIDCO' });
+
+  // The villages already exist as street-address areas; a row that names one
+  // resolves to that area rather than to anything under the complex.
+  const villageRows = await db
+    .select({ id: locations.id, name: locations.name })
+    .from(locations)
+    .where(sql`${locations.tenantId} = ${tenantId} AND ${locations.parentId} IS NULL`);
+
+  const villageId = new Map(villageRows.map(row => [row.name, row.id]));
+
+  const resolved = new Map<string, string>();
+  const stats = { door: 0, apartment: 0, village: 0, building: 0 };
+
+  for (const raw of addresses) {
+    if (resolved.has(raw))
+      continue;
+
+    const parsed = parseAddress(raw);
+
+    if (parsed.kind === 'village') {
+      const id = villageId.get(parsed.name);
+      if (id !== undefined) {
+        resolved.set(raw, id);
+        stats.village++;
+        continue;
+      }
+    }
+
+    if (parsed.kind === 'door' || parsed.kind === 'apartment') {
+      const groupId = await node({ parentId: buildingId, category: 'group', name: `Group ${parsed.group}`, code: parsed.group });
+      const apartmentId = await node({ parentId: groupId, category: 'apartment', name: parsed.apartment, code: parsed.apartment });
+
+      if (parsed.kind === 'apartment') {
+        resolved.set(raw, apartmentId);
+        stats.apartment++;
+        continue;
+      }
+
+      const floorId = await node({ parentId: apartmentId, category: 'floor', name: FLOOR_NAMES[parsed.floor], code: parsed.floor });
+      const doorId = await node({ parentId: floorId, category: 'door', name: String(parsed.door), code: `${parsed.apartment}-${parsed.floor}${parsed.door}` });
+      resolved.set(raw, doorId);
+      stats.door++;
+      continue;
+    }
+
+    // `TIDCO`, `Mandapeta`, `Devi center` — inside the book, but no more than that.
+    resolved.set(raw, buildingId);
+    stats.building++;
+  }
+
+  console.log(
+    `📍 Mapped ${addresses.length} addresses onto ${cache.size} location nodes `
+    + `(${stats.door} to a door, ${stats.apartment} to an apartment, ${stats.village} to a village, ${stats.building} to the complex)`,
+  );
+
+  return (raw: string): string => resolved.get(raw) ?? buildingId;
+}
+
 async function run() {
   console.log('🚀 Starting MSO Data Seeding...');
 
@@ -202,7 +333,7 @@ async function run() {
       tenantId: tenant.id,
       name: 'Cable TV',
       slug: 'cable-tv',
-      serviceType: 'cable' as const,
+      icon: 'tv',
       description: 'Digital cable television',
       status: 'active' as const,
       metadata: {
@@ -216,7 +347,7 @@ async function run() {
       tenantId: tenant.id,
       name: 'Broadband',
       slug: 'broadband',
-      serviceType: 'broadband' as const,
+      icon: 'wifi',
       description: 'FTTH fibre internet',
       status: 'active' as const,
       metadata: {
@@ -229,7 +360,7 @@ async function run() {
       tenantId: tenant.id,
       name: 'IPTV',
       slug: 'iptv',
-      serviceType: 'iptv' as const,
+      icon: 'satellite',
       description: 'Interactive IPTV streaming with an OTT bundle',
       status: 'active' as const,
       metadata: {
@@ -693,6 +824,8 @@ async function run() {
   const parsedCustomers = parseMsoHtml(htmlContent);
   console.log(`📋 Parsed ${parsedCustomers.length} customer records from MSO report`);
 
+  const resolveLocation = await buildLocationTree(tenant.id, parsedCustomers.map(row => row.address));
+
   await db
     .update(customers)
     .set({ userId: null })
@@ -716,6 +849,13 @@ async function run() {
   const subByAccount = new Map<string, { id: string; customerId: string }>();
   for (const s of existingSubs)
     subByAccount.set(s.acc, { id: s.id, customerId: s.customerId });
+
+  // Rebuilt from scratch every run rather than topped up. Every asset below is
+  // derived from the report, so a re-run has to be able to change their shape —
+  // a guard that skipped lines already holding kit would pin the database to
+  // whatever the first import happened to produce. `customer_equipment`
+  // cascades off `equipment`, so the assignments go with them.
+  await db.delete(equipment).where(sql`${equipment.tenantId} = ${tenant.id}`);
 
   let insertedCustomers = 0;
   let insertedSubs = 0;
@@ -745,53 +885,31 @@ async function run() {
       importedFrom: 'Customer_account_status_report_2026-09-08 14_09_35.xls',
     };
 
+    const locationId = resolveLocation(custRow.address);
+    const addressText = custRow.address.length > 0 ? custRow.address : null;
+
     if (existingSub) {
       customerId = existingSub.customerId;
       subscriptionId = existingSub.id;
 
+      // Deliberately still `userId: null`. These are subscriber records, not
+      // logins — accounts get created through the real signup flow, so that
+      // an imported row never becomes a credential nobody issued.
       await db
         .update(customers)
         .set({
           userId: null,
+          locationId,
+          address: addressText,
           notes: 'Imported from ACT Digital MSO status report',
           metadata: customerInfo,
         })
         .where(sql`${customers.id} = ${customerId}`);
 
-      const [existingAddr] = await db
-        .select({ id: customerAddresses.id })
-        .from(customerAddresses)
-        .where(sql`${customerAddresses.customerId} = ${customerId}`)
-        .limit(1);
-
-      let resolvedAddrId = existingAddr?.id;
-      if (resolvedAddrId === undefined) {
-        const [newAddr] = await db
-          .insert(customerAddresses)
-          .values({
-            tenantId: tenant.id,
-            customerId,
-            addressType: 'installation',
-            flatOrDoorNo: custRow.address.length > 0 ? custRow.address : null,
-            buildingOrApartment: 'TIDCO Apartments',
-            landmark: 'TIDCO Housing Complex, Mandapeta',
-            city: 'Mandapeta',
-            state: 'Andhra Pradesh',
-            pincode: '533308',
-            isPrimary: true,
-            createdAt: createdAtDate,
-            updatedAt: new Date(),
-          })
-          .returning();
-        resolvedAddrId = newAddr?.id;
-      }
-
-      if (resolvedAddrId !== undefined) {
-        await db
-          .update(subscriptions)
-          .set({ installationAddressId: resolvedAddrId })
-          .where(sql`${subscriptions.id} = ${subscriptionId} AND ${subscriptions.installationAddressId} IS NULL`);
-      }
+      await db
+        .update(subscriptions)
+        .set({ locationId, installationAddress: addressText })
+        .where(sql`${subscriptions.id} = ${subscriptionId}`);
     }
     else {
       const codeRes = await db.execute<{ code: string }>(
@@ -805,6 +923,8 @@ async function run() {
           tenantId: tenant.id,
           customerCode: generatedCode,
           userId: null,
+          locationId,
+          address: addressText,
           status: custRow.status as 'active' | 'inactive',
           outstandingBalance: '0.00',
           notes: 'Imported from ACT Digital MSO status report',
@@ -817,24 +937,6 @@ async function run() {
       customerId = newCust!.id;
       insertedCustomers++;
 
-      const [addr] = await db
-        .insert(customerAddresses)
-        .values({
-          tenantId: tenant.id,
-          customerId,
-          addressType: 'installation',
-          flatOrDoorNo: custRow.address.length > 0 ? custRow.address : null,
-          buildingOrApartment: 'TIDCO Apartments',
-          landmark: 'TIDCO Housing Complex, Mandapeta',
-          city: 'Mandapeta',
-          state: 'Andhra Pradesh',
-          pincode: '533308',
-          isPrimary: true,
-          createdAt: createdAtDate,
-          updatedAt: new Date(),
-        })
-        .returning();
-
       const [newSub] = await db
         .insert(subscriptions)
         .values({
@@ -846,8 +948,8 @@ async function run() {
           status: custRow.status as 'active' | 'inactive',
           startDate: createdAtDate,
           price: '164.01',
-          installationAddressId: addr?.id ?? null,
-          installationAddress: custRow.address.length > 0 ? custRow.address : null,
+          locationId,
+          installationAddress: addressText,
           metadata: {
             msoShareDue: custRow.msoShareDue,
             lcoCustomerId: custRow.lcoCustomerId,
@@ -861,105 +963,46 @@ async function run() {
       subscriptionId = newSub!.id;
       subByAccount.set(custRow.accountNo, { id: subscriptionId, customerId });
       insertedSubs++;
+    }
 
-      if (custRow.serialNumber.length > 0) {
-        const [stbAsset] = await db
-          .insert(equipment)
-          .values({
-            tenantId: tenant.id,
-            equipmentType: 'stb',
-            brand: 'Skyworth',
-            model: 'HD-STB-100',
-            serialNumber: custRow.serialNumber,
-            isReturnable: true,
-            ownershipType: 'tenant_provided',
-            inventoryStatus: 'allocated',
-            createdAt: createdAtDate,
-          })
-          .returning();
+    const assetStatus = custRow.status === 'active' ? 'active' as const : 'returned' as const;
 
-        await db.insert(customerEquipment).values({
-          tenantId: tenant.id,
-          equipmentId: stbAsset!.id,
-          customerId,
-          subscriptionId,
-          status: custRow.status === 'active' ? 'active' : 'returned',
-          assignedAt: createdAtDate,
-        });
-        insertedEquipment++;
-      }
+    // Three per connection. The box is the only one the report identifies: its
+    // serial number and its viewing card number both belong to it, which is why
+    // the card is not a fourth asset of its own — a VC number is a property of
+    // the STB it is paired to, not a separate thing the operator can move.
+    //
+    // The remote and the adapter ship with every box but appear in no file, so
+    // they are marked as assumed rather than passed off as scanned hardware.
+    const kit = [
+      custRow.serialNumber.length > 0 && {
+        equipmentType: 'stb' as const,
+        serialNumber: custRow.serialNumber,
+        vcNumber: custRow.vcNumber.length > 0 ? custRow.vcNumber : null,
+      },
+      { equipmentType: 'remote' as const, metadata: { assumed: true } },
+      { equipmentType: 'power_adapter' as const, metadata: { assumed: true } },
+    ].filter(item => item !== false);
 
-      if (custRow.vcNumber.length > 0) {
-        const [vcAsset] = await db
-          .insert(equipment)
-          .values({
-            tenantId: tenant.id,
-            equipmentType: 'smart_card',
-            brand: 'Conax / Irdeto',
-            model: 'SmartCard-V2',
-            vcNumber: custRow.vcNumber,
-            isReturnable: true,
-            ownershipType: 'tenant_provided',
-            inventoryStatus: 'allocated',
-            createdAt: createdAtDate,
-          })
-          .returning();
-
-        await db.insert(customerEquipment).values({
-          tenantId: tenant.id,
-          equipmentId: vcAsset!.id,
-          customerId,
-          subscriptionId,
-          status: custRow.status === 'active' ? 'active' : 'returned',
-          assignedAt: createdAtDate,
-        });
-        insertedEquipment++;
-      }
-
-      const [remoteAsset] = await db
+    for (const asset of kit) {
+      const [created] = await db
         .insert(equipment)
         .values({
           tenantId: tenant.id,
-          equipmentType: 'remote',
-          brand: 'Universal',
-          model: 'ACT Universal Remote',
           isReturnable: true,
           ownershipType: 'tenant_provided',
           inventoryStatus: 'allocated',
           createdAt: createdAtDate,
+          ...asset,
         })
         .returning();
 
       await db.insert(customerEquipment).values({
         tenantId: tenant.id,
-        equipmentId: remoteAsset!.id,
+        equipmentId: created!.id,
         customerId,
         subscriptionId,
-        status: custRow.status === 'active' ? 'active' : 'returned',
-        assignedAt: createdAtDate,
-      });
-      insertedEquipment++;
-
-      const [adapterAsset] = await db
-        .insert(equipment)
-        .values({
-          tenantId: tenant.id,
-          equipmentType: 'power_adapter',
-          brand: 'Huntkey',
-          model: '12V 1.5A DC Adapter',
-          isReturnable: true,
-          ownershipType: 'tenant_provided',
-          inventoryStatus: 'allocated',
-          createdAt: createdAtDate,
-        })
-        .returning();
-
-      await db.insert(customerEquipment).values({
-        tenantId: tenant.id,
-        equipmentId: adapterAsset!.id,
-        customerId,
-        subscriptionId,
-        status: custRow.status === 'active' ? 'active' : 'returned',
+        status: assetStatus,
         assignedAt: createdAtDate,
       });
       insertedEquipment++;

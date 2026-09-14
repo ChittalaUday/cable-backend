@@ -571,6 +571,7 @@ devices                     One physical install of the app.
   ├─ client_device_id       Stable id the app generates once and keeps. UNIQUE.
   ├─ platform               'ios' | 'android'
   ├─ os_version, model, app_version
+  ├─ ram_mb, screen_resolution   What the handset is, for triaging "the app is slow"
   ├─ blocked_at             non-null ⇒ every session on it is refused
   └─ first_seen_at, last_seen_at
 
@@ -734,7 +735,7 @@ suggestion.
 **Scope hierarchy** — a grant carries a scope, and higher includes lower:
 
 ```
-OWN(1) < ASSIGNED(2) < TEAM(3) < AREA(4) < LOCATION(5) < ALL(6)
+OWN(1) < ASSIGNED(2) < TEAM(3) < LOCATION(4) < ALL(5)
 ```
 
 **Two-stage check, on every protected route:**
@@ -746,11 +747,12 @@ OWN(1) < ASSIGNED(2) < TEAM(3) < AREA(4) < LOCATION(5) < ALL(6)
    ```
 2. **Resource check** (in the **service**) — does the granted scope reach *this
    specific record*? Compares the grant against the row's
-   `createdBy` / `assignedTo` / `teamId` / `areaId` / `locationId`.
+   `createdBy` / `assignedTo` / `teamId` / `locationId`.
 
 **Stage 1 without stage 2 is a security bug.** A `staff` user with
-`customers.update` at scope `AREA` passes the route guard for *every* customer.
-Only the service-layer check stops them editing a customer in another area.
+`customers.update` at scope `LOCATION` passes the route guard for *every*
+customer. Only the service-layer check stops them editing a customer outside
+the subtrees they were granted.
 
 **Permission resolution is cached, not recomputed per request.** Roles compile
 to a permission map per `(user, tenant)`, cached in memory keyed by a `version`
@@ -781,8 +783,17 @@ which tenants a user belonged to when it was signed; `requirePermission` reads
 the row, so a membership suspended since is refused with
 `TENANT_MEMBERSHIP_SUSPENDED` even though the claim still names it.
 
-**`AREA` and `LOCATION` are subtree grants over the location tree** (§8.6):
-`tenancy.membership_areas` and `membership_locations` hold node ids, and a grant
+**`TEAM` is a grant over one crew.** `tenancy.teams` is a tenant's own crews —
+the collection round, the install crew — and a membership joins one through
+`tenant_memberships.team_id`. That column is tied to `teams` by a **composite
+foreign key on `(tenant_id, team_id)`**, not on `team_id` alone: a plain
+reference would accept another operator's team id, and tenant isolation that
+depends on the service remembering a `WHERE tenant_id = ?` is not isolation.
+`team_id` stays nullable — MATCH SIMPLE skips the check when it is null, so a
+member on no team is still legal.
+
+**`LOCATION` is a subtree grant over the location tree** (§8.6):
+`tenancy.membership_locations` holds node ids, and a grant
 on a node reaches everything beneath it — checked with
 `geo.location_ancestors`, in SQL, not by loading the tree. **A caller whose
 scope is below `ALL` and who has no grants reaches nothing**, and a list returns
@@ -1222,10 +1233,10 @@ decision about whether customers' existing numbers matter, so it is yours.
 
 | Schema | Holds | Owned by |
 |---|---|---|
-| `tenancy` | `tenants`, `tenant_memberships`, `membership_areas`, `membership_locations` | `tenants` |
+| `tenancy` | `tenants`, `teams`, `tenant_memberships`, `membership_locations` | `tenants` |
 | `auth` | `users`, `sessions`, `devices`, `otp_codes` | `auth`, `users`, `devices` |
 | `iam` | `roles`, `role_permissions` | `roles`, `permissions` |
-| `crm` | `customers`, `services`, `service_providers`, `service_coverage`, `packages`, `channels`, `subscriptions` | `customers`, `services`, `packages` |
+| `crm` | `customers`, `subscriptions`, `services`, `service_providers`, `service_coverage`, `packages`, `channels`, `package_channels`, `equipment`, `customer_equipment`, `account_transactions` | `customers`, `services`, `packages` |
 | `geo` | `location_categories`, `location_schemas`, `location_schema_levels`, `locations`, `location_aliases` | `locations` (§8.6) |
 | `notify` | `notifications` | `notifications` |
 | `media` | `files` | `storage` |
@@ -1336,6 +1347,10 @@ The upload handshake:
   reporting 1 KB and uploading 1 GB is exactly what the cap exists to stop, so
   the cap is re-checked against the `HEAD` result and an oversized object is
   deleted.
+- **A checksum is stored with the algorithm that produced it.** `checksum`
+  beside `checksum_algorithm` (`md5`, `sha1`, `sha256`, `crc32c`) — a bare digest
+  is unverifiable, because the reader cannot tell which function to re-run, and
+  R2 returns different ones depending on how the object was uploaded.
 - **The storage key is server-generated**: `{tenantId}/{yyyy}/{mm}/{uuid}{ext}`.
   The client's filename is display metadata and never shapes the path — that is
   how `../` traversal and collisions get in.
@@ -1351,8 +1366,9 @@ The upload handshake:
 Cloudflare R2 speaks the S3 API, so any S3-compatible bucket is a config change.
 Nothing outside `providers/r2.provider.ts` knows that.
 
-**Attachments:** a domain table references a file by id
-(`customers.photo_file_id`), keeping a real foreign key. If many-to-many
+**Attachments:** a domain table references a file by id — `notify.notifications.file_id`
+is the one that exists, for an image sent in-app or on WhatsApp — keeping a real
+foreign key, `ON DELETE set null` so losing the bytes does not lose the message. If many-to-many
 attachments become necessary, add a `media.attachments` link table then — a
 polymorphic `owner_type`/`owner_id` pair would buy flexibility nothing needs yet
 and cost every FK guarantee.
@@ -1406,14 +1422,25 @@ scope-limited.
 is three tables and the tenant's own configuration:
 
 ```
-location_categories   what kinds of place exist    Area, Building, Floor, Door, Village, Street, House
-location_schemas      + _levels: which order       Building → Block → Floor → Flat
-locations             the actual nodes             Mandapeta → Sri Sai Apartments → Block A → First Floor → A101
+location_categories   what kinds of place exist    Area, Building, Group, Apartment, Floor, Door, Village, Street
+location_schemas      + _levels: which order       Area → Building → Group → Apartment → Floor → Door
+locations             the actual nodes             Mandapeta → TIDCO Apartments → Group A → A31 → Second Floor → 1
 ```
 
-A customer stores **one** id — the terminal node — and everything above it is
-derived. `crm.customer_addresses.location_id` is the address; the free-text
-columns beside it are the pre-import fallback and nothing more.
+(That chain is the `tidco-apartments` schema the seed builds, not a fixed shape.
+The same tenant also runs `street-address`, which is two levels deep.)
+
+**One address per subscription, and it is a node.** `crm.subscriptions.location_id`
+is required and is the only structured address a line has — coverage, routing
+and `LOCATION` grants all read it and nothing else. `crm.customers.location_id`
+is the same thing for the customer record.
+
+Beside each sits an optional free-text column — `subscriptions.installation_address`
+and `customers.address` — for the door-and-landmark detail a technician needs.
+**Nothing queries them.** They were a whole second table once
+(`crm.customer_addresses`, with its own lat/long, city, pincode and an
+`is_primary` flag deciding which row counted); it is gone, because a second
+answer to "where is this customer" is a second answer that disagrees.
 
 **The service knows four words: category, parent category, location, parent
 location.** Anything of the shape
@@ -1475,14 +1502,12 @@ or a building; a door number does not need coordinates, and the logical tree
 does not depend on them. PostGIS, if it ever lands, is additive — it does not
 become the hierarchy.
 
-**Scopes point at nodes.** `tenancy.membership_areas.area_id` and
-`membership_locations.location_id` are foreign keys into `geo.locations`; an
-"area" is simply a coarse node, and how coarse is the tenant's configuration.
-
-> `ponytail:` AREA and LOCATION are still two separate grant dimensions in §5,
-> which is why `crm.customers.area_id` caches the coarse ancestor. One subtree
-> grant checked with `location_ancestors` would replace both the second grant
-> table and that column. Do it when the scope resolver is written, not before.
+**Scopes point at nodes.** `tenancy.membership_locations.location_id` is a
+foreign key into `geo.locations`; an "area" is simply a coarse node, and how
+coarse is the tenant's configuration — which is why one grant dimension is
+enough. `AREA` and `membership_areas` were the second one, and both are gone:
+they resolved through `location_ancestors` exactly as `LOCATION` does, so an
+AREA grant never reached anything a LOCATION grant did not.
 
 #### The module
 
@@ -1492,7 +1517,7 @@ split is the point: field staff add nodes daily, an admin defines levels once,
 and those are different grants.
 
 **Who may see what.** `list` and every read run the §5 stage-2 check against the
-tree: a caller at `ALL` sees the tenant; a caller at `AREA`/`LOCATION` sees the
+tree: a caller at `ALL` sees the tenant; a caller at `LOCATION` sees the
 subtrees they are granted, evaluated as
 `EXISTS (… geo.location_descendants(grant) …)` in the same query rather than as
 a filter in TypeScript; a caller at `OWN` sees nodes they created. **No grants

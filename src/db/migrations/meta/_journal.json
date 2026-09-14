@@ -169,6 +169,62 @@
       "when": 1789303900476,
       "tag": "0023_sad_wild_child",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1789321431262,
+      "tag": "0024_hard_moonstone",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1789325282411,
+      "tag": "0025_icy_sharon_ventura",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1789325289197,
+      "tag": "0026_overconfident_squirrel_girl",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1789325290197,
+      "tag": "0027_coverage_allows",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1789367124077,
+      "tag": "0028_bright_vargas",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1789368581738,
+      "tag": "0029_closed_stick",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1789370456739,
+      "tag": "0030_sparkling_slipstream",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1789373439252,
+      "tag": "0031_pale_ender_wiggin",
+      "breakpoints": true
     }
   ]
 }

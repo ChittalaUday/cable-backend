@@ -1,5 +1,5 @@
 import { index, jsonb, numeric, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
-import { BILLING_CYCLES, PACKAGE_TYPES } from '@/shared/constants/crm';
+import { BILLING_CYCLES, ENTITY_STATUSES, PACKAGE_TYPES } from '@/shared/constants/crm';
 import { crm } from '../schemas';
 import { tenants } from '../tenancy/tenants';
 import { serviceProviders } from './service-providers';
@@ -31,7 +31,7 @@ export const packages = crm.table('packages', {
 
   metadata: jsonb('metadata'),
 
-  status: text('status', { enum: ['active', 'inactive'] }).notNull().default('active'),
+  status: text('status', { enum: ENTITY_STATUSES }).notNull().default('active'),
 
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

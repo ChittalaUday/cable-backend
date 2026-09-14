@@ -21,8 +21,8 @@ let app: BuiltApp;
 let data: SeededAuthData;
 let auth: Record<string, string>;
 
-interface Service { id: string; name: string; slug: string; providerCount: number; status: string }
-interface Provider { id: string; serviceId: string; name: string; slug: string; isDefault: boolean }
+interface Service { id: string; name: string; slug: string; providerCount: number; status: string; providers: Provider[] }
+interface Provider { id: string; serviceId: string; name: string; slug: string; isDefault: boolean; packageCount: number }
 
 const unique = () => randomUUID().slice(0, 8);
 
@@ -53,7 +53,7 @@ async function createService(overrides: Record<string, unknown> = {}) {
     method: 'POST',
     url: '/api/v1/services',
     headers: auth,
-    payload: { name: 'Cable TV', slug, serviceType: 'cable', ...overrides },
+    payload: { name: 'Cable TV', slug, icon: 'tv', ...overrides },
   });
 
   expect(response.statusCode).toBe(201);
@@ -84,6 +84,48 @@ describe('service catalogue', () => {
     }));
 
     expect(read.providerCount).toBe(2);
+    expect(read.providers).toHaveLength(2);
+    expect(read.providers.map(p => p.name).sort()).toEqual(['ACT Digital', 'Hathway']);
+  });
+
+  it('counts them on the list too, not only on the detail', async () => {
+    // The screen that shows "N providers" reads the list, so a count that is
+    // only right on the detail endpoint reads as zero everywhere it is shown.
+    const service = await createService();
+    await createProvider(service.id);
+    await createProvider(service.id, { name: 'Hathway', slug: `hathway-${unique()}` });
+
+    const listed = bodyOf<Service[]>(await app.inject({
+      method: 'GET',
+      url: '/api/v1/services',
+      headers: auth,
+    })).find(item => item.id === service.id);
+
+    expect(listed?.providerCount).toBe(2);
+  });
+
+  it('counts each provider’s packages on the service detail', async () => {
+    // The other single-table select with a correlated subquery — same trap,
+    // and it reads as "this provider has nothing to sell".
+    const service = await createService();
+    const provider = bodyOf<Provider>(await createProvider(service.id));
+
+    for (const name of ['Base', 'Premium']) {
+      await app.inject({
+        method: 'POST',
+        url: '/api/v1/packages',
+        headers: auth,
+        payload: { serviceProviderId: provider.id, name, price: '299.00' },
+      });
+    }
+
+    const read = bodyOf<Service>(await app.inject({
+      method: 'GET',
+      url: `/api/v1/services/${service.id}`,
+      headers: auth,
+    }));
+
+    expect(read.providers.find(p => p.id === provider.id)?.packageCount).toBe(2);
   });
 
   it('lets two providers of one service exist, and keeps one default', async () => {
@@ -114,8 +156,8 @@ describe('service catalogue', () => {
 
   it('allows the same provider slug under a different service', async () => {
     const slug = `airtel-${unique()}`;
-    const broadband = await createService({ slug: `broadband-${unique()}`, serviceType: 'broadband', name: 'Broadband' });
-    const iptv = await createService({ slug: `iptv-${unique()}`, serviceType: 'iptv', name: 'IPTV' });
+    const broadband = await createService({ slug: `broadband-${unique()}`, icon: 'wifi', name: 'Broadband' });
+    const iptv = await createService({ slug: `iptv-${unique()}`, icon: 'satellite', name: 'IPTV' });
 
     expect((await createProvider(broadband.id, { name: 'Airtel', slug })).statusCode).toBe(201);
     // Airtel supplying two services is two rows that share a name — the call
@@ -151,5 +193,22 @@ describe('service catalogue', () => {
 
     expect(response.statusCode).toBe(403);
     expect(bodyOf(response).code).toBe('PERM_DENIED');
+  });
+
+  it('derives a slug from the name when the form does not send one', async () => {
+    // The app's forms only collect a display name (§7): the API names the row.
+    const name = `Tata Play ${unique()}`;
+    const service = await createService({ name, slug: undefined });
+    expect(service.slug).toBe(name.toLowerCase().replace(/ /g, '-'));
+
+    // A second provider with the same name steps around the taken slug rather
+    // than 409-ing at someone who never typed a slug.
+    const first = await createProvider(service.id, { name: 'ACT Digital', slug: undefined });
+    const second = await createProvider(service.id, { name: 'ACT Digital', slug: undefined });
+
+    expect(first.statusCode).toBe(201);
+    expect(second.statusCode).toBe(201);
+    expect(bodyOf<Provider>(first).slug).toBe('act-digital');
+    expect(bodyOf<Provider>(second).slug).toBe('act-digital-2');
   });
 });

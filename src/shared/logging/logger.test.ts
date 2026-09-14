@@ -30,4 +30,43 @@ describe('local log storage', () => {
 
     expect(readdirSync(directory)).toEqual(['2026-09-13']);
   });
+
+  it('keeps 1 log file for a day across restarts and rotates only when size exceeds limit', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'cable-logs-'));
+    const now = () => new Date('2026-09-13T12:00:00Z');
+
+    // Run 1: first start of the day
+    const dest1 = createRotatingLogDestination({
+      directory,
+      maxFileBytes: 50,
+      name: 'api',
+      now,
+    });
+    dest1.write('first session log line\n');
+
+    // Run 2: server restarted on same day, writes more log
+    const dest2 = createRotatingLogDestination({
+      directory,
+      maxFileBytes: 50,
+      name: 'api',
+      now,
+    });
+    dest2.write('second session log line\n');
+
+    const dayDir = path.join(directory, '2026-09-13');
+    let files = readdirSync(dayDir).sort();
+    expect(files).toEqual(['api-1.log']);
+    expect(readFileSync(path.join(dayDir, 'api-1.log'), 'utf8')).toBe(
+      'first session log line\nsecond session log line\n',
+    );
+
+    // Run 3: log line exceeds maxFileBytes (50 bytes)
+    dest2.write('third log line that pushes total bytes over the 50 byte limit\n');
+
+    files = readdirSync(dayDir).sort();
+    expect(files).toEqual(['api-1.log', 'api-2.log']);
+    expect(readFileSync(path.join(dayDir, 'api-2.log'), 'utf8')).toBe(
+      'third log line that pushes total bytes over the 50 byte limit\n',
+    );
+  });
 });

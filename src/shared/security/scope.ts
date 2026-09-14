@@ -5,14 +5,12 @@ export interface ResourceMeta {
   createdBy?: string | null;
   assignedTo?: string | null;
   teamId?: string | null;
-  areaId?: string | null;
   locationId?: string | null;
 }
 
 export interface AccessContext {
   userId: string;
   teamId: string | null;
-  areaIds: ReadonlySet<string>;
   locationIds: ReadonlySet<string>;
 }
 
@@ -25,7 +23,6 @@ const SCOPE_CHECKS: Record<
   (ctx: AccessContext, meta: ResourceMeta) => boolean
 > = {
   LOCATION: (ctx, meta) => meta.locationId != null && ctx.locationIds.has(meta.locationId),
-  AREA: (ctx, meta) => meta.areaId != null && ctx.areaIds.has(meta.areaId),
   TEAM: (ctx, meta) => meta.teamId != null && ctx.teamId != null && meta.teamId === ctx.teamId,
   ASSIGNED: (ctx, meta) => meta.assignedTo != null && meta.assignedTo === ctx.userId,
   OWN: (ctx, meta) => meta.createdBy != null && meta.createdBy === ctx.userId,

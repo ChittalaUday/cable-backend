@@ -1,3 +1,6 @@
+import type { AuditAction } from '@/shared/constants/audit';
+import { AUDIT_ACTIONS, AUDIT_ENTITIES, AUDIT_VERBS, auditAction } from '@/shared/constants/audit';
+
 /**
  * Every route that changes something, and the audit action it writes.
  *
@@ -11,44 +14,45 @@
  * behind the route actually calls `audit.created/updated/deleted`. Pair a new
  * entry with a test that asserts the row, the way `audit.trail.test.ts` does.
  *
- * Actions read `<entity>.<verb>`; see docs/audit-trail.md.
+ * Actions come from `shared/constants/audit.ts`; see docs/audit-trail.md.
  */
-export const AUDITED_ROUTES: Readonly<Record<string, readonly string[]>> = {
+export const AUDITED_ROUTES: Readonly<Record<string, readonly AuditAction[]>> = {
   // ── auth: sign-in is audited on both outcomes (docs/audit-trail.md §2) ──
-  'POST /api/v1/auth/otp/request': ['auth.otp.requested', 'auth.otp.refused'],
-  'POST /api/v1/auth/otp/verify': ['auth.otp.verified', 'auth.otp.failed'],
-  'POST /api/v1/auth/login': ['auth.login.succeeded', 'auth.login.failed'],
-  'POST /api/v1/auth/refresh': ['auth.token.refreshed', 'auth.token.refresh_failed', 'auth.token.reuse_detected'],
-  'POST /api/v1/auth/logout': ['auth.logout'],
-  'POST /api/v1/auth/logout-all': ['auth.logout_all'],
+  'POST /api/v1/auth/otp/request': [AUDIT_ACTIONS.AUTH_OTP_REQUESTED, AUDIT_ACTIONS.AUTH_OTP_REFUSED],
+  'POST /api/v1/auth/otp/verify': [AUDIT_ACTIONS.AUTH_OTP_VERIFIED, AUDIT_ACTIONS.AUTH_OTP_FAILED],
+  'POST /api/v1/auth/login': [AUDIT_ACTIONS.AUTH_LOGIN_SUCCEEDED, AUDIT_ACTIONS.AUTH_LOGIN_FAILED],
+  'POST /api/v1/auth/refresh': [AUDIT_ACTIONS.AUTH_TOKEN_REFRESHED, AUDIT_ACTIONS.AUTH_TOKEN_REFRESH_FAILED, AUDIT_ACTIONS.AUTH_TOKEN_REUSE_DETECTED],
+  'POST /api/v1/auth/logout': [AUDIT_ACTIONS.AUTH_LOGOUT],
+  'POST /api/v1/auth/logout-all': [AUDIT_ACTIONS.AUTH_LOGOUT_ALL],
 
   // ── locations ──
-  'POST /api/v1/location-categories': ['location_category.created'],
-  'PATCH /api/v1/location-categories/:id': ['location_category.updated'],
-  'DELETE /api/v1/location-categories/:id': ['location_category.deleted'],
-  'POST /api/v1/location-schemas': ['location_schema.created'],
-  'PATCH /api/v1/location-schemas/:id': ['location_schema.updated'],
-  'DELETE /api/v1/location-schemas/:id': ['location_schema.deleted'],
-  'POST /api/v1/location-schemas/:id/generate': ['location.generated'],
-  'POST /api/v1/locations': ['location.created'],
-  'PATCH /api/v1/locations/:id': ['location.updated'],
-  'DELETE /api/v1/locations/:id': ['location.deleted'],
+  'POST /api/v1/location-categories': [auditAction(AUDIT_ENTITIES.LOCATION_CATEGORY, AUDIT_VERBS.CREATED)],
+  'PATCH /api/v1/location-categories/:id': [auditAction(AUDIT_ENTITIES.LOCATION_CATEGORY, AUDIT_VERBS.UPDATED)],
+  'DELETE /api/v1/location-categories/:id': [auditAction(AUDIT_ENTITIES.LOCATION_CATEGORY, AUDIT_VERBS.DELETED)],
+  'POST /api/v1/location-schemas': [auditAction(AUDIT_ENTITIES.LOCATION_SCHEMA, AUDIT_VERBS.CREATED)],
+  'PATCH /api/v1/location-schemas/:id': [auditAction(AUDIT_ENTITIES.LOCATION_SCHEMA, AUDIT_VERBS.UPDATED)],
+  'DELETE /api/v1/location-schemas/:id': [auditAction(AUDIT_ENTITIES.LOCATION_SCHEMA, AUDIT_VERBS.DELETED)],
+  'POST /api/v1/location-schemas/:id/generate': [AUDIT_ACTIONS.LOCATION_GENERATED],
+  'POST /api/v1/locations': [auditAction(AUDIT_ENTITIES.LOCATION, AUDIT_VERBS.CREATED)],
+  'PATCH /api/v1/locations/:id': [auditAction(AUDIT_ENTITIES.LOCATION, AUDIT_VERBS.UPDATED)],
+  'DELETE /api/v1/locations/:id': [auditAction(AUDIT_ENTITIES.LOCATION, AUDIT_VERBS.DELETED)],
 
   // ── catalogue ──
-  'POST /api/v1/services': ['service.created'],
-  'PATCH /api/v1/services/:id': ['service.updated'],
-  'DELETE /api/v1/services/:id': ['service.deleted'],
-  'POST /api/v1/service-providers': ['service_provider.created'],
-  'PATCH /api/v1/service-providers/:id': ['service_provider.updated'],
-  'DELETE /api/v1/service-providers/:id': ['service_provider.deleted'],
-  'PUT /api/v1/services/:id/coverage': ['service_coverage.updated'],
-  'PUT /api/v1/service-providers/:id/coverage': ['service_coverage.updated'],
+  'POST /api/v1/services': [auditAction(AUDIT_ENTITIES.SERVICE, AUDIT_VERBS.CREATED)],
+  'PATCH /api/v1/services/:id': [auditAction(AUDIT_ENTITIES.SERVICE, AUDIT_VERBS.UPDATED)],
+  'DELETE /api/v1/services/:id': [auditAction(AUDIT_ENTITIES.SERVICE, AUDIT_VERBS.DELETED)],
+  'POST /api/v1/service-providers': [auditAction(AUDIT_ENTITIES.SERVICE_PROVIDER, AUDIT_VERBS.CREATED)],
+  'PATCH /api/v1/service-providers/:id': [auditAction(AUDIT_ENTITIES.SERVICE_PROVIDER, AUDIT_VERBS.UPDATED)],
+  'DELETE /api/v1/service-providers/:id': [auditAction(AUDIT_ENTITIES.SERVICE_PROVIDER, AUDIT_VERBS.DELETED)],
+  'PUT /api/v1/services/:id/coverage': [auditAction(AUDIT_ENTITIES.SERVICE_COVERAGE, AUDIT_VERBS.UPDATED)],
+  'PUT /api/v1/service-providers/:id/coverage': [auditAction(AUDIT_ENTITIES.SERVICE_COVERAGE, AUDIT_VERBS.UPDATED)],
+  'PUT /api/v1/packages/:id/coverage': [auditAction(AUDIT_ENTITIES.SERVICE_COVERAGE, AUDIT_VERBS.UPDATED)],
 
   // ── packages ──
-  'POST /api/v1/packages': ['package.created'],
-  'PATCH /api/v1/packages/:id': ['package.updated'],
-  'DELETE /api/v1/packages/:id': ['package.deleted'],
-  'PUT /api/v1/packages/:id/channels': ['package_channels.updated'],
+  'POST /api/v1/packages': [auditAction(AUDIT_ENTITIES.PACKAGE, AUDIT_VERBS.CREATED)],
+  'PATCH /api/v1/packages/:id': [auditAction(AUDIT_ENTITIES.PACKAGE, AUDIT_VERBS.UPDATED)],
+  'DELETE /api/v1/packages/:id': [auditAction(AUDIT_ENTITIES.PACKAGE, AUDIT_VERBS.DELETED)],
+  'PUT /api/v1/packages/:id/channels': [auditAction(AUDIT_ENTITIES.PACKAGE_CHANNELS, AUDIT_VERBS.UPDATED)],
 };
 
 /**

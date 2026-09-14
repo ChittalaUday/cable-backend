@@ -17,8 +17,37 @@ pnpm install
 cp .env.example .env          # then set JWT_SECRET: openssl rand -base64 48
 pnpm db:up                    # PostgreSQL 18 in Docker
 pnpm db:migrate
+pnpm db:seed                  # roles, tenants, admin logins, the location hierarchy
 pnpm dev                      # http://localhost:5050 — docs at /docs
 ```
+
+## Seeding
+
+**`pnpm db:seed` first, always.** It creates the location categories, the two
+schemas and the `Mandapeta → TIDCO Apartments` root; the importers below hang
+their data off those nodes and refuse to run without them.
+
+```bash
+pnpm db:seed              # roles, tenants, admins, locations   (run this first)
+pnpm db:seed:mso          # the operator's real book: customers, subscriptions, equipment, ledger
+pnpm db:seed:packages     # channel line-up from the ACT channel export
+```
+
+The importers read the operator's exports from `data/`. Those files are
+gitignored (`*.xls`, `*.csv`), so a fresh clone has the directory and not the
+data — `db:seed:mso` stops with the path it wanted rather than inventing rows.
+
+All three are idempotent. `db:seed:mso` matches customers on their account
+number and rebuilds equipment from scratch each run (it is derived entirely
+from the report), so a second run changes nothing.
+
+**Imported customers have no login.** `crm.customers.user_id` stays null —
+these are subscriber records, not accounts. Logins are issued through the real
+signup flow, so an imported row never becomes a credential nobody handed out.
+
+What one run produces, at the time of writing: 764 customers and subscriptions,
+2292 equipment assets, 5097 ledger transactions, and 1115 location nodes built
+from the addresses in the report rather than generated.
 
 ## Commands
 
@@ -31,8 +60,27 @@ pnpm dev                      # http://localhost:5050 — docs at /docs
 | `pnpm db:generate` | Generate a migration from schema changes |
 | `pnpm db:migrate` | Apply pending migrations |
 | `pnpm db:studio` | Browse the database |
+| `pnpm db:seed` | Roles, tenants, admin logins, location hierarchy |
+| `pnpm db:seed:mso` | Import the operator's customer book (needs `db:seed` first) |
 | `pnpm test` | Vitest. Needs PostgreSQL and Redis. |
 | `pnpm build && pnpm start` | Production build and run |
+
+## Local monitoring
+
+With the API running on port 5050, start Prometheus, Loki, Alloy, and Grafana:
+
+```bash
+docker compose -f docker-compose.monitoring.yml up -d
+```
+
+Prometheus is at `http://localhost:9090` and Grafana at
+`http://localhost:3099` (`admin` / `admin`). The provisioned **Fastify
+Backends Overview** dashboard includes request metrics, latency percentiles,
+slow endpoints, and Pino logs. Add metrics endpoints to
+`monitoring/prometheus/targets.yml`; use `api:5050` for a Compose service or
+`host.docker.internal:5050` for a host process. To add another backend's log
+files, mount its log directory under `/var/log/backends/<service>` in the Alloy
+service; the directory name becomes the Grafana `service` label.
 
 Tests use the local PostgreSQL via `.env.test`, falling back to Testcontainers
 when that file is absent. Cache tests need Redis on `REDIS_URL`.
@@ -88,10 +136,10 @@ Tables are namespaced by domain — nothing is in `public`:
 
 | Schema | Tables |
 |---|---|
-| `tenancy` | tenants, tenant_memberships, membership_areas, membership_locations |
-| `auth` | users, sessions, devices |
+| `tenancy` | tenants, teams, tenant_memberships, membership_locations |
+| `auth` | users, sessions, devices, otp_codes |
 | `iam` | roles, role_permissions |
-| `crm` | customers, customer_addresses, services, service_providers, service_coverage, packages, channels, subscriptions |
+| `crm` | customers, subscriptions, services, service_providers, service_coverage, packages, channels, package_channels, equipment, customer_equipment, account_transactions |
 | `geo` | location_categories, location_schemas, location_schema_levels, locations, location_aliases |
 | `notify` | notifications |
 | `media` | files |
@@ -152,7 +200,7 @@ otherwise the tenant comes from the token. Every route is authenticated by
 default; sign-in, `/health` and `/docs` are the exceptions.
 
 Staff see only the subtrees granted to their membership
-(`tenancy.membership_areas`), and a node added by someone without
+(`tenancy.membership_locations`), and a node added by someone without
 `locations.configure` lands as `pending` for review. Full rules in AGENTS.md
 §8.6; the endpoint table is §6.1.
 

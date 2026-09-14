@@ -6,6 +6,7 @@ import type {
   RequestUploadInput,
   StorageCleanupOptions,
   StorageCleanupReport,
+  StorageFolder,
   StorageProvider,
   UploadResult,
   UserFileRecord,
@@ -18,11 +19,15 @@ import os from 'node:os';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { and, count, eq, isNull, lte, ne } from 'drizzle-orm';
+import { csv, env } from '@/config/env';
 import { files, userFiles } from '@/db/schema';
 import { audit } from '@/modules/audit/audit.service';
 import { systemAuditContext } from '@/modules/audit/audit.types';
+import { AUDIT_ACTIONS, AUDIT_ENTITIES } from '@/shared/constants/audit';
 import { ERROR_CODES } from '@/shared/errors';
 import { DomainError, notFound } from '@/shared/errors/domain-error';
+import { createR2Provider } from './providers/r2.provider';
+import { createUnconfiguredStorage } from './providers/unconfigured.provider';
 
 export interface StorageServiceOptions {
   provider: StorageProvider;
@@ -86,7 +91,7 @@ export class StorageService {
         return { deduplicated: true, userFile, file: existingReadyFile };
       }
 
-      const storageKey = buildStorageKey(input.tenantId, input.originalName);
+      const storageKey = buildStorageKey(input);
       const fileBuffer = await fs.promises.readFile(tempFilePath);
 
       await this.options.provider.put({
@@ -162,7 +167,7 @@ export class StorageService {
     if (match !== null)
       return { deduplicated: true, userFile: match.userFile, file: match.file };
 
-    const storageKey = buildStorageKey(input.tenantId, input.originalName);
+    const storageKey = buildStorageKey(input);
 
     const [file] = await this.db.insert(files).values({
       storageKey,
@@ -355,8 +360,8 @@ export class StorageService {
     // 365 empty rows a year to the one table people read to find real events.
     if (changed > 0) {
       await audit.log(this.db, systemAuditContext('job:storage-cleanup'), {
-        action: 'storage.cleaned',
-        entityType: 'storage',
+        action: AUDIT_ACTIONS.STORAGE_CLEANED,
+        entityType: AUDIT_ENTITIES.STORAGE,
         entityId: 'storage-cleanup',
         after: { ...report, gracePeriodMinutes, verifyStorageIntegrity },
       });
@@ -472,9 +477,98 @@ export class StorageService {
   }
 }
 
-export function buildStorageKey(tenantId: string | null, originalName: string): string {
-  const extension = path.extname(originalName).toLowerCase().replace(/[^a-z0-9.]/g, '').slice(0, 12);
+/**
+ * The shelf an upload belongs on when nobody said.
+ *
+ * Sorting by content type means every endpoint files things correctly without
+ * having to remember to — the default is right, rather than everything landing
+ * in one heap because a caller left the field out. A caller that knows the
+ * PURPOSE of a file, rather than just its type, passes `folder` and wins: a
+ * channel logo is an image, but it belongs with the logos.
+ */
+export function folderFor(contentType: string): StorageFolder {
+  if (contentType.startsWith('image/'))
+    return 'images';
+
+  if (contentType === 'application/pdf' || contentType.startsWith('text/'))
+    return 'documents';
+
+  return 'files';
+}
+
+/**
+ * Where an object lives in the bucket: `<tenant>/<folder>/<yyyy>/<mm>/<uuid><ext>`.
+ *
+ * Tenant first so one operator's objects can be listed, or removed, without
+ * touching another's. Folder next so logos are not mixed in with everything else
+ * — it comes from `STORAGE_FOLDERS`, decided in the backend, so there is no path
+ * a caller can supply and no `..` to escape the tenant prefix with.
+ */
+export function buildStorageKey(input: {
+  tenantId: string | null;
+  originalName: string;
+  contentType: string;
+  folder?: StorageFolder;
+}): string {
+  const extension = path.extname(input.originalName).toLowerCase().replace(/[^a-z0-9.]/g, '').slice(0, 12);
   const now = new Date();
   const yyyymm = `${now.getUTCFullYear()}/${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
-  return `${tenantId ?? 'platform'}/${yyyymm}/${randomUUID()}${extension}`;
+  const folder = input.folder ?? folderFor(input.contentType);
+
+  return `${input.tenantId ?? 'platform'}/${folder}/${yyyymm}/${randomUUID()}${extension}`;
+}
+
+/**
+ * The object store this deployment is configured for.
+ *
+ * It lives beside the service rather than in `plugins/storage.ts` because the
+ * API is not the only thing that uploads — seeders do too, and a second copy of
+ * this wiring is how a seeder ends up writing to a different bucket than the one
+ * the app serves from.
+ */
+export function createStorageProvider(): StorageProvider {
+  const hasR2 = env.R2_ACCOUNT_ID !== ''
+    && env.R2_ACCESS_KEY_ID !== ''
+    && env.R2_SECRET_ACCESS_KEY !== ''
+    && env.R2_BUCKET !== '';
+
+  if (!hasR2)
+    return createUnconfiguredStorage();
+
+  return createR2Provider({
+    accountId: env.R2_ACCOUNT_ID,
+    accessKeyId: env.R2_ACCESS_KEY_ID,
+    secretAccessKey: env.R2_SECRET_ACCESS_KEY,
+    bucket: env.R2_BUCKET,
+    ...(env.R2_ENDPOINT === '' ? {} : { endpoint: env.R2_ENDPOINT }),
+    ...(env.R2_JURISDICTION === '' ? {} : { jurisdiction: env.R2_JURISDICTION }),
+    ...(env.R2_PUBLIC_BASE_URL === '' ? {} : { publicBaseUrl: env.R2_PUBLIC_BASE_URL }),
+  });
+}
+
+export function createStorageService(
+  db: Database,
+  provider: StorageProvider = createStorageProvider(),
+): StorageService {
+  return new StorageService(db, {
+    provider,
+    uploadUrlTtlSeconds: env.UPLOAD_URL_TTL_SECONDS,
+    downloadUrlTtlSeconds: env.DOWNLOAD_URL_TTL_SECONDS,
+    maxUploadBytes: env.MAX_UPLOAD_BYTES,
+    allowedContentTypes: csv(env.ALLOWED_UPLOAD_TYPES),
+  });
+}
+
+/**
+ * The address a browser or phone can fetch an object at directly.
+ *
+ * Signed download URLs expire in minutes, so one cannot be written into a row —
+ * a channel logo has to still resolve next month. That needs the bucket's public
+ * base, and without it there is no durable URL to store at all.
+ */
+export function publicUrlFor(storageKey: string): string | null {
+  if (env.R2_PUBLIC_BASE_URL === '')
+    return null;
+
+  return `${env.R2_PUBLIC_BASE_URL.replace(/\/+$/, '')}/${storageKey}`;
 }

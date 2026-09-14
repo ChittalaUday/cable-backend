@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
 import { boolean, index, integer, jsonb, numeric, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
-import { CHANNEL_GENRES, CHANNEL_RESOLUTIONS } from '@/shared/constants/crm';
+import { CHANNEL_GENRES, CHANNEL_RESOLUTIONS, ENTITY_STATUSES } from '@/shared/constants/crm';
 import { crm } from '../schemas';
 import { tenants } from '../tenancy/tenants';
 import { serviceProviders } from './service-providers';
@@ -30,7 +30,7 @@ export const channels = crm.table('channels', {
   price: numeric('price', { precision: 12, scale: 2 }).notNull().default('0'),
   logoUrl: text('logo_url'),
 
-  status: text('status', { enum: ['active', 'inactive'] }).notNull().default('active'),
+  status: text('status', { enum: ENTITY_STATUSES }).notNull().default('active'),
 
   metadata: jsonb('metadata'),
 

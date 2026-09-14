@@ -98,6 +98,21 @@ describe('password login', () => {
     expect(body.user).not.toHaveProperty('googleSub');
   });
 
+  it('answers with the memberships, so a client need not call /auth/me to render', async () => {
+    const body = bodyOf(await login(data.active.email, data.password));
+
+    const byTenant = Object.fromEntries(body.memberships.map(m => [m.tenantId, m.roleId]));
+
+    // Role belongs to the membership, not the user (§11): admin of one
+    // operator, customer of another, from the one sign-in response.
+    expect(byTenant[data.tenantA.id]).toBe('admin');
+    expect(byTenant[data.tenantB.id]).toBe('customer');
+
+    // Named, because a client with two of them has to put a list in front of a
+    // human, and a UUID is not something anyone can choose between.
+    expect(body.memberships.find(m => m.tenantId === data.tenantA.id)?.tenantName).toBe('Alpha Cable');
+  });
+
   it('gives the same answer for a wrong password and an unknown account', async () => {
     const wrongPassword = await login(data.active.email, 'not-the-password');
     const noSuchUser = await login('nobody-at-all@test.local', 'not-the-password');
@@ -164,6 +179,30 @@ describe('otp login', () => {
     expect(bodyOf(response).user.phone).toBe(phone);
 
     await db.delete(users).where(eq(users.phone, phone));
+  });
+
+  it('answers with the memberships too, so an OTP sign-in can pick a tenant', async () => {
+    // The same answer as password sign-in. Without it a client that signed in by
+    // OTP has no tenant list, cannot send X-Tenant-Id, and every screen it draws
+    // afterwards is for the wrong operator or for none.
+    await issueOtp(data.active.phone);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/otp/verify',
+      headers: deviceHeaders(uniqueDeviceId()),
+      payload: { phone: data.active.phone, code: KNOWN_CODE },
+    });
+
+    expect(response.statusCode).toBe(200);
+
+    const byTenant = Object.fromEntries(
+      bodyOf(response).memberships.map((m: { tenantId: string; roleId: string }) => [m.tenantId, m.roleId]),
+    );
+    expect(byTenant[data.tenantA.id]).toBe('admin');
+    expect(byTenant[data.tenantB.id]).toBe('customer');
+    expect(bodyOf(response).memberships.find((m: { tenantId: string }) => m.tenantId === data.tenantA.id)?.tenantName)
+      .toBe('Alpha Cable');
   });
 
   it('counts a wrong code against the attempt cap', async () => {

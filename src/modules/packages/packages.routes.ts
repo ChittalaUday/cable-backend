@@ -99,6 +99,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
     schema: {
       tags: ['packages'],
       summary: 'List a provider’s channels, to build a lineup from',
+      description: '`packageId` + `inPackage` page through what one package carries, or what is still available to add.',
       querystring: ListChannelsQuery,
       response: { 200: paginated(ChannelResponse), ...errors },
     },

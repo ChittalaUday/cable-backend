@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from '@/app';
 import { SYSTEM_ROLES } from '@/config/constants';
-import { membershipAreas, rolePermissions, tenantMemberships, users } from '@/db/schema';
+import { membershipLocations, rolePermissions, tenantMemberships, users } from '@/db/schema';
 import { hashPassword } from '@/shared/security/password';
 import { PERMISSIONS } from '@/shared/security/permissions';
 import { createTestDb } from '@/test/db';
@@ -44,8 +44,8 @@ beforeAll(async () => {
 
   await db.insert(rolePermissions)
     .values([
-      { roleId: SYSTEM_ROLES.STAFF, permissionKey: PERMISSIONS.LOCATIONS_VIEW, scope: 'AREA' as const },
-      { roleId: SYSTEM_ROLES.STAFF, permissionKey: PERMISSIONS.LOCATIONS_CREATE, scope: 'AREA' as const },
+      { roleId: SYSTEM_ROLES.STAFF, permissionKey: PERMISSIONS.LOCATIONS_VIEW, scope: 'LOCATION' as const },
+      { roleId: SYSTEM_ROLES.STAFF, permissionKey: PERMISSIONS.LOCATIONS_CREATE, scope: 'LOCATION' as const },
     ])
     .onConflictDoNothing();
 
@@ -122,6 +122,44 @@ describe('location tree', () => {
     expect(building.categoryId).toBe(categories.Building);
     expect(building.path).toBe(`${areaNode.name} / Sri Sai Apartments`);
     expect(building.aliases).toEqual(['SSA']);
+  });
+
+  it('hands back the chain to a node, with the page each step sits on', async () => {
+    // The reveal a search hit needs: without the chain, a match five levels
+    // down is a row with nowhere to put it.
+    const area = bodyOf<Node>(await createNode({ schemaId, name: `Reveal ${randomUUID().slice(0, 6)}` }));
+    const building = bodyOf<Node>(await createNode({ parentId: area.id, name: 'Tower B' }));
+    const block = bodyOf<Node>(await createNode({ parentId: building.id, name: 'Block C' }));
+
+    // Siblings of the block's parent, so `siblingIndex` has something to rank.
+    await createNode({ parentId: area.id, name: 'Tower A' });
+    await createNode({ parentId: area.id, name: 'Tower C' });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/api/v1/locations/${block.id}/ancestors`,
+      headers: adminAuth,
+    });
+
+    expect(response.statusCode).toBe(200);
+    const chain = bodyOf<(Node & { siblingIndex: number })[]>(response);
+
+    // Root first, the node itself last.
+    expect(chain.map(step => step.id)).toEqual([area.id, building.id, block.id]);
+
+    // Tower A, Tower B, Tower C — so the one we asked about is second.
+    expect(chain[1]?.siblingIndex).toBe(1);
+    expect(chain[2]?.siblingIndex).toBe(0);
+  });
+
+  it('refuses the chain for a node outside the caller’s reach', async () => {
+    const response = await app.inject({
+      method: 'GET',
+      url: `/api/v1/locations/${randomUUID()}/ancestors`,
+      headers: adminAuth,
+    });
+
+    expect(response.statusCode).toBe(404);
   });
 
   it('refuses a category that is not the schema’s next level', async () => {
@@ -284,7 +322,7 @@ describe('tenant isolation and scope', () => {
 
     expect(bodyOf<List>(await app.inject({ method: 'GET', url: '/api/v1/locations', headers: staffAuth })).total).toBe(0);
 
-    await db.insert(membershipAreas).values({ membershipId: membership!.id, areaId: granted.id });
+    await db.insert(membershipLocations).values({ membershipId: membership!.id, locationId: granted.id });
     app.access.invalidate(staff!.id, data.tenantA.id);
 
     const visible = bodyOf<List>(await app.inject({ method: 'GET', url: '/api/v1/locations?limit=100', headers: staffAuth }));
@@ -305,7 +343,7 @@ describe('tenant isolation and scope', () => {
     const [membership] = await db.insert(tenantMemberships)
       .values({ userId: staff!.id, tenantId: data.tenantA.id, roleId: SYSTEM_ROLES.STAFF })
       .returning();
-    await db.insert(membershipAreas).values({ membershipId: membership!.id, areaId: building.id });
+    await db.insert(membershipLocations).values({ membershipId: membership!.id, locationId: building.id });
 
     const staffAuth = as(await login(staff!.email!), data.tenantA.id);
     const added = await createNode({ parentId: building.id, name: 'Block Z', status: 'approved' }, staffAuth);

@@ -1,6 +1,6 @@
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import type * as schema from '@/db/schema';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import {
   locationCategories,
   locations,
@@ -10,16 +10,56 @@ import {
 
 type Db = NodePgDatabase<typeof schema>;
 
-export async function seedLocations(db: Db, tenantId: string): Promise<void> {
-  // 1. Categories
-  const CATEGORIES = [
-    { name: 'Area', slug: 'area' },
-    { name: 'Street', slug: 'street' },
-    { name: 'Group', slug: 'group' },
-    { name: 'Flat', slug: 'flat' },
-    { name: 'Door', slug: 'door' },
-  ];
+/**
+ * The two shapes the operator actually sells into.
+ *
+ * **TIDCO Apartments** is the bulk of the book — one complex in Mandapeta,
+ * addressed all the way down to a door, so the hierarchy has to reach that far:
+ * `Mandapeta → TIDCO Apartments → Group A → A31 → Second Floor → 1`. The tree
+ * itself is not seeded here; `seed-mso-data` builds it from the addresses in
+ * the MSO report, because inventing block and door numbers that do not match
+ * the customer file is how the two drift apart.
+ *
+ * **Street Address** covers the outlying villages, where an address is a
+ * village and a street and nothing finer.
+ */
 
+export const TIDCO_SCHEMA_SLUG = 'tidco-apartments';
+export const STREET_SCHEMA_SLUG = 'street-address';
+export const TIDCO_TOWN = 'Mandapeta';
+export const TIDCO_BUILDING = 'TIDCO Apartments';
+
+/** The chain `seed-mso-data` walks down; the order is the schema. */
+export const TIDCO_LEVELS = ['area', 'building', 'group', 'apartment', 'floor', 'door'] as const;
+
+const CATEGORIES = [
+  { name: 'Area', slug: 'area' },
+  { name: 'Street', slug: 'street' },
+  { name: 'Building', slug: 'building' },
+  { name: 'Group', slug: 'group' },
+  { name: 'Apartment', slug: 'apartment' },
+  { name: 'Floor', slug: 'floor' },
+  { name: 'Door', slug: 'door' },
+];
+
+/**
+ * Villages the MSO report mentions, plus the towns the operator already
+ * listed. Mandapeta is deliberately absent: it is the root of the TIDCO
+ * hierarchy below, and a node belongs to exactly one schema.
+ */
+const STREET_AREAS: Record<string, string[]> = {
+  Alamuru: ['Canal Road', 'Raja Street', 'Ramalayam Street'],
+  Jonnada: ['National Highway Road', 'Old Post Office Street'],
+  Dwarapudi: ['Cloth Market Street', 'Station Road', 'Cinema Hall Street'],
+  Kapileswarapuram: ['Main Road', 'Brahmam Gari Veedhi', 'Challa Vari Veedhi'],
+  Macharamattalu: ['Main Road'],
+  Angara: ['Main Road'],
+  Yandagandi: ['Main Road'],
+  Kanjulapeta: ['Main Road'],
+  Kutukulur: ['Main Road'],
+};
+
+export async function seedLocations(db: Db, tenantId: string): Promise<void> {
   const categoryMap = new Map<string, string>();
   for (const cat of CATEGORIES) {
     const [row] = await db
@@ -33,56 +73,43 @@ export async function seedLocations(db: Db, tenantId: string): Promise<void> {
     categoryMap.set(row!.slug, row!.id);
   }
 
-  // 2. Schemas
-  // 2a. Street Address Schema (Area -> Street)
-  const [streetSchema] = await db
-    .insert(locationSchemas)
-    .values({
-      tenantId,
-      name: 'Street Address',
-      slug: 'street-address',
-      description: 'Standard town/village and street layout (Mandapeta, Alamuru, Jonnada, Dwarapudi)',
-      isActive: true,
-    })
-    .onConflictDoUpdate({
-      target: [locationSchemas.tenantId, locationSchemas.slug],
-      set: { name: 'Street Address', updatedAt: new Date() },
-    })
-    .returning({ id: locationSchemas.id });
+  async function upsertSchema(input: { name: string; slug: string; description: string; levels: readonly string[] }) {
+    const [row] = await db
+      .insert(locationSchemas)
+      .values({ tenantId, name: input.name, slug: input.slug, description: input.description, isActive: true })
+      .onConflictDoUpdate({
+        target: [locationSchemas.tenantId, locationSchemas.slug],
+        set: { name: input.name, description: input.description, updatedAt: new Date() },
+      })
+      .returning({ id: locationSchemas.id });
 
-  await db
-    .insert(locationSchemaLevels)
-    .values([
-      { schemaId: streetSchema!.id, categoryId: categoryMap.get('area')!, depth: 0, isTerminal: false },
-      { schemaId: streetSchema!.id, categoryId: categoryMap.get('street')!, depth: 1, isTerminal: true },
-    ])
-    .onConflictDoNothing();
+    // Replaced rather than upserted: the levels are unique on both depth and
+    // category, so re-running with a changed chain would collide on every row
+    // that moved and silently leave the old shape in place.
+    await db.delete(locationSchemaLevels).where(eq(locationSchemaLevels.schemaId, row!.id));
+    await db.insert(locationSchemaLevels).values(input.levels.map((slug, depth) => ({
+      schemaId: row!.id,
+      categoryId: categoryMap.get(slug)!,
+      depth,
+      isTerminal: depth === input.levels.length - 1,
+    })));
 
-  // 2b. Gated Apartment Schema (Area -> Group -> Flat -> Door)
-  const [gatedSchema] = await db
-    .insert(locationSchemas)
-    .values({
-      tenantId,
-      name: 'Gated Apartment',
-      slug: 'gated-apartment',
-      description: 'Gated community hierarchy with groups of flats and door numbers',
-      isActive: true,
-    })
-    .onConflictDoUpdate({
-      target: [locationSchemas.tenantId, locationSchemas.slug],
-      set: { name: 'Gated Apartment', updatedAt: new Date() },
-    })
-    .returning({ id: locationSchemas.id });
+    return row!.id;
+  }
 
-  await db
-    .insert(locationSchemaLevels)
-    .values([
-      { schemaId: gatedSchema!.id, categoryId: categoryMap.get('area')!, depth: 0, isTerminal: false },
-      { schemaId: gatedSchema!.id, categoryId: categoryMap.get('group')!, depth: 1, isTerminal: false },
-      { schemaId: gatedSchema!.id, categoryId: categoryMap.get('flat')!, depth: 2, isTerminal: false },
-      { schemaId: gatedSchema!.id, categoryId: categoryMap.get('door')!, depth: 3, isTerminal: true },
-    ])
-    .onConflictDoNothing();
+  const streetSchemaId = await upsertSchema({
+    name: 'Street Address',
+    slug: STREET_SCHEMA_SLUG,
+    description: 'Village and street, for everyone outside the TIDCO complex',
+    levels: ['area', 'street'],
+  });
+
+  const tidcoSchemaId = await upsertSchema({
+    name: 'TIDCO Apartments',
+    slug: TIDCO_SCHEMA_SLUG,
+    description: 'Mandapeta → TIDCO Apartments → group → apartment → floor → door',
+    levels: TIDCO_LEVELS,
+  });
 
   async function upsertNode(data: {
     schemaId: string;
@@ -101,6 +128,12 @@ export async function seedLocations(db: Db, tenantId: string): Promise<void> {
       ));
 
     if (existing !== undefined) {
+      // A node that predates this schema — Mandapeta used to be a street area —
+      // is moved rather than recreated, so nothing pointing at it has to change.
+      await db
+        .update(locations)
+        .set({ schemaId: data.schemaId, categoryId: data.categoryId, code: data.code ?? null, updatedAt: new Date() })
+        .where(eq(locations.id, existing.id));
       return existing.id;
     }
 
@@ -122,17 +155,9 @@ export async function seedLocations(db: Db, tenantId: string): Promise<void> {
     return created!.id;
   }
 
-  // 3. Seed Street Locations: Mandapeta, Alamuru, Jonnada, Dwarapudi
-  const STREET_AREAS: Record<string, string[]> = {
-    Mandapeta: ['Main Road', 'Gandhi Nagar', 'Kothapeta Road', 'Bazaar Street'],
-    Alamuru: ['Canal Road', 'Raja Street', 'Ramalayam Street'],
-    Jonnada: ['National Highway Road', 'Old Post Office Street'],
-    Dwarapudi: ['Cloth Market Street', 'Station Road', 'Cinema Hall Street'],
-  };
-
   for (const [areaName, streets] of Object.entries(STREET_AREAS)) {
     const areaId = await upsertNode({
-      schemaId: streetSchema!.id,
+      schemaId: streetSchemaId,
       categoryId: categoryMap.get('area')!,
       parentId: null,
       name: areaName,
@@ -141,7 +166,7 @@ export async function seedLocations(db: Db, tenantId: string): Promise<void> {
 
     for (const streetName of streets) {
       await upsertNode({
-        schemaId: streetSchema!.id,
+        schemaId: streetSchemaId,
         categoryId: categoryMap.get('street')!,
         parentId: areaId,
         name: streetName,
@@ -149,61 +174,60 @@ export async function seedLocations(db: Db, tenantId: string): Promise<void> {
     }
   }
 
-  // 4. Seed Gated Community Locations: Mandapeta Gated -> Group A, B, C -> A1, A2, A3 -> Doors G1..G8, F1..F8, TF1
-  const gatedAreaId = await upsertNode({
-    schemaId: gatedSchema!.id,
+  // Mandapeta and the complex itself; everything below them comes from the
+  // customer file, so `seed-mso-data` picks up from here.
+  const mandapetaId = await upsertNode({
+    schemaId: tidcoSchemaId,
     categoryId: categoryMap.get('area')!,
     parentId: null,
-    name: 'Mandapeta Gated',
-    code: 'MDP-GTD',
+    name: TIDCO_TOWN,
+    code: 'MDP',
   });
 
-  const GROUPS = [
-    { name: 'Group A', code: 'A', flats: ['A1', 'A2', 'A3'] },
-    { name: 'Group B', code: 'B', flats: ['B1', 'B2', 'B3'] },
-    { name: 'Group C', code: 'C', flats: ['C1', 'C2', 'C3'] },
-  ];
+  await upsertNode({
+    schemaId: tidcoSchemaId,
+    categoryId: categoryMap.get('building')!,
+    parentId: mandapetaId,
+    name: TIDCO_BUILDING,
+    code: 'TIDCO',
+  });
 
-  // For flat A1, generate doors G1..G8, F1..F8, TF1 as requested
-  const A1_DOORS = [
-    ...Array.from({ length: 8 }, (_, i) => `G${i + 1}`),
-    ...Array.from({ length: 8 }, (_, i) => `F${i + 1}`),
-    'TF1',
-  ];
+  // Mandapeta's four synthetic streets and the old `gated-apartment` sample
+  // tree described a hierarchy nothing in the customer file matches. They go,
+  // unless something already points at them — an FK error here means real data
+  // is attached and the node has to be re-pointed by hand rather than dropped.
+  await dropStaleNodes(db, tenantId, mandapetaId);
 
-  for (const group of GROUPS) {
-    const groupId = await upsertNode({
-      schemaId: gatedSchema!.id,
-      categoryId: categoryMap.get('group')!,
-      parentId: gatedAreaId,
-      name: group.name,
-      code: group.code,
-    });
+  console.log(`✅ Seeded location categories, two schemas, ${Object.keys(STREET_AREAS).length} village areas, and the Mandapeta / TIDCO Apartments root`);
+}
 
-    for (const flatName of group.flats) {
-      const flatId = await upsertNode({
-        schemaId: gatedSchema!.id,
-        categoryId: categoryMap.get('flat')!,
-        parentId: groupId,
-        name: flatName,
-        code: flatName,
-      });
+/**
+ * The synthetic tree the first pass of this seed invented, removed leaf-first.
+ *
+ * Only nodes under the old `gated-apartment` schema and the streets that used
+ * to hang off Mandapeta; anything a subscription still references raises a
+ * foreign key error instead of being deleted out from under it.
+ */
+async function dropStaleNodes(db: Db, tenantId: string, mandapetaId: string): Promise<void> {
+  // One DELETE for the whole set: `locations.parent_id` is NO ACTION, which
+  // Postgres checks at end of statement, so parents and children can go together.
+  const stale = await db.execute<{ id: string }>(sql`
+    SELECT l.id
+    FROM geo.locations l
+    JOIN geo.location_schemas s ON s.id = l.schema_id
+    WHERE l.tenant_id = ${tenantId} AND s.slug = 'gated-apartment'
+    UNION
+    SELECT l.id
+    FROM geo.locations l
+    JOIN geo.location_categories c ON c.id = l.category_id
+    WHERE l.tenant_id = ${tenantId} AND l.parent_id = ${mandapetaId} AND c.slug = 'street'
+  `);
 
-      const doors = flatName === 'A1'
-        ? A1_DOORS
-        : ['G1', 'G2', 'F1', 'F2'];
+  const ids = stale.rows.map(row => row.id);
+  if (ids.length === 0)
+    return;
 
-      for (const doorName of doors) {
-        await upsertNode({
-          schemaId: gatedSchema!.id,
-          categoryId: categoryMap.get('door')!,
-          parentId: flatId,
-          name: doorName,
-          code: `${flatName}-${doorName}`,
-        });
-      }
-    }
-  }
-
-  console.log(`✅ Seeded location categories, schemas, and tree (Mandapeta, Alamuru, Jonnada, Dwarapudi, Mandapeta Gated)`);
+  await db.delete(locations).where(inArray(locations.id, ids));
+  await db.delete(locationSchemas).where(and(eq(locationSchemas.tenantId, tenantId), eq(locationSchemas.slug, 'gated-apartment')));
+  console.log(`🧹 Removed ${ids.length} stale synthetic location nodes`);
 }

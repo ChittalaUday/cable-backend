@@ -1,5 +1,6 @@
 import type { BuiltApp } from '@/app';
 import type { AuditLog } from '@/db/schema';
+import type { AuditAction } from '@/shared/constants/audit';
 import type { SeededAuthData } from '@/test/fixtures';
 import { randomUUID } from 'node:crypto';
 import { and, desc, eq } from 'drizzle-orm';
@@ -7,6 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from '@/app';
 import { SYSTEM_ROLES } from '@/config/constants';
 import { auditLogs, tenantMemberships, users } from '@/db/schema';
+import { AUDIT_ACTIONS, AUDIT_ENTITIES, AUDIT_VERBS, auditAction } from '@/shared/constants/audit';
 import { hashPassword } from '@/shared/security/password';
 import { createTestDb } from '@/test/db';
 import { seedAuthData, TEST_PASSWORD, uniqueDeviceId, uniqueEmail } from '@/test/fixtures';
@@ -85,15 +87,15 @@ describe('audit trail', () => {
       method: 'POST',
       url: '/api/v1/services',
       headers: auth,
-      payload: { name: 'Audited Service', slug, serviceType: 'cable' },
+      payload: { name: 'Audited Service', slug, icon: 'tv' },
     });
     expect(created.statusCode).toBe(201);
     const service = bodyOf<{ id: string }>(created);
 
     const onCreate = await logFor(service.id);
     expect(onCreate).toMatchObject({
-      action: 'service.created',
-      entityType: 'service',
+      action: auditAction(AUDIT_ENTITIES.SERVICE, AUDIT_VERBS.CREATED),
+      entityType: AUDIT_ENTITIES.SERVICE,
       entityId: service.id,
       actorType: 'user',
       actorId,
@@ -112,7 +114,7 @@ describe('audit trail', () => {
     expect(updated.statusCode).toBe(200);
 
     const onUpdate = await logFor(service.id);
-    expect(onUpdate).toMatchObject({ action: 'service.updated', tenantId: data.tenantA.id });
+    expect(onUpdate).toMatchObject({ action: auditAction(AUDIT_ENTITIES.SERVICE, AUDIT_VERBS.UPDATED), tenantId: data.tenantA.id });
     expect(onUpdate!.changes).toMatchObject({ name: { old: 'Audited Service', new: 'Renamed Service' } });
     // A per-request field, so it must differ from the create's — proof the audit
     // context is not being read off the cached, shared access context.
@@ -122,7 +124,7 @@ describe('audit trail', () => {
     expect(removed.statusCode).toBe(204);
 
     const onDelete = await logFor(service.id);
-    expect(onDelete).toMatchObject({ action: 'service.deleted', tenantId: data.tenantA.id });
+    expect(onDelete).toMatchObject({ action: auditAction(AUDIT_ENTITIES.SERVICE, AUDIT_VERBS.DELETED), tenantId: data.tenantA.id });
     expect(onDelete!.oldValues).toMatchObject({ name: 'Renamed Service' });
   });
 
@@ -131,7 +133,7 @@ describe('audit trail', () => {
       method: 'POST',
       url: '/api/v1/services',
       headers: auth,
-      payload: { name: 'Has Providers', slug: `held-${unique()}`, serviceType: 'cable' },
+      payload: { name: 'Has Providers', slug: `held-${unique()}`, icon: 'tv' },
     }));
 
     await app.inject({
@@ -148,7 +150,7 @@ describe('audit trail', () => {
     const rows = await db
       .select()
       .from(auditLogs)
-      .where(and(eq(auditLogs.entityId, service.id), eq(auditLogs.action, 'service.deleted')));
+      .where(and(eq(auditLogs.entityId, service.id), eq(auditLogs.action, auditAction(AUDIT_ENTITIES.SERVICE, AUDIT_VERBS.DELETED))));
 
     expect(rows).toHaveLength(0);
   });
@@ -161,12 +163,12 @@ describe('auth trail', () => {
    * Scoped to one entity on purpose: the whole suite shares a database, so a
    * bare count of an action is whatever every other test file signed in as too.
    */
-  async function authRows(action: string, entityId: string) {
+  async function authRows(action: AuditAction, entityId: string) {
     return db
       .select()
       .from(auditLogs)
       .where(and(
-        eq(auditLogs.entityType, 'auth'),
+        eq(auditLogs.entityType, AUDIT_ENTITIES.AUTH),
         eq(auditLogs.action, action),
         eq(auditLogs.entityId, entityId),
       ))
@@ -174,7 +176,7 @@ describe('auth trail', () => {
   }
 
   it('records a successful sign-in against the user', async () => {
-    const before = (await authRows('auth.login.succeeded', actorId)).length;
+    const before = (await authRows(AUDIT_ACTIONS.AUTH_LOGIN_SUCCEEDED, actorId)).length;
 
     const response = await app.inject({
       method: 'POST',
@@ -184,7 +186,7 @@ describe('auth trail', () => {
     });
     expect(response.statusCode).toBe(200);
 
-    const rows = await authRows('auth.login.succeeded', actorId);
+    const rows = await authRows(AUDIT_ACTIONS.AUTH_LOGIN_SUCCEEDED, actorId);
     expect(rows).toHaveLength(before + 1);
     // `anonymous`: the hook builds the context before sign-in has identified
     // anybody, and the actor is stamped on afterwards.
@@ -201,7 +203,7 @@ describe('auth trail', () => {
     });
     expect(wrongPassword.statusCode).toBe(401);
 
-    const [known] = await authRows('auth.login.failed', actorId);
+    const [known] = await authRows(AUDIT_ACTIONS.AUTH_LOGIN_FAILED, actorId);
     expect(known).toMatchObject({ actorId, entityId: actorId });
     expect(known!.metadata).toMatchObject({ reason: 'AUTH_CREDENTIALS_INVALID' });
     // The attempted password must not survive anywhere in the row.
@@ -218,7 +220,7 @@ describe('auth trail', () => {
     });
     expect(noSuchUser.statusCode).toBe(401);
 
-    const [ghost] = await authRows('auth.login.failed', unknown);
+    const [ghost] = await authRows(AUDIT_ACTIONS.AUTH_LOGIN_FAILED, unknown);
     expect(ghost).toMatchObject({ actorId: null, entityId: unknown });
   });
 
@@ -241,7 +243,7 @@ describe('auth trail', () => {
     const [row] = await db
       .select()
       .from(auditLogs)
-      .where(and(eq(auditLogs.action, 'auth.token.reuse_detected'), eq(auditLogs.actorId, actorId)))
+      .where(and(eq(auditLogs.action, AUDIT_ACTIONS.AUTH_TOKEN_REUSE_DETECTED), eq(auditLogs.actorId, actorId)))
       .orderBy(desc(auditLogs.createdAt), desc(auditLogs.id));
 
     // The session id, not 'unknown' — this row is where an incident starts.
@@ -270,7 +272,7 @@ describe('auth trail', () => {
     });
     expect(out.statusCode).toBe(200);
 
-    const [row] = await authRows('auth.logout', sessionId);
+    const [row] = await authRows(AUDIT_ACTIONS.AUTH_LOGOUT, sessionId);
     expect(row).toMatchObject({ actorId, actorType: 'user' });
   });
 });

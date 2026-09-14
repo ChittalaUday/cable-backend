@@ -90,14 +90,24 @@ provider that serves a town but not one apartment complex is expressed.
 Without this, the only way to model a hole is to enumerate every street around
 it, which nobody will maintain.
 
-**A provider row implies its service.** `service_coverage` rows carry
-`service_id` always and `service_provider_id` optionally:
+**A row names the narrowest thing it is about.** `service_coverage` rows carry
+`service_id` always, `service_provider_id` optionally, and `package_id`
+optionally below that:
 
 | Row | Means |
 |---|---|
-| `(service=Broadband, provider=NULL, node=Mandapeta, true)` | The tenant sells broadband in Mandapeta, whoever supplies it |
-| `(service=Broadband, provider=ACT, node=Sri Sai Apts, true)` | ACT specifically reaches this building |
-| `(service=Broadband, provider=ACT, node=Block C, false)` | …except Block C |
+| `(service=Broadband, provider=NULL, package=NULL, node=Mandapeta, true)` | The tenant sells broadband in Mandapeta, whoever supplies it |
+| `(service=Broadband, provider=ACT, package=NULL, node=Sri Sai Apts, true)` | ACT specifically reaches this building |
+| `(service=Broadband, provider=ACT, package=NULL, node=Block C, false)` | …except Block C |
+| `(service=Broadband, provider=ACT, package=4K Tier, node=Block C, false)` | ACT reaches Block C, but does not sell the 4K tier there |
+
+**A list of places means only those places; within a level the nearest ancestor
+wins; across levels a parent bounds its children.** All three levels must say
+yes, and a level that has named anywhere says no everywhere else. Failing all
+three it is available. Each level is edited as its own list, so replacing a
+provider's coverage leaves the package rows beneath it alone, and a write that
+points a child outside its parent is a 400 rather than a row that can never
+resolve (§6).
 
 A service with no coverage rows at all is **available everywhere in the
 tenant** — otherwise every existing tenant would go dark the moment this ships,
@@ -182,17 +192,50 @@ LEFT JOIN resolved r_service
        ON r_service.service_provider_id IS NULL AND r_service.service_id = p.service_id
 WHERE p.tenant_id = $tenant
   AND p.status = 'active'
-  AND coalesce(r_provider.is_available, r_service.is_available, true)   -- §3: unconfigured = everywhere
+  AND coalesce(r_service.is_available, true)                            -- §3: unconfigured = everywhere
+  AND coalesce(r_provider.is_available, true)                          -- and a parent bounds its children
 ```
 
 `geo.location_ancestors` returns at most the depth of the tree (five or six
 rows), so this stays an index lookup no matter how many doors a tenant has.
 
-Precedence, stated once so nobody re-derives it from the SQL:
+**`crm.coverage_allows(tenant, service, provider, package, location)`** is this
+rule as one function, and it is the only place it is written down. Four callers
+share it: the subscription check, the write-time guard of §6, the location
+picker's `GET /locations?coverageServiceId=…`, and this query — which inlines it
+only to avoid one recursive CTE per package row.
 
-1. The nearest coverage row **for that provider** wins.
-2. Failing that, the nearest row **for the service** wins.
-3. Failing that, it is available.
+Resolution, stated once so nobody re-derives it from the SQL:
+
+1. **A list of places means only those places.** Once a level names somewhere it
+   sells, it sells nowhere else. "ACT serves Mandapeta" is also "ACT does not
+   serve Ravulapalem", without a row per town that ACT has never heard of.
+2. **Within a level**, the nearest ancestor row wins. That is what makes a hole
+   expressible: `is_available = false` on Block C under a `true` row on
+   Mandapeta.
+3. **Across levels**, a parent bounds its children — the service's answer, the
+   provider's and the package's are ANDed. A service switched off in Block C
+   takes every provider and package under it with it, and no provider row can
+   hand it back.
+4. A level with **no rows**, or with only `false` rows, is not an allowlist: the
+   first says nothing, the second is "everywhere except". So a tenant that has
+   configured no coverage sells everywhere, and a provider can pull out of one
+   block without listing every block it keeps.
+
+Rule 1 is what makes **the same package sellable twice under one provider**:
+`Gold Tier` at ₹499 covering the old town and `Gold Tier` at ₹649 covering the
+new blocks are two `packages` rows with two coverage lists, and each is offered
+only in its own area. Nothing enforces distinct package names — the slug is
+derived and disambiguated (`gold-tier`, `gold-tier-2`), and `packages.coverageAreas`
+carries the breadcrumbs so a list of two identical names still reads apart.
+
+> Changed 2026-09-14, in two ways. Coverage lists used to be positive-only base
+> rows for carve-outs — naming Mandapeta did not exclude anywhere — so a
+> per-area package was inexpressible. And the narrowest level used to win, so a
+> provider row could sell where its service did not: coverage that read as
+> served, resolved as served, and that nobody had set at the level meant to
+> govern it. The cost of the second change is that "the service is off here,
+> except ACT" is now inexpressible; widen the service and carve the others out.
 
 ## 6. Rules the service layer enforces
 
@@ -220,6 +263,8 @@ Precedence, stated once so nobody re-derives it from the SQL:
 | `GET` `POST` `PATCH` `DELETE` | `/service-providers[/:id]` `?serviceId=` | same `services.*` keys |
 | `GET` `POST` `PATCH` `DELETE` | `/packages[/:id]` `?serviceProviderId=` `?serviceId=` | `packages.*` |
 | `GET` `PUT` | `/service-providers/:id/coverage` | `services.view` / `services.update` |
+| `GET` `PUT` | `/services/:id/coverage` | `services.view` / `services.update` |
+| `GET` `PUT` | `/packages/:id/coverage` | `packages.view` / `packages.update` |
 | `GET` | `/locations/:id/availability` | `services.view` |
 
 `PUT /service-providers/:id/coverage` replaces the whole set for that provider
@@ -264,10 +309,13 @@ PR).
 
 ## 9. Deliberately not in v1
 
+**Landed since.** Package-level coverage was on this list; it shipped in
+migration `0024` as the `package_id` column described in §3, because an operator
+does sell only some tiers in some buildings.
+
 | Left out | Lands as | When |
 |---|---|---|
 | Per-location pricing | `package_price_overrides(package_id, location_id, price)` | when a tenant actually charges differently by area |
-| Package-level coverage | a `package_id` column on `service_coverage` | if a provider sells only some of its packages in a place |
 | Provider groups ("all Airtel") | `provider_group_id` on `service_providers` | when a cross-service report needs it |
 | Coverage by pincode/polygon | PostGIS on `geo.locations` | if coverage stops matching the operator's own tree |
 | `account_transactions.service_id` → provider | the same column swap as `packages` | with billing (§1), when the MSO settlement ledger is actually written to |

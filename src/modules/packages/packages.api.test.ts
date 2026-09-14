@@ -23,7 +23,7 @@ let auth: Record<string, string>;
 let providerA: string;
 let providerB: string;
 
-interface Pkg { id: string; name: string; price: string; serviceProviderId: string; channelCount: number; channels?: { id: string }[] }
+interface Pkg { id: string; name: string; slug: string; coverageAreas: string[]; price: string; serviceProviderId: string; channelCount: number; channels?: { id: string }[] }
 
 const unique = () => randomUUID().slice(0, 8);
 
@@ -49,7 +49,7 @@ beforeAll(async () => {
   const service = await post<{ id: string }>('/api/v1/services', {
     name: 'Cable TV',
     slug: `cable-${unique()}`,
-    serviceType: 'cable',
+    icon: 'tv',
   });
 
   // Two MSOs of one service: the case the whole redesign exists for.
@@ -72,13 +72,18 @@ afterAll(async () => {
   await close();
 });
 
-async function seedChannel(serviceProviderId: string, channelNumber: number) {
+async function seedChannel(
+  serviceProviderId: string,
+  channelNumber: number,
+  overrides: Partial<typeof channels.$inferInsert> = {},
+) {
   const [row] = await db.insert(channels).values({
     tenantId: data.tenantA.id,
     serviceProviderId,
     channelNumber,
     name: `Channel ${channelNumber}`,
     slug: `channel-${channelNumber}-${unique()}`,
+    ...overrides,
   }).returning();
 
   return row!.id;
@@ -104,6 +109,27 @@ describe('packages', () => {
 
     await post('/api/v1/packages', { serviceProviderId: providerA, name: 'Base', slug });
     await post('/api/v1/packages', { serviceProviderId: providerB, name: 'Base', slug });
+  });
+
+  /**
+   * The same package, sold twice under one provider for two different areas —
+   * "Gold Tier" in the old town at one price, "Gold Tier" in the new blocks at
+   * another. The coverage rows tell them apart, so the name must not have to.
+   */
+  it('lets one provider sell the same package name twice', async () => {
+    const name = `Gold Tier ${unique()}`;
+
+    const first = await post<Pkg>('/api/v1/packages', { serviceProviderId: providerA, name, price: '499.00' });
+    const second = await post<Pkg>('/api/v1/packages', { serviceProviderId: providerA, name, price: '649.00' });
+
+    expect(second.id).not.toBe(first.id);
+    expect(second.name).toBe(name);
+    // The slug is derived and disambiguated, so nothing the form collects clashes.
+    expect(second.slug).not.toBe(first.slug);
+
+    // Two identical rows in a list is the cost of allowing this, so the areas
+    // each one is sold in come back on the package itself.
+    expect(first.coverageAreas).toEqual([]);
   });
 
   it('refuses a duplicate slug under one provider', async () => {
@@ -160,7 +186,7 @@ describe('packages', () => {
     const otherService = await post<{ id: string }>('/api/v1/services', {
       name: 'Broadband',
       slug: `broadband-${unique()}`,
-      serviceType: 'broadband',
+      icon: 'wifi',
     });
     const isp = await post<{ id: string }>('/api/v1/service-providers', {
       serviceId: otherService.id,
@@ -189,5 +215,57 @@ describe('packages', () => {
 
     expect(response.statusCode).toBe(400);
     expect(bodyOf(response).code).toBe('VALIDATION_FAILED');
+  });
+
+  it('pages a package’s own lineup, and the channels still free to add', async () => {
+    const lineupService = await post<{ id: string }>('/api/v1/services', {
+      name: 'Lineup TV',
+      slug: `lineup-tv-${unique()}`,
+      icon: 'tv',
+    });
+
+    const provider = (await post<{ id: string }>('/api/v1/service-providers', {
+      serviceId: lineupService.id,
+      name: 'Lineup Co',
+      slug: `lineup-${unique()}`,
+    })).id;
+
+    const pkg = await post<Pkg>('/api/v1/packages', {
+      serviceProviderId: provider,
+      name: 'Lineup Pack',
+      slug: `lineup-pack-${unique()}`,
+    });
+
+    const carried = [await seedChannel(provider, 9001), await seedChannel(provider, 9002)];
+    const spare = await seedChannel(provider, 9003, { resolution: '4K' });
+
+    await app.inject({
+      method: 'PUT',
+      url: `/api/v1/packages/${pkg.id}/channels`,
+      headers: auth,
+      payload: { channels: carried.map(channelId => ({ channelId })) },
+    });
+
+    const list = async (query: string) => bodyOf<{ items: { id: string }[]; total: number }>(
+      await app.inject({ method: 'GET', url: `/api/v1/channels?${query}`, headers: auth }),
+    );
+
+    // "Selected", paginated by the API rather than filtered on the device.
+    const inside = await list(`serviceProviderId=${provider}&packageId=${pkg.id}&inPackage=true`);
+    expect(inside.total).toBe(2);
+    expect(inside.items.map(c => c.id).sort()).toEqual([...carried].sort());
+
+    const outside = await list(`serviceProviderId=${provider}&packageId=${pkg.id}&inPackage=false`);
+    expect(outside.total).toBe(1);
+    expect(outside.items[0]?.id).toBe(spare);
+
+    // 4K is its own resolution, not "anything that is not HD".
+    const fourK = await list(`serviceProviderId=${provider}&resolution=4K`);
+    expect(fourK.total).toBe(1);
+    expect(fourK.items[0]?.id).toBe(spare);
+
+    const firstPage = await list(`serviceProviderId=${provider}&packageId=${pkg.id}&inPackage=true&limit=1&page=1`);
+    expect(firstPage.items).toHaveLength(1);
+    expect(firstPage.total).toBe(2);
   });
 });

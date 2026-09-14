@@ -14,6 +14,9 @@ import {
  *
  * A coverage row covers its node and everything below it, and the nearest
  * ancestor wins — so "ACT serves Mandapeta, except Block C" is two rows.
+ *
+ * Three levels, narrowest first: a package's own rows beat its provider's,
+ * which beat the service's. Each is edited as a whole list.
  */
 const routes: FastifyPluginAsyncTypebox = async (app) => {
   const errorRef = { $ref: 'ErrorResponse#' };
@@ -41,6 +44,29 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
       response: { 200: coverageList, ...errors },
     },
   }, controller.setProviderCoverage);
+
+  app.get('/packages/:id/coverage', {
+    preHandler: app.requirePermission(PERMISSIONS.PACKAGES_VIEW),
+    schema: {
+      tags: ['services'],
+      summary: 'Where this one package is sold, when that is narrower than its provider',
+      description: 'Empty is the normal case: the package goes wherever its provider does.',
+      params: IdParams,
+      response: { 200: coverageList, ...errors },
+    },
+  }, controller.listPackageCoverage);
+
+  app.put('/packages/:id/coverage', {
+    preHandler: app.requirePermission(PERMISSIONS.PACKAGES_UPDATE),
+    schema: {
+      tags: ['services'],
+      summary: 'Replace this package’s own coverage',
+      description: 'The narrowest level there is — it beats the provider and the service row at this node. `[]` hands the package back to its provider’s reach.',
+      params: IdParams,
+      body: SetCoverageBody,
+      response: { 200: coverageList, ...errors },
+    },
+  }, controller.setPackageCoverage);
 
   app.get('/services/:id/coverage', {
     preHandler: app.requirePermission(PERMISSIONS.SERVICES_VIEW),

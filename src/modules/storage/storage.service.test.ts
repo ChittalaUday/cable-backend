@@ -9,7 +9,7 @@ import { files, tenants, userFiles } from '@/db/schema';
 import { ERROR_CODES } from '@/shared/errors';
 import { createTestDb } from '@/test/db';
 import { createUnconfiguredStorage } from './providers/unconfigured.provider';
-import { buildStorageKey, StorageService } from './storage.service';
+import { buildStorageKey, folderFor, StorageService } from './storage.service';
 
 function fakeProvider(overrides: Partial<StorageProvider> = {}): StorageProvider {
   return {
@@ -27,7 +27,7 @@ function fakeProvider(overrides: Partial<StorageProvider> = {}): StorageProvider
 
 describe('buildStorageKey', () => {
   it('never lets the client filename shape the path', () => {
-    const key = buildStorageKey('tenant-1', '../../etc/passwd');
+    const key = buildStorageKey({ tenantId: 'tenant-1', originalName: '../../etc/passwd', contentType: 'image/png' });
 
     expect(key).not.toContain('..');
     expect(key).not.toContain('passwd');
@@ -35,26 +35,42 @@ describe('buildStorageKey', () => {
   });
 
   it('keeps the extension so storage serves a sensible content type', () => {
-    expect(buildStorageKey('tenant-1', 'invoice.PDF')).toMatch(/\.pdf$/);
-    expect(buildStorageKey('tenant-1', 'photo.jpeg')).toMatch(/\.jpeg$/);
+    expect(buildStorageKey({ tenantId: 'tenant-1', originalName: 'invoice.PDF', contentType: 'application/pdf' })).toMatch(/\.pdf$/);
+    expect(buildStorageKey({ tenantId: 'tenant-1', originalName: 'photo.jpeg', contentType: 'image/jpeg' })).toMatch(/\.jpeg$/);
   });
 
   it('partitions by tenant and month, so a bucket listing stays navigable', () => {
-    const key = buildStorageKey('tenant-1', 'a.png');
-    expect(key).toMatch(/^tenant-1\/\d{4}\/\d{2}\/[0-9a-f-]{36}\.png$/);
+    const key = buildStorageKey({ tenantId: 'tenant-1', originalName: 'a.png', contentType: 'image/png' });
+    expect(key).toMatch(/^tenant-1\/images\/\d{4}\/\d{2}\/[0-9a-f-]{36}\.png$/);
   });
 
   it('files a tenantless object under platform rather than under "null"', () => {
-    expect(buildStorageKey(null, 'a.png').startsWith('platform/')).toBe(true);
+    expect(buildStorageKey({ tenantId: null, originalName: 'a.png', contentType: 'image/png' }).startsWith('platform/')).toBe(true);
   });
 
   it('is unique across calls with the same name', () => {
-    const keys = new Set(Array.from({ length: 50 }, () => buildStorageKey('t', 'same.png')));
+    const keys = new Set(Array.from({ length: 50 }, () => buildStorageKey({ tenantId: 't', originalName: 'same.png', contentType: 'image/png' })));
     expect(keys.size).toBe(50);
   });
 
   it('strips a hostile extension instead of trusting it', () => {
-    expect(buildStorageKey('t', 'x.p n g/../../evil')).not.toContain('/../');
+    expect(buildStorageKey({ tenantId: 't', originalName: 'x.p n g/../../evil', contentType: 'image/png' })).not.toContain('/../');
+  });
+
+  it('sorts by content type when the caller says nothing', () => {
+    // The default has to be right on its own: an endpoint that forgets the
+    // folder should still file its upload somewhere sensible, not in a heap.
+    expect(folderFor('image/png')).toBe('images');
+    expect(folderFor('application/pdf')).toBe('documents');
+    expect(folderFor('text/csv')).toBe('documents');
+    expect(folderFor('application/octet-stream')).toBe('files');
+  });
+
+  it('lets a caller that knows the purpose beat the content type', () => {
+    // A channel logo is an image, and belongs with the logos.
+    const key = buildStorageKey({ tenantId: 'tenant-1', originalName: 'etv-logo.png', contentType: 'image/png', folder: 'logos' });
+
+    expect(key.startsWith('tenant-1/logos/')).toBe(true);
   });
 });
 

@@ -1,5 +1,6 @@
 import type { Static } from 'typebox';
 import { Type } from 'typebox';
+import { CustomerProfileResponse } from '@/modules/customers/customers.service';
 
 export const DeviceHeaders = Type.Object({
   'x-device-id': Type.String({ minLength: 8, maxLength: 128 }),
@@ -51,19 +52,41 @@ export const TokensResponse = Type.Object({
   tokenType: Type.Literal('Bearer'),
 });
 
+const MembershipResponse = Type.Object({
+  tenantId: Type.String({ format: 'uuid' }),
+  tenantName: Type.String({ description: 'What a tenant picker shows — the id alone is a UUID' }),
+  roleId: Type.String(),
+});
+
+/**
+ * Role is per membership, never per user (§11) — a user can be `admin` of one
+ * operator and `customer` of another, so sign-in answers with the list and the
+ * client picks.
+ *
+ * It is here so a client does not have to call `/auth/me` just to find out what
+ * to render. It is **not** an authorization answer: permissions are resolved
+ * from the database on every protected request (§5), and this list is as stale
+ * as the moment sign-in happened.
+ */
 export const SessionResponse = Type.Intersect([
   TokensResponse,
-  Type.Object({ user: UserResponse }),
+  Type.Object({
+    user: UserResponse,
+    memberships: Type.Array(MembershipResponse),
+  }),
 ]);
 
 export const MeResponse = Type.Object({
   user: UserResponse,
   sessionId: Type.String({ format: 'uuid' }),
   deviceId: Type.String({ format: 'uuid' }),
-  memberships: Type.Array(Type.Object({
-    tenantId: Type.String({ format: 'uuid' }),
-    roleId: Type.String(),
-  })),
+  memberships: Type.Array(MembershipResponse),
+  /**
+   * The caller's subscriber record in the **active** tenant, with its address
+   * and what it is subscribed to — `null` for staff, and for a caller who
+   * belongs to several tenants and did not say which.
+   */
+  customer: Type.Union([CustomerProfileResponse, Type.Null()]),
 });
 
 export const LogoutResponse = Type.Object({

@@ -288,7 +288,7 @@
                 "login"
               ]
             },
-            "description": "Email accounts only. Phone accounts sign in with an OTP.",
+            "description": "Email accounts only. Phone accounts sign in with an OTP.\n\nSets `tenantId` from the FIRST membership only as a convenience for this collection. A real client with more than one must ask the user \u2014 see the Auth folder note.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"identifier\": \"{{identifier}}\",\n  \"password\": \"{{password}}\"\n}",
@@ -353,7 +353,7 @@
                 "me"
               ]
             },
-            "description": "Signed-in user, session, device and tenant memberships."
+            "description": "The signed-in user, the session, and every tenant they are a member of with the role they hold there.\n\nAlso carries `customer`: the subscriber record in the **active** tenant \u2014 its primary address, every subscription joined through package \u2192 provider \u2192 service, and a `summary` a home screen can render on its own.\n\n`customer` is `null` for staff (a login without a subscriber record), and for a caller who belongs to several tenants and sent no `x-tenant-id` \u2014 a customer record belongs to exactly one operator, so there is no single right answer."
           }
         },
         {
@@ -392,7 +392,8 @@
             "description": "Revokes every session for this user across all devices."
           }
         }
-      ]
+      ],
+      "description": "Sign-in answers with `memberships`: every tenant this user may act in, each with `tenantId`, `tenantName` and the `roleId` they hold there.\n\nONE membership: the API infers the tenant and `X-Tenant-Id` is noise.\n\nSEVERAL: the client has to put the names in front of a human and send the chosen `X-Tenant-Id` on every request after that \u2014 without it a protected route answers 403, and `/auth/me` answers `customer: null` because there is no single right account to return."
     },
     {
       "name": "Locations",
@@ -706,7 +707,7 @@
           "description": "The nodes themselves. `locations.view` to read, `locations.create` to add.",
           "item": [
             {
-              "name": "List roots",
+              "name": "List / search nodes",
               "request": {
                 "method": "GET",
                 "header": [
@@ -731,142 +732,43 @@
                     {
                       "key": "limit",
                       "value": "50"
-                    }
-                  ]
-                },
-                "description": "`parentId=null` lists roots. There is no separate /children route \u2014 that is what this parameter is."
-              }
-            },
-            {
-              "name": "List children of a node",
-              "request": {
-                "method": "GET",
-                "header": [
-                  {
-                    "key": "x-tenant-id",
-                    "value": "{{tenantId}}"
-                  }
-                ],
-                "url": {
-                  "raw": "{{baseUrl}}/locations?parentId={{locationId}}",
-                  "host": [
-                    "{{baseUrl}}"
-                  ],
-                  "path": [
-                    "locations"
-                  ],
-                  "query": [
+                    },
                     {
                       "key": "parentId",
-                      "value": "{{locationId}}"
-                    }
-                  ]
-                },
-                "description": "One level down."
-              }
-            },
-            {
-              "name": "List a whole subtree",
-              "request": {
-                "method": "GET",
-                "header": [
-                  {
-                    "key": "x-tenant-id",
-                    "value": "{{tenantId}}"
-                  }
-                ],
-                "url": {
-                  "raw": "{{baseUrl}}/locations?ancestorId={{locationId}}&limit=100",
-                  "host": [
-                    "{{baseUrl}}"
-                  ],
-                  "path": [
-                    "locations"
-                  ],
-                  "query": [
+                      "value": "{{locationId}}",
+                      "description": "One level down from a node.",
+                      "disabled": true
+                    },
                     {
                       "key": "ancestorId",
-                      "value": "{{locationId}}"
+                      "value": "{{locationId}}",
+                      "description": "Everything below the node at any depth.",
+                      "disabled": true
                     },
-                    {
-                      "key": "limit",
-                      "value": "100"
-                    }
-                  ]
-                },
-                "description": "Everything below the node at any depth \u2014 the filter a customer dashboard uses."
-              }
-            },
-            {
-              "name": "Search by name or alias",
-              "request": {
-                "method": "GET",
-                "header": [
-                  {
-                    "key": "x-tenant-id",
-                    "value": "{{tenantId}}"
-                  }
-                ],
-                "url": {
-                  "raw": "{{baseUrl}}/locations?q=Sai&limit=20",
-                  "host": [
-                    "{{baseUrl}}"
-                  ],
-                  "path": [
-                    "locations"
-                  ],
-                  "query": [
                     {
                       "key": "q",
-                      "value": "Sai"
+                      "value": "Sai",
+                      "description": "Matches the node name OR any alias.",
+                      "disabled": true
                     },
                     {
-                      "key": "limit",
-                      "value": "20"
-                    }
-                  ]
-                },
-                "description": "Matches the node name OR any alias, so `Sai Apartments`, `SSA` and `Sri Sai Apt` all find the same building."
-              }
-            },
-            {
-              "name": "Filter by category and status",
-              "request": {
-                "method": "GET",
-                "header": [
-                  {
-                    "key": "x-tenant-id",
-                    "value": "{{tenantId}}"
-                  }
-                ],
-                "url": {
-                  "raw": "{{baseUrl}}/locations?categoryId={{doorCategoryId}}&status=pending&limit=50",
-                  "host": [
-                    "{{baseUrl}}"
-                  ],
-                  "path": [
-                    "locations"
-                  ],
-                  "query": [
-                    {
                       "key": "categoryId",
-                      "value": "{{doorCategoryId}}"
+                      "value": "{{doorCategoryId}}",
+                      "disabled": true
                     },
                     {
                       "key": "status",
-                      "value": "pending"
-                    },
-                    {
-                      "key": "limit",
-                      "value": "50"
+                      "value": "pending",
+                      "description": "With categoryId, the review queue.",
+                      "disabled": true
                     }
                   ]
                 },
-                "description": "Review queue: nodes a field operator added that nobody has approved yet."
+                "description": "`parentId=null` lists roots. There is no separate /children route \u2014 that is what this parameter is.\n\nEnable one of the disabled params for the other views:\n- `parentId={{locationId}}` \u2014 one level down.\n- `ancestorId={{locationId}}` \u2014 the whole subtree at any depth, the filter a customer dashboard uses.\n- `q=Sai` \u2014 name OR alias, so `Sai Apartments`, `SSA` and `Sri Sai Apt` all find the same building.\n- `categoryId` + `status=pending` \u2014 nodes a field operator added that nobody has approved yet."
               }
             },
             {
-              "name": "Create a root",
+              "name": "Create a node",
               "request": {
                 "method": "POST",
                 "header": [
@@ -888,56 +790,7 @@
                     "locations"
                   ]
                 },
-                "description": "A root needs `schemaId` and an unrestricted grant \u2014 it sits inside nobody\u2019s subtree.\n\nSaves `locationId`.",
-                "body": {
-                  "mode": "raw",
-                  "raw": "{\n  \"schemaId\": \"{{schemaId}}\",\n  \"name\": \"Mandapeta\"\n}",
-                  "options": {
-                    "raw": {
-                      "language": "json"
-                    }
-                  }
-                }
-              },
-              "event": [
-                {
-                  "listen": "test",
-                  "script": {
-                    "type": "text/javascript",
-                    "exec": [
-                      "if (pm.response.code < 300) {",
-                      "    const body = pm.response.json();",
-                      "    pm.environment.set('locationId', body.id);",
-                      "}"
-                    ]
-                  }
-                }
-              ]
-            },
-            {
-              "name": "Create a child",
-              "request": {
-                "method": "POST",
-                "header": [
-                  {
-                    "key": "content-type",
-                    "value": "application/json"
-                  },
-                  {
-                    "key": "x-tenant-id",
-                    "value": "{{tenantId}}"
-                  }
-                ],
-                "url": {
-                  "raw": "{{baseUrl}}/locations",
-                  "host": [
-                    "{{baseUrl}}"
-                  ],
-                  "path": [
-                    "locations"
-                  ]
-                },
-                "description": "Schema and category are INHERITED: the category is whatever the schema puts at the next level, so the client never picks one.\n\n`aliases` replaces the whole set.\n\nSaves `locationId` to the new node.",
+                "description": "A ROOT needs `schemaId` and an unrestricted grant \u2014 it sits inside nobody\u2019s subtree:\n\n```json\n{ \"schemaId\": \"{{schemaId}}\", \"name\": \"Mandapeta\" }\n```\n\nA CHILD (the body below) inherits schema and category: the category is whatever the schema puts at the next level, so the client never picks one.\n\n`aliases` replaces the whole set.\n\nSaves `locationId`.",
                 "body": {
                   "mode": "raw",
                   "raw": "{\n  \"parentId\": \"{{locationId}}\",\n  \"name\": \"Sri Sai Apartments\",\n  \"aliases\": [\n    \"Sai Apartments\",\n    \"SSA\"\n  ],\n  \"latitude\": 16.8702,\n  \"longitude\": 81.9276\n}",
@@ -983,7 +836,31 @@
                     "{{locationId}}"
                   ]
                 },
-                "description": "Carries its own breadcrumb: `path`, `pathIds`, `depth`. No /ancestors route needed."
+                "description": "Carries its own breadcrumb: `path`, `pathIds`, `depth`."
+              }
+            },
+            {
+              "name": "Ancestors of a node",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/locations/{{locationId}}/ancestors",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "locations",
+                    "{{locationId}}",
+                    "ancestors"
+                  ]
+                },
+                "description": "The chain from the root down to this node, for revealing it in a tree. Root first, the node itself last.\n\n`siblingIndex` says which page of its own level each step is on, so a deep node can be opened without walking pages."
               }
             },
             {
@@ -1239,7 +1116,7 @@
               }
             },
             {
-              "name": "Create provider (ACT Digital)",
+              "name": "Create provider",
               "request": {
                 "method": "POST",
                 "header": [
@@ -1261,7 +1138,7 @@
                     "service-providers"
                   ]
                 },
-                "description": "Saves `serviceProviderId`. `isDefault: true` clears the previous default for this service.",
+                "description": "Saves `serviceProviderId`. `isDefault: true` clears the previous default for this service.\n\nRun it twice with different names to get the case the redesign exists for: two MSOs on one service, each with its own packages and channel numbers.",
                 "body": {
                   "mode": "raw",
                   "raw": "{\n  \"serviceId\": \"{{serviceId}}\",\n  \"name\": \"ACT Digital\",\n  \"slug\": \"act-digital\",\n  \"code\": \"ACTMDPLCOMDLURB0000002144\",\n  \"isDefault\": true,\n  \"contact\": {\n    \"phone\": \"18001234567\",\n    \"portalUrl\": \"https://portal.example\"\n  }\n}",
@@ -1286,41 +1163,6 @@
                   }
                 }
               ]
-            },
-            {
-              "name": "Create second provider (Hathway)",
-              "request": {
-                "method": "POST",
-                "header": [
-                  {
-                    "key": "content-type",
-                    "value": "application/json"
-                  },
-                  {
-                    "key": "x-tenant-id",
-                    "value": "{{tenantId}}"
-                  }
-                ],
-                "url": {
-                  "raw": "{{baseUrl}}/service-providers",
-                  "host": [
-                    "{{baseUrl}}"
-                  ],
-                  "path": [
-                    "service-providers"
-                  ]
-                },
-                "description": "The case the redesign exists for: two MSOs on one service, each with its own packages and channel numbers.",
-                "body": {
-                  "mode": "raw",
-                  "raw": "{\n  \"serviceId\": \"{{serviceId}}\",\n  \"name\": \"Hathway\",\n  \"slug\": \"hathway\"\n}",
-                  "options": {
-                    "raw": {
-                      "language": "json"
-                    }
-                  }
-                }
-              }
             },
             {
               "name": "Get provider",
@@ -1529,6 +1371,67 @@
                     "coverage"
                   ]
                 }
+              }
+            },
+            {
+              "name": "Set package coverage",
+              "request": {
+                "method": "PUT",
+                "header": [
+                  {
+                    "key": "content-type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/packages/{{packageId}}/coverage",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "packages",
+                    "{{packageId}}",
+                    "coverage"
+                  ]
+                },
+                "description": "The narrowest level there is \u2014 it beats the provider and the service row at this node.\n\n`{ \"entries\": [] }` hands the package back to its provider\u2019s reach.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"entries\": [\n    {\n      \"locationId\": \"{{locationId}}\"\n    }\n  ]\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Get package coverage",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/packages/{{packageId}}/coverage",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "packages",
+                    "{{packageId}}",
+                    "coverage"
+                  ]
+                },
+                "description": "Where this one package is sold, when that is narrower than its provider. Empty is the normal case: the package goes wherever its provider does."
               }
             },
             {

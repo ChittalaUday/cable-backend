@@ -102,9 +102,25 @@ export const LocationResponse = Type.Object({
   depth: Type.Integer(),
   path: Type.String(),
   pathIds: Type.Array(Uuid),
+  /** Direct children only — what a list row means by "5 sub-locations". */
+  childCount: Type.Integer(),
   createdAt: Type.String({ format: 'date-time' }),
   updatedAt: Type.String({ format: 'date-time' }),
 });
+
+/**
+ * One step of the chain from the root down to a node, for revealing it.
+ *
+ * `siblingIndex` is what makes a deep node reachable: levels are paged, so
+ * knowing a node's rank among its siblings tells the caller which page of that
+ * level it sits on, instead of walking pages until it turns up.
+ */
+export const AncestorResponse = Type.Intersect([
+  LocationResponse,
+  Type.Object({
+    siblingIndex: Type.Integer({ description: '0-based rank among its siblings, in list order' }),
+  }),
+]);
 
 export const ListLocationsQuery = Type.Intersect([
   PaginationQuerySchema,
@@ -116,6 +132,17 @@ export const ListLocationsQuery = Type.Intersect([
     status: Type.Optional(Type.Union([Type.Literal('pending'), Type.Literal('approved'), Type.Literal('rejected')])),
     isActive: Type.Optional(Type.Boolean()),
     q: Type.Optional(Type.String({ minLength: 1, maxLength: 120 })),
+    /**
+     * Only the nodes this part of the catalogue may be sold in.
+     *
+     * `coverageServiceId` alone answers for the service; adding
+     * `coverageProviderId` narrows it to that provider — which is bounded by
+     * the service, so a provider picker gets the service's reach for free. A
+     * level nobody has configured allows everywhere, so this only ever removes
+     * the places that have been switched off above.
+     */
+    coverageServiceId: Type.Optional(Uuid),
+    coverageProviderId: Type.Optional(Uuid),
   }),
 ]);
 
@@ -152,6 +179,7 @@ export type UpdateSchemaBody = Static<typeof UpdateSchemaBody>;
 export type GenerateBody = Static<typeof GenerateBody>;
 export type GenerateLevel = Static<typeof GenerateLevel>;
 export type LocationResponse = Static<typeof LocationResponse>;
+export type AncestorResponse = Static<typeof AncestorResponse>;
 export type ListLocationsQuery = Static<typeof ListLocationsQuery>;
 export type CreateLocationBody = Static<typeof CreateLocationBody>;
 export type UpdateLocationBody = Static<typeof UpdateLocationBody>;

@@ -1,8 +1,8 @@
-import { index, integer, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
+import { foreignKey, index, integer, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
 import { users } from '../auth/users';
-import { locations } from '../geo/locations';
 import { roles } from '../iam/roles';
 import { tenancy } from '../schemas';
+import { teams } from './teams';
 import { tenants } from './tenants';
 
 export const tenantMemberships = tenancy.table('tenant_memberships', {
@@ -13,6 +13,10 @@ export const tenantMemberships = tenancy.table('tenant_memberships', {
 
   status: text('status', { enum: ['active', 'invited', 'suspended'] }).notNull().default('active'),
 
+  /**
+   * The member's crew, or null for someone on none. Tied to `teams` through the
+   * composite key below, never by `team_id` alone — see that constraint.
+   */
   teamId: uuid('team_id'),
 
   permissionVersion: integer('permission_version').notNull().default(1),
@@ -21,22 +25,23 @@ export const tenantMemberships = tenancy.table('tenant_memberships', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, table => [
   unique('tenant_memberships_user_tenant_uq').on(table.userId, table.tenantId),
+
+  /**
+   * `(tenant_id, team_id)` rather than `team_id` alone, so a membership can only
+   * join a team belonging to the same tenant it is a membership of. A plain FK
+   * on `team_id` would happily accept another operator's team id.
+   *
+   * `team_id` is nullable and the default MATCH SIMPLE skips the check when any
+   * referencing column is null, so "no team" stays legal.
+   */
+  foreignKey({
+    columns: [table.tenantId, table.teamId],
+    foreignColumns: [teams.tenantId, teams.id],
+    name: 'tenant_memberships_team_fk',
+  }),
   index('tenant_memberships_tenant_idx').on(table.tenantId),
+  index('tenant_memberships_team_idx').on(table.teamId),
   index('tenant_memberships_user_idx').on(table.userId),
-]);
-
-export const membershipAreas = tenancy.table('membership_areas', {
-  membershipId: uuid('membership_id').notNull().references(() => tenantMemberships.id, { onDelete: 'cascade' }),
-  areaId: uuid('area_id').notNull().references(() => locations.id, { onDelete: 'cascade' }),
-}, table => [
-  unique('membership_areas_uq').on(table.membershipId, table.areaId),
-]);
-
-export const membershipLocations = tenancy.table('membership_locations', {
-  membershipId: uuid('membership_id').notNull().references(() => tenantMemberships.id, { onDelete: 'cascade' }),
-  locationId: uuid('location_id').notNull().references(() => locations.id, { onDelete: 'cascade' }),
-}, table => [
-  unique('membership_locations_uq').on(table.membershipId, table.locationId),
 ]);
 
 export type TenantMembership = typeof tenantMemberships.$inferSelect;

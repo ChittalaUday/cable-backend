@@ -1,5 +1,5 @@
 import { index, jsonb, text, timestamp, uuid } from 'drizzle-orm/pg-core';
-import { SERVICE_TYPES } from '@/shared/constants/crm';
+import { ENTITY_STATUSES } from '@/shared/constants/crm';
 import { crm } from '../schemas';
 import { tenants } from '../tenancy/tenants';
 
@@ -9,10 +9,12 @@ export const services = crm.table('services', {
 
   name: text('name').notNull(),
   slug: text('slug').notNull(),
-  serviceType: text('service_type', { enum: SERVICE_TYPES }).notNull(),
+
+  icon: text('icon'),
+
   description: text('description'),
 
-  status: text('status', { enum: ['active', 'inactive'] }).notNull().default('active'),
+  status: text('status', { enum: ENTITY_STATUSES }).notNull().default('active'),
 
   metadata: jsonb('metadata'),
 
@@ -22,7 +24,6 @@ export const services = crm.table('services', {
 }, table => [
   index('services_tenant_status_idx').on(table.tenantId, table.status),
   index('services_tenant_slug_idx').on(table.tenantId, table.slug),
-  index('services_tenant_type_idx').on(table.tenantId, table.serviceType),
 ]);
 
 export type Service = typeof services.$inferSelect;

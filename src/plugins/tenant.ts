@@ -43,7 +43,7 @@ export default fp(async (app) => {
   app.addHook('onRequest', async (request: FastifyRequest) => {
     // Swagger UI registers its own routes inside its plugin, so it never sees
     // the `public` flag — its prefix is checked by hand instead.
-    if (request.routeOptions.config.public === true || request.url.startsWith('/docs'))
+    if (request.method === 'OPTIONS' || request.routeOptions.config.public === true || request.url.startsWith('/docs'))
       return;
 
     await app.authenticate(request);

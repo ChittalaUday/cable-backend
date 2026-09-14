@@ -12,12 +12,14 @@ import type {
 import type * as schema from '@/db/schema';
 import type { RequestAccess } from '@/modules/iam/access.service';
 import type { Page, PaginationQuery } from '@/shared/pagination';
-import { and, asc, count, eq, ilike, inArray, isNull, sql } from 'drizzle-orm';
+import { and, asc, count, eq, exists, ilike, inArray, isNull, notExists, sql } from 'drizzle-orm';
 import { channels, packageChannels, packages, serviceProviders, services, subscriptions } from '@/db/schema';
 import { audit } from '@/modules/audit/audit.service';
+import { AUDIT_ENTITIES } from '@/shared/constants/audit';
 import { ERROR_CODES, isUniqueViolation } from '@/shared/errors';
 import { badRequest, conflict, inUse, notFound } from '@/shared/errors/domain-error';
 import { offsetOf } from '@/shared/pagination';
+import { uniqueSlug } from '@/shared/utils/slug';
 
 type Db = NodePgDatabase<typeof schema>;
 
@@ -27,7 +29,9 @@ interface PackageRow {
   serviceProviderName: string;
   serviceId: string;
   serviceName: string;
+  serviceIcon: string | null;
   channelCount: number;
+  coverageAreas: string[];
 }
 type Tx = Parameters<Parameters<Db['transaction']>[0]>[0];
 
@@ -108,21 +112,24 @@ export class PackagesService {
   async create({ tenantId, audit: context }: RequestAccess, input: CreatePackageBody): Promise<PackageResponse> {
     await this.findProvider(tenantId, input.serviceProviderId);
 
+    const slug = input.slug ?? uniqueSlug(input.name, await this.takenSlugs(tenantId, input.serviceProviderId));
+
     try {
       const [row] = await this.db.insert(packages).values({
         tenantId,
         ...input,
+        slug,
         metadata: input.metadata ?? null,
       }).returning({ id: packages.id });
 
       const created = this.present(await this.find(tenantId, row!.id));
-      await audit.created(this.db, context, { entityType: 'package', entityId: created.id, after: created });
+      await audit.created(this.db, context, { entityType: AUDIT_ENTITIES.PACKAGE, entityId: created.id, after: created });
 
       return created;
     }
     catch (error) {
       if (isUniqueViolation(error))
-        throw conflict(`This provider already has a package with slug "${input.slug}"`);
+        throw conflict(`This provider already has a package named "${input.name}"`);
       throw error;
     }
   }
@@ -143,7 +150,7 @@ export class PackagesService {
       .where(and(eq(packages.tenantId, access.tenantId), eq(packages.id, id)));
 
     const after = this.present(await this.find(access.tenantId, id));
-    await audit.updated(this.db, access.audit, { entityType: 'package', entityId: id, before, after });
+    await audit.updated(this.db, access.audit, { entityType: AUDIT_ENTITIES.PACKAGE, entityId: id, before, after });
 
     return after;
   }
@@ -180,7 +187,7 @@ export class PackagesService {
       .set({ deletedAt: new Date(), status: 'inactive' })
       .where(and(eq(packages.tenantId, tenantId), eq(packages.id, id), isNull(packages.deletedAt)));
 
-    await audit.deleted(this.db, context, { entityType: 'package', entityId: id, before });
+    await audit.deleted(this.db, context, { entityType: AUDIT_ENTITIES.PACKAGE, entityId: id, before });
   }
 
   /**
@@ -227,7 +234,7 @@ export class PackagesService {
 
     const after = await this.get(access, id);
     await audit.updated(this.db, access.audit, {
-      entityType: 'package_channels',
+      entityType: AUDIT_ENTITIES.PACKAGE_CHANNELS,
       entityId: id,
       before: { channels: before.channels },
       after: { channels: after.channels },
@@ -243,8 +250,24 @@ export class PackagesService {
       filters.push(eq(channels.serviceProviderId, query.serviceProviderId));
     if (query.genre !== undefined)
       filters.push(eq(channels.genre, query.genre as typeof channels.genre.enumValues[number]));
+    if (query.resolution !== undefined)
+      filters.push(eq(channels.resolution, query.resolution));
     if (query.q !== undefined)
       filters.push(ilike(channels.name, `%${query.q}%`));
+
+    if (query.packageId !== undefined) {
+      // Correlated on `channels.id`, so this is a semi-join the planner can use
+      // the `package_channels` primary key for.
+      const carried = this.db
+        .select({ one: sql`1` })
+        .from(packageChannels)
+        .where(and(
+          eq(packageChannels.packageId, query.packageId),
+          eq(packageChannels.channelId, channels.id),
+        ));
+
+      filters.push(query.inPackage === false ? notExists(carried) : exists(carried));
+    }
 
     const where = and(...filters);
 
@@ -289,8 +312,22 @@ export class PackagesService {
       serviceProviderName: serviceProviders.name,
       serviceId: services.id,
       serviceName: services.name,
+      serviceIcon: services.icon,
+      // The outer table is spelled out rather than interpolated as a drizzle
+      // column: a column in a SELECT list is emitted unqualified, so `"id"`
+      // inside these subqueries would bind to the INNER table's own `id` and
+      // the correlation would silently match nothing.
       channelCount: sql<number>`(
-        SELECT count(*)::int FROM crm.package_channels pc WHERE pc.package_id = ${packages.id}
+        SELECT count(*)::int FROM crm.package_channels pc WHERE pc.package_id = crm.packages.id
+      )`,
+      // One provider can sell the same package name twice for two areas, at two
+      // prices. Without the areas on the row the list is two identical entries.
+      // Empty is the common case and reads as "wherever the provider goes".
+      coverageAreas: sql<string[]>`(
+        SELECT coalesce(array_agg(lp.path ORDER BY lp.path), '{}')
+        FROM crm.service_coverage c
+        JOIN geo.location_paths lp ON lp.id = c.location_id
+        WHERE c.package_id = crm.packages.id AND c.is_available
       )`,
     };
   }
@@ -308,6 +345,21 @@ export class PackagesService {
       throw notFound('Package');
 
     return row;
+  }
+
+  /**
+   * Slugs already spent on this provider's packages.
+   *
+   * Soft-deleted rows count — the unique index does not exclude them, so a
+   * retired `basic-pack` still owns the name.
+   */
+  private async takenSlugs(tenantId: string, serviceProviderId: string): Promise<string[]> {
+    const rows = await this.db
+      .select({ slug: packages.slug })
+      .from(packages)
+      .where(and(eq(packages.tenantId, tenantId), eq(packages.serviceProviderId, serviceProviderId)));
+
+    return rows.map(row => row.slug);
   }
 
   private async findProvider(tenantId: string, id: string) {
@@ -336,6 +388,7 @@ export class PackagesService {
       serviceProviderName: row.serviceProviderName,
       serviceId: row.serviceId,
       serviceName: row.serviceName,
+      serviceIcon: row.serviceIcon,
       name: pkg.name,
       slug: pkg.slug,
       packageType: pkg.packageType,
@@ -348,6 +401,7 @@ export class PackagesService {
       metadata: pkg.metadata as Record<string, unknown> | null,
       status: pkg.status,
       channelCount: row.channelCount,
+      coverageAreas: row.coverageAreas,
       createdAt: pkg.createdAt.toISOString(),
       updatedAt: pkg.updatedAt.toISOString(),
     };

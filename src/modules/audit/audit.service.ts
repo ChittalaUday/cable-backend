@@ -3,6 +3,7 @@ import type { AuditLog } from '@/db/schema';
 import type { Database } from '@/plugins/database';
 import { and, desc, eq, isNull, lt, or } from 'drizzle-orm';
 import { auditLogs } from '@/db/schema';
+import { AUDIT_VERBS, auditAction } from '@/shared/constants/audit';
 import { auditDiff, sanitizeAuditValue } from './audit.utils';
 
 type AuditDb = Pick<Database, 'insert' | 'select'>;
@@ -39,15 +40,15 @@ export class AuditService {
   }
 
   async created(db: AuditDb, context: AuditContext, event: AuditMutation & { after: Record<string, unknown> }): Promise<AuditLog> {
-    return this.log(db, context, { ...event, action: `${event.entityType}.created` });
+    return this.log(db, context, { ...event, action: auditAction(event.entityType, AUDIT_VERBS.CREATED) });
   }
 
   async updated(db: AuditDb, context: AuditContext, event: AuditMutation & { before: Record<string, unknown>; after: Record<string, unknown> }): Promise<AuditLog> {
-    return this.log(db, context, { ...event, action: `${event.entityType}.updated` });
+    return this.log(db, context, { ...event, action: auditAction(event.entityType, AUDIT_VERBS.UPDATED) });
   }
 
   async deleted(db: AuditDb, context: AuditContext, event: AuditMutation & { before: Record<string, unknown> }): Promise<AuditLog> {
-    return this.log(db, context, { ...event, action: `${event.entityType}.deleted` });
+    return this.log(db, context, { ...event, action: auditAction(event.entityType, AUDIT_VERBS.DELETED) });
   }
 
   async list(db: AuditDb, query: AuditQuery): Promise<AuditLog[]> {

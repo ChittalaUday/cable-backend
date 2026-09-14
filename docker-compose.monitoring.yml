@@ -1,0 +1,58 @@
+services:
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    ports:
+      - '9090:9090'
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus/targets.yml:/etc/prometheus/targets.yml:ro
+      - prometheus-data:/prometheus
+
+  loki:
+    image: grafana/loki:3.5.3
+    restart: unless-stopped
+    command: -config.file=/etc/loki/local-config.yml
+    volumes:
+      - ./monitoring/loki/loki.yml:/etc/loki/local-config.yml:ro
+      - loki-data:/loki
+
+  alloy:
+    image: grafana/alloy:v1.10.2
+    restart: unless-stopped
+    command: run --storage.path=/var/lib/alloy/data /etc/alloy/config.alloy
+    depends_on:
+      - loki
+    volumes:
+      - ./monitoring/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - ./logs:/var/log/backends/cable-backend:ro
+      - ./monitoring/logs:/var/log/backends/extra:ro
+      - alloy-data:/var/lib/alloy/data
+
+  grafana:
+    image: grafana/grafana:12.1.1
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+      - loki
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    ports:
+      - '3099:3000'
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+
+volumes:
+  prometheus-data:
+  grafana-data:
+  loki-data:
+  alloy-data:

@@ -71,6 +71,14 @@ export async function setProviderCoverage(request: Req<{ params: typeof IdParams
   return request.server.coverage.replaceForProvider(request.access, request.params.id, request.body);
 }
 
+export async function listPackageCoverage(request: Req<{ params: typeof IdParams }>) {
+  return request.server.coverage.listForPackage(request.access, request.params.id);
+}
+
+export async function setPackageCoverage(request: Req<{ params: typeof IdParams; body: typeof SetCoverageBody }>) {
+  return request.server.coverage.replaceForPackage(request.access, request.params.id, request.body);
+}
+
 export async function listServiceCoverage(request: Req<{ params: typeof IdParams }>) {
   return request.server.coverage.listForService(request.access, request.params.id);
 }

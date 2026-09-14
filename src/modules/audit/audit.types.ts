@@ -1,4 +1,5 @@
 import type { AuditJson } from '@/db/schema';
+import type { AuditAction, AuditEntity } from '@/shared/constants/audit';
 
 export interface AuditContext {
   tenantId: string | null;
@@ -27,8 +28,8 @@ export function systemAuditContext(source: string): AuditContext {
 }
 
 export interface AuditEvent {
-  action: string;
-  entityType: string;
+  action: AuditAction;
+  entityType: AuditEntity;
   entityId: string;
   before?: Record<string, unknown> | null;
   after?: Record<string, unknown> | null;
@@ -37,7 +38,7 @@ export interface AuditEvent {
 }
 
 export interface AuditMutation {
-  entityType: string;
+  entityType: AuditEntity;
   entityId: string;
   before?: Record<string, unknown>;
   after?: Record<string, unknown>;
@@ -51,10 +52,10 @@ export interface AuditCursor {
 
 export interface AuditQuery {
   tenantId: string | null;
-  entityType?: string;
+  entityType?: AuditEntity;
   entityId?: string;
   actorId?: string;
-  action?: string;
+  action?: AuditAction;
   before?: AuditCursor;
   limit?: number;
 }

@@ -1,0 +1,7 @@
+- targets:
+    - host.docker.internal:5050
+  labels:
+    service: cable-backend
+
+# Add another backend as another entry. For a backend in this Compose network,
+# use its service name, for example: targets: [api:5050].

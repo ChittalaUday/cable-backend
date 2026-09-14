@@ -1,5 +1,7 @@
+import type { SQL } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import type {
+  AncestorResponse,
   CategoryResponse,
   CreateCategoryBody,
   CreateLocationBody,
@@ -26,6 +28,7 @@ import {
 } from '@/db/schema';
 import { audit } from '@/modules/audit/audit.service';
 import { grantedNodes, scopeFor } from '@/modules/iam/access.service';
+import { AUDIT_ACTIONS, AUDIT_ENTITIES } from '@/shared/constants/audit';
 import { ERROR_CODES, isForeignKeyViolation, isUniqueViolation } from '@/shared/errors';
 import { badRequest, conflict, forbidden, inUse, notFound } from '@/shared/errors/domain-error';
 import { offsetOf } from '@/shared/pagination';
@@ -83,7 +86,7 @@ export class LocationsService {
         .returning();
 
       const created = this.categoryOf(row!);
-      await audit.created(this.db, context, { entityType: 'location_category', entityId: created.id, after: created });
+      await audit.created(this.db, context, { entityType: AUDIT_ENTITIES.LOCATION_CATEGORY, entityId: created.id, after: created });
 
       return created;
     }
@@ -112,7 +115,7 @@ export class LocationsService {
 
     const after = this.categoryOf(row);
     await audit.updated(this.db, context, {
-      entityType: 'location_category',
+      entityType: AUDIT_ENTITIES.LOCATION_CATEGORY,
       entityId: id,
       before: this.categoryOf(existing!),
       after,
@@ -141,7 +144,7 @@ export class LocationsService {
 
     // A delete of something that was not there is not a change to record.
     if (existing !== undefined)
-      await audit.deleted(this.db, context, { entityType: 'location_category', entityId: id, before: this.categoryOf(existing) });
+      await audit.deleted(this.db, context, { entityType: AUDIT_ENTITIES.LOCATION_CATEGORY, entityId: id, before: this.categoryOf(existing) });
   }
 
   async listSchemas({ tenantId }: RequestAccess): Promise<SchemaResponse[]> {
@@ -210,7 +213,7 @@ export class LocationsService {
     });
 
     const [created] = await this.listSchemasById(access, [id]);
-    await audit.created(this.db, access.audit, { entityType: 'location_schema', entityId: id, after: created! });
+    await audit.created(this.db, access.audit, { entityType: AUDIT_ENTITIES.LOCATION_SCHEMA, entityId: id, after: created! });
 
     return created!;
   }
@@ -228,7 +231,7 @@ export class LocationsService {
       throw notFound('Location schema');
 
     const [updated] = await this.listSchemasById(access, [id]);
-    await audit.updated(this.db, access.audit, { entityType: 'location_schema', entityId: id, before: before!, after: updated! });
+    await audit.updated(this.db, access.audit, { entityType: AUDIT_ENTITIES.LOCATION_SCHEMA, entityId: id, before: before!, after: updated! });
 
     return updated!;
   }
@@ -249,7 +252,7 @@ export class LocationsService {
     }
 
     if (before !== undefined)
-      await audit.deleted(this.db, access.audit, { entityType: 'location_schema', entityId: id, before });
+      await audit.deleted(this.db, access.audit, { entityType: AUDIT_ENTITIES.LOCATION_SCHEMA, entityId: id, before });
   }
 
   async generate(access: RequestAccess, schemaId: string, input: GenerateBody): Promise<{ created: number; leafIds: string[] }> {
@@ -314,8 +317,8 @@ export class LocationsService {
       // bury every other change in the tenant's audit trail. Inside the
       // transaction, so the log cannot survive a rolled-back generate.
       await audit.log(tx, access.audit, {
-        action: 'location.generated',
-        entityType: 'location_schema',
+        action: AUDIT_ACTIONS.LOCATION_GENERATED,
+        entityType: AUDIT_ENTITIES.LOCATION_SCHEMA,
         entityId: schemaId,
         after: { parentId, created, leafIds },
       });
@@ -336,7 +339,8 @@ export class LocationsService {
     if (reach === null)
       return { items: [], total: 0, page: query.page, limit: query.limit };
 
-    const filters = [eq(locations.tenantId, tenantId), ...reach];
+    // `and()` drops the undefined ones, so an inactive filter costs no branch.
+    const filters: (SQL | undefined)[] = [eq(locations.tenantId, tenantId), ...reach];
 
     if (query.parentId !== undefined) {
       filters.push(query.parentId === 'null'
@@ -353,6 +357,7 @@ export class LocationsService {
       filters.push(eq(locations.status, query.status));
     if (query.isActive !== undefined)
       filters.push(eq(locations.isActive, query.isActive));
+    filters.push(this.coverageFilter(tenantId, query));
     if (query.q !== undefined) {
       filters.push(sql`(${locations.name} ILIKE ${`%${query.q}%`} OR EXISTS (
         SELECT 1 FROM geo.location_aliases a WHERE a.location_id = ${locations.id} AND a.alias ILIKE ${`%${query.q}%`}
@@ -366,7 +371,9 @@ export class LocationsService {
         .select()
         .from(locations)
         .where(where)
-        .orderBy(asc(locations.name))
+        // `id` breaks ties: without it two locations sharing a name can swap
+        // places between pages, and a rank among siblings means nothing.
+        .orderBy(asc(locations.name), asc(locations.id))
         .limit(query.limit)
         .offset(offsetOf(query as PaginationQuery)),
       this.db.select({ total: count() }).from(locations).where(where),
@@ -378,6 +385,74 @@ export class LocationsService {
       page: query.page,
       limit: query.limit,
     };
+  }
+
+  /**
+   * Narrows the tree to what one level of the catalogue may be sold in.
+   *
+   * `crm.coverage_allows` is the same rule the coverage write and the wizard
+   * use, so a picker cannot offer a place the write would then reject. A level
+   * that has configured nothing allows everywhere, so this only ever removes
+   * what has been switched off above.
+   */
+  private coverageFilter(tenantId: string, query: ListLocationsQuery): SQL | undefined {
+    if (query.coverageServiceId === undefined)
+      return undefined;
+
+    return sql`crm.coverage_allows(
+      ${tenantId}, ${query.coverageServiceId}, ${query.coverageProviderId ?? null}, NULL, ${locations.id}
+    )`;
+  }
+
+  /**
+   * The chain from the root down to one node, for revealing it in a tree.
+   *
+   * A search hit is useless as a bare row — an operator needs to see where it
+   * sits. Each step carries `siblingIndex` so the caller can jump straight to
+   * the page of that level the node is on, rather than walking pages.
+   */
+  async ancestorsOf(access: RequestAccess, id: string): Promise<AncestorResponse[]> {
+    const node = await this.findNode(access.tenantId, id);
+    await this.assertReaches(access, { key: PERMISSIONS.LOCATIONS_VIEW, nodeId: node.id, createdBy: node.createdBy });
+
+    const chain = await this.db.execute<{ id: string }>(sql`
+      SELECT a.id
+      FROM geo.location_ancestors(${id}) a
+      ORDER BY a.depth DESC
+    `);
+
+    const ids = chain.rows.map(row => row.id);
+    if (ids.length === 0)
+      return [];
+
+    const rows = await this.db
+      .select()
+      .from(locations)
+      .where(and(eq(locations.tenantId, access.tenantId), inArray(locations.id, ids)));
+
+    const byId = new Map(rows.map(row => [row.id, row]));
+    const ordered = ids.map(nodeId => byId.get(nodeId)).filter(row => row !== undefined);
+
+    const [presented, ranks] = await Promise.all([
+      this.present(ordered),
+      // A correlated count per step, not a window over the whole table: the
+      // chain is at most the depth of the tree, and
+      // `locations_tenant_parent_idx` covers the sibling scan.
+      this.db.execute<{ id: string; siblingIndex: number }>(sql`
+        SELECT l.id,
+               (SELECT count(*)::int
+                  FROM geo.locations s
+                 WHERE s.tenant_id = l.tenant_id
+                   AND s.parent_id IS NOT DISTINCT FROM l.parent_id
+                   AND (s.name, s.id) < (l.name, l.id)) AS "siblingIndex"
+        FROM geo.locations l
+        WHERE l.id = ANY(${sql.param(ids)}::uuid[])
+      `),
+    ]);
+
+    const rankById = new Map(ranks.rows.map(row => [row.id, row.siblingIndex]));
+
+    return presented.map(row => ({ ...row, siblingIndex: rankById.get(row.id) ?? 0 }));
   }
 
   async get(access: RequestAccess, id: string): Promise<LocationResponse> {
@@ -413,7 +488,7 @@ export class LocationsService {
         await this.replaceAliases(tx, { tenantId, locationId: row!.id, aliases: input.aliases });
 
         const [presented] = await this.present([row!], tx);
-        await audit.created(tx, access.audit, { entityType: 'location', entityId: row!.id, after: presented! });
+        await audit.created(tx, access.audit, { entityType: AUDIT_ENTITIES.LOCATION, entityId: row!.id, after: presented! });
 
         return presented!;
       });
@@ -444,7 +519,7 @@ export class LocationsService {
         await this.replaceAliases(tx, { tenantId, locationId: id, aliases });
 
         const [presented] = await this.present([row!], tx);
-        await audit.updated(tx, access.audit, { entityType: 'location', entityId: id, before: before!, after: presented! });
+        await audit.updated(tx, access.audit, { entityType: AUDIT_ENTITIES.LOCATION, entityId: id, before: before!, after: presented! });
 
         return presented!;
       });
@@ -480,7 +555,7 @@ export class LocationsService {
       throw error;
     }
 
-    await audit.deleted(this.db, access.audit, { entityType: 'location', entityId: id, before: before! });
+    await audit.deleted(this.db, access.audit, { entityType: AUDIT_ENTITIES.LOCATION, entityId: id, before: before! });
   }
 
   /**
@@ -668,7 +743,7 @@ export class LocationsService {
     const db = tx ?? this.db;
     const ids = rows.map(row => row.id);
 
-    const [paths, aliasRows] = await Promise.all([
+    const [paths, aliasRows, childRows] = await Promise.all([
       db.execute<PathRow>(sql`
         SELECT n.id,
                count(*)::int - 1                                   AS depth,
@@ -682,9 +757,14 @@ export class LocationsService {
       db.select({ locationId: locationAliases.locationId, alias: locationAliases.alias })
         .from(locationAliases)
         .where(inArray(locationAliases.locationId, ids)),
+      db.select({ parentId: locations.parentId, children: count() })
+        .from(locations)
+        .where(inArray(locations.parentId, ids))
+        .groupBy(locations.parentId),
     ]);
 
     const pathById = new Map(paths.rows.map(row => [row.id, row]));
+    const childrenById = new Map(childRows.map(row => [row.parentId, row.children]));
     const aliasById = new Map<string, string[]>();
     for (const row of aliasRows)
       aliasById.set(row.locationId, [...(aliasById.get(row.locationId) ?? []), row.alias]);
@@ -709,6 +789,7 @@ export class LocationsService {
         depth: path?.depth ?? 0,
         path: path?.path ?? row.name,
         pathIds: path?.pathIds ?? [row.id],
+        childCount: childrenById.get(row.id) ?? 0,
         createdAt: row.createdAt.toISOString(),
         updatedAt: row.updatedAt.toISOString(),
       };

@@ -1,5 +1,8 @@
-export const SERVICE_TYPES = ['cable', 'broadband', 'iptv', 'voip', 'other'] as const;
-export type ServiceType = (typeof SERVICE_TYPES)[number];
+export const ENTITY_STATUSES = ['active', 'inactive'] as const;
+export type EntityStatus = (typeof ENTITY_STATUSES)[number];
+
+export const CUSTOMER_STATUSES = ['active', 'inactive', 'pending'] as const;
+export type CustomerStatus = (typeof CUSTOMER_STATUSES)[number];
 
 export const PACKAGE_TYPES = ['base', 'bouquet', 'addon', 'ala_carte', 'combo'] as const;
 export type PackageType = (typeof PACKAGE_TYPES)[number];

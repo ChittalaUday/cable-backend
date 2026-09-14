@@ -28,6 +28,8 @@
     "db:studio": "drizzle-kit studio",
     "db:seed": "tsx --env-file-if-exists=.env src/db/seed/index.ts",
     "db:seed:mso": "tsx --env-file-if-exists=.env src/db/seed/seed-mso-data.ts",
+    "db:seed:packages": "tsx --env-file-if-exists=.env src/db/seed/seed-packages-channels.ts",
+    "db:seed:channel-logos": "tsx --env-file-if-exists=.env src/db/seed/seed-channel-logos.ts",
     "db:up": "docker compose up -d postgres",
     "prepare": "husky"
   },
@@ -49,6 +51,7 @@
     "decimal.js": "^10.5.0",
     "drizzle-orm": "^0.45.2",
     "fastify": "^5.4.0",
+    "fastify-metrics": "^14.1.0",
     "fastify-plugin": "^6.0.0",
     "firebase-admin": "^14.4.0",
     "google-auth-library": "^11.0.2",

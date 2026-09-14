@@ -2,6 +2,8 @@ import { sql } from 'drizzle-orm';
 import { bigint, index, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 import { media } from '../schemas';
 
+export const CHECKSUM_ALGORITHMS = ['md5', 'sha1', 'sha256', 'crc32c'] as const;
+
 export const FILE_STATUSES = ['pending', 'ready', 'failed', 'deleted'] as const;
 
 export const files = media.table('files', {
@@ -13,6 +15,7 @@ export const files = media.table('files', {
   contentType: text('content_type').notNull(),
   sizeBytes: bigint('size_bytes', { mode: 'number' }),
   checksum: text('checksum'),
+  checksumAlgorithm: text('checksum_algorithm', { enum: CHECKSUM_ALGORITHMS }),
 
   status: text('status', { enum: FILE_STATUSES }).notNull().default('pending'),
 
@@ -30,3 +33,4 @@ export const files = media.table('files', {
 export type FileRecord = typeof files.$inferSelect;
 export type NewFileRecord = typeof files.$inferInsert;
 export type FileStatus = (typeof FILE_STATUSES)[number];
+export type ChecksumAlgorithm = (typeof CHECKSUM_ALGORITHMS)[number];

@@ -29,7 +29,7 @@ interface ServiceDto {
   id: string;
   name: string;
   slug: string;
-  serviceType: string;
+  serviceIcon: string | null;
   providerCount: number;
   status: string;
 }
@@ -185,7 +185,7 @@ describe('service -> provider -> package -> channel hierarchy API tests', () => 
         payload: {
           name: 'Cable Television',
           slug: `cable-${unique()}`,
-          serviceType: 'cable',
+          icon: 'tv',
           description: 'Linear digital TV feeds',
         },
       });
@@ -201,7 +201,7 @@ describe('service -> provider -> package -> channel hierarchy API tests', () => 
         payload: {
           name: 'High-Speed Broadband',
           slug: `broadband-${unique()}`,
-          serviceType: 'broadband',
+          icon: 'wifi',
           description: 'FTTH fiber internet',
         },
       });
@@ -863,7 +863,7 @@ describe('service -> provider -> package -> channel hierarchy API tests', () => 
         method: 'POST',
         url: '/api/v1/services',
         headers: customerAuthA,
-        payload: { name: 'Unauthorized Cable', slug: `unauth-${unique()}`, serviceType: 'cable' },
+        payload: { name: 'Unauthorized Cable', slug: `unauth-${unique()}`, icon: 'tv' },
       });
       expect(createRes.statusCode).toBe(403);
       expect(bodyOf(createRes).code).toBe('PERM_DENIED');

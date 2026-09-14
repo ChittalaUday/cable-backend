@@ -36,6 +36,18 @@ export interface ObjectHead {
   checksum: string | null;
 }
 
+/**
+ * The shelf an object is filed on, under the tenant.
+ *
+ * The BACKEND picks it, never the uploading client: an endpoint knows what it is
+ * accepting, and a caller-supplied path is how objects end up scattered or
+ * escaping their tenant's prefix. Adding a member here is what makes a new shelf
+ * exist — it is not a free-text path.
+ */
+export const STORAGE_FOLDERS = ['logos', 'images', 'documents', 'files'] as const;
+
+export type StorageFolder = (typeof STORAGE_FOLDERS)[number];
+
 export interface RequestUploadInput {
   tenantId: string | null;
   uploadedBy: string | null;
@@ -43,6 +55,8 @@ export interface RequestUploadInput {
   contentType: string;
   sizeBytes?: number;
   checksum?: string;
+  /** Omit it and the content type decides — see `folderFor`. */
+  folder?: StorageFolder;
   kind?: FileKind;
   visibility?: FileVisibility;
   metadata?: Record<string, unknown>;
@@ -53,6 +67,8 @@ export interface LocalStagedUploadInput {
   uploadedBy: string | null;
   originalName: string;
   contentType: string;
+  /** Omit it and the content type decides — see `folderFor`. */
+  folder?: StorageFolder;
   kind?: FileKind;
   visibility?: FileVisibility;
   metadata?: Record<string, unknown>;

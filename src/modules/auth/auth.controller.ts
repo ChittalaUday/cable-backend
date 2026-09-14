@@ -40,6 +40,7 @@ export async function verifyOtp(
     expiresIn: result.expiresIn,
     tokenType: 'Bearer' as const,
     user: result.user,
+    memberships: result.memberships,
   });
 }
 
@@ -58,6 +59,7 @@ export async function login(
     expiresIn: result.expiresIn,
     tokenType: 'Bearer' as const,
     user: result.user,
+    memberships: result.memberships,
   });
 }
 
@@ -82,11 +84,20 @@ export async function logoutEverywhere(request: FastifyRequest, reply: FastifyRe
 
 export async function me(request: FastifyRequest, reply: FastifyReply) {
   const user = await request.server.auth.userById(request.session.sub);
+  const memberships = await request.server.auth.membershipsFor(request.session.sub);
+
+  // Only when the active tenant is unambiguous: a customer record belongs to one
+  // operator, so with two memberships and no `X-Tenant-Id` there is no single
+  // right answer, and guessing one would render the wrong account's balance.
+  const customer = request.tenantId === undefined
+    ? null
+    : await request.server.customers.profileFor(request.tenantId, request.session.sub);
 
   return reply.status(200).send({
     user,
     sessionId: request.session.sid,
     deviceId: request.session.did,
-    memberships: request.session.memberships.map(m => ({ tenantId: m.t, roleId: m.r })),
+    memberships,
+    customer,
   });
 }

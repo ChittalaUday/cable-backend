@@ -26,7 +26,7 @@ export function createRotatingLogDestination(options: RotatingLogOptions): pino.
     part = 1;
 
     do {
-      file = path.join(directory, `${options.name}-${process.pid}-${part}.log`);
+      file = path.join(directory, `${options.name}-${part}.log`);
       size = existsSync(file) ? statSync(file).size : 0;
       part += 1;
     } while (size > 0 && size + bytes > options.maxFileBytes);

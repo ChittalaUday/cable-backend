@@ -1,4 +1,4 @@
-import { index, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { index, integer, text, timestamp, uuid } from 'drizzle-orm/pg-core';
 import { auth } from '../schemas';
 
 export const devices = auth.table('devices', {
@@ -10,6 +10,10 @@ export const devices = auth.table('devices', {
   osVersion: text('os_version'),
   model: text('model'),
   appVersion: text('app_version'),
+
+  ramMb: integer('ram_mb'),
+  /** Physical pixels as the device reports them, e.g. "1080x2400". */
+  screenResolution: text('screen_resolution'),
 
   blockedAt: timestamp('blocked_at', { withTimezone: true }),
   blockedReason: text('blocked_reason'),

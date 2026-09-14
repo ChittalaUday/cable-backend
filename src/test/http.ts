@@ -9,7 +9,7 @@ export interface AuthBody {
     phone: string | null;
     name: string | null;
   };
-  memberships: { tenantId: string; roleId: string }[];
+  memberships: { tenantId: string; tenantName: string; roleId: string }[];
   sessionId: string;
   deviceId: string;
   revokedSessions: number;

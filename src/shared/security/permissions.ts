@@ -1,4 +1,4 @@
-export const PERMISSION_SCOPES = ['OWN', 'ASSIGNED', 'TEAM', 'AREA', 'LOCATION', 'ALL'] as const;
+export const PERMISSION_SCOPES = ['OWN', 'ASSIGNED', 'TEAM', 'LOCATION', 'ALL'] as const;
 
 export type PermissionScope = (typeof PERMISSION_SCOPES)[number];
 
@@ -6,9 +6,8 @@ export const SCOPE_RANK: Record<PermissionScope, number> = {
   OWN: 1,
   ASSIGNED: 2,
   TEAM: 3,
-  AREA: 4,
-  LOCATION: 5,
-  ALL: 6,
+  LOCATION: 4,
+  ALL: 5,
 };
 
 export const PERMISSIONS = {

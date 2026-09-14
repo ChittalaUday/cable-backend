@@ -1,0 +1,1 @@
+CREATE INDEX "service_coverage_tenant_avail_idx" ON "crm"."service_coverage" USING btree ("tenant_id","is_available");

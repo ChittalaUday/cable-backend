@@ -1,0 +1,1 @@
+ALTER TABLE "crm"."services" ADD COLUMN "icon" text;

@@ -56,7 +56,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
     schema: {
       tags: ['services'],
       summary: 'Rename or deactivate a service',
-      description: '`slug` and `serviceType` are fixed: both are referenced by what already sells.',
+      description: '`slug` is fixed: it is referenced by what already sells.',
       params: IdParams,
       body: UpdateServiceBody,
       response: { 200: ServiceResponse, ...errors },

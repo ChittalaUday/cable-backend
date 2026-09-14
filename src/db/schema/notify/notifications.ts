@@ -1,5 +1,6 @@
 import { index, jsonb, text, timestamp, uuid } from 'drizzle-orm/pg-core';
 import { users } from '../auth/users';
+import { files } from '../media/files';
 import { notify } from '../schemas';
 import { tenants } from '../tenancy/tenants';
 
@@ -20,6 +21,9 @@ export const notifications = notify.table('notifications', {
   data: jsonb('data').$type<Record<string, unknown>>(),
 
   destination: text('destination'),
+
+  /** An image to render in-app or attach on WhatsApp. */
+  fileId: uuid('file_id').references(() => files.id, { onDelete: 'set null' }),
 
   status: text('status', { enum: NOTIFICATION_STATUSES }).notNull().default('queued'),
   provider: text('provider'),

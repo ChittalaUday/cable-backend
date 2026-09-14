@@ -3,12 +3,14 @@ import type { Session, User } from '@/db/schema';
 import type { AuditContext } from '@/modules/audit/audit.types';
 import type { MessagingService } from '@/modules/messaging/messaging.service';
 import type { Database } from '@/plugins/database';
+import type { AuditAction } from '@/shared/constants/audit';
 import type { AccessTokenClaims, TokenSigner } from '@/shared/security/tokens';
 import { randomUUID } from 'node:crypto';
 import { and, desc, eq, isNull, or, sql } from 'drizzle-orm';
-import { otpCodes, tenantMemberships, users } from '@/db/schema';
+import { otpCodes, tenantMemberships, tenants, users } from '@/db/schema';
 import { audit } from '@/modules/audit/audit.service';
 import { normalisePhone, to10DigitPhone } from '@/modules/messaging/messaging.service';
+import { AUDIT_ACTIONS, AUDIT_ENTITIES } from '@/shared/constants/audit';
 import { ERROR_CODES } from '@/shared/errors';
 import { badRequest, DomainError, forbidden, unauthorized } from '@/shared/errors/domain-error';
 import { generateOtp, hashOtp, otpMatches } from '@/shared/security/otp';
@@ -40,12 +42,28 @@ export interface AuthTokens {
   expiresIn: number;
 }
 
+export interface PublicMembership {
+  tenantId: string;
+  /**
+   * Carried so a client with several memberships can ASK which one to act in.
+   * The id alone is a UUID — unusable in a picker, and the tenant name is not
+   * available from any other endpoint.
+   */
+  tenantName: string;
+  roleId: string;
+}
+
 export interface PublicUser {
   id: string;
   email: string | null;
   phone: string | null;
   name: string | null;
   photoUrl: string | null;
+}
+
+/** The claim shape — ids only, so the token does not grow with tenant names. */
+function toClaimMemberships(memberships: PublicMembership[]): AccessTokenClaims['memberships'] {
+  return memberships.map(m => ({ t: m.tenantId, r: m.roleId }));
 }
 
 export function toPublicUser(user: User): PublicUser {
@@ -68,6 +86,8 @@ export interface VerifyOtpInput {
   code: string;
   device: DeviceInfo;
 }
+
+export type SessionResult = AuthTokens & { user: PublicUser; memberships: PublicMembership[] };
 
 export interface LoginInput {
   identifier: string;
@@ -94,6 +114,24 @@ export class AuthService {
     return toPublicUser(user);
   }
 
+  /**
+   * The tenants this user may act in, named.
+   *
+   * Read from the database rather than the token: the token carries ids only,
+   * and a client that belongs to several tenants has to show a human a list
+   * before it can send `X-Tenant-Id`.
+   */
+  async membershipsFor(userId: string): Promise<PublicMembership[]> {
+    return this.db.select({
+      tenantId: tenantMemberships.tenantId,
+      tenantName: tenants.name,
+      roleId: tenantMemberships.roleId,
+    })
+      .from(tenantMemberships)
+      .innerJoin(tenants, eq(tenants.id, tenantMemberships.tenantId))
+      .where(and(eq(tenantMemberships.userId, userId), eq(tenantMemberships.status, 'active')));
+  }
+
   async requestOtp(input: RequestOtpInput, context: AuditContext): Promise<{ channel: 'whatsapp' | 'sms' }> {
     const identifier = normalisePhone(input.phone, this.deps.config.defaultCountryCode);
     const channel = input.channel ?? 'whatsapp';
@@ -102,7 +140,7 @@ export class AuthService {
       await this.assertNotResendingTooSoon(identifier);
     }
     catch (error) {
-      await this.record(context, { action: 'auth.otp.refused', actorId: null, entityId: identifier, metadata: { channel, reason: reasonOf(error) } });
+      await this.record(context, { action: AUDIT_ACTIONS.AUTH_OTP_REFUSED, actorId: null, entityId: identifier, metadata: { channel, reason: reasonOf(error) } });
       throw error;
     }
 
@@ -135,16 +173,16 @@ export class AuthService {
 
     // The code itself is never in the row — `sanitizeAuditValue` redacts keys
     // that look like one, and nothing here hands it a key that does.
-    await this.record(context, { action: 'auth.otp.requested', actorId: null, entityId: identifier, metadata: { channel } });
+    await this.record(context, { action: AUDIT_ACTIONS.AUTH_OTP_REQUESTED, actorId: null, entityId: identifier, metadata: { channel } });
 
     return { channel };
   }
 
-  async verifyOtp(input: VerifyOtpInput, context: AuditContext): Promise<AuthTokens & { user: PublicUser }> {
+  async verifyOtp(input: VerifyOtpInput, context: AuditContext): Promise<SessionResult> {
     const identifier = normalisePhone(input.phone, this.deps.config.defaultCountryCode);
 
     const failed = async (error: unknown): Promise<never> => {
-      await this.record(context, { action: 'auth.otp.failed', actorId: null, entityId: identifier, metadata: { reason: reasonOf(error) } });
+      await this.record(context, { action: AUDIT_ACTIONS.AUTH_OTP_FAILED, actorId: null, entityId: identifier, metadata: { reason: reasonOf(error) } });
       throw error;
     };
 
@@ -171,12 +209,12 @@ export class AuthService {
     const user = await this.findOrCreateByPhone(identifier);
     const session = await this.startSession(user, input.device).catch(failed);
 
-    await this.record(context, { action: 'auth.otp.verified', actorId: user.id, entityId: user.id, metadata: { identifier, device: input.device.clientDeviceId } });
+    await this.record(context, { action: AUDIT_ACTIONS.AUTH_OTP_VERIFIED, actorId: user.id, entityId: user.id, metadata: { identifier, device: input.device.clientDeviceId } });
 
     return session;
   }
 
-  async login(input: LoginInput, context: AuditContext): Promise<AuthTokens & { user: PublicUser }> {
+  async login(input: LoginInput, context: AuditContext): Promise<SessionResult> {
     const identifier = input.identifier.trim().toLowerCase();
 
     const asPhone = identifier.includes('@')
@@ -192,7 +230,7 @@ export class AuthService {
     // need not exist.
     const failed = async (error: unknown): Promise<never> => {
       await this.record(context, {
-        action: 'auth.login.failed',
+        action: AUDIT_ACTIONS.AUTH_LOGIN_FAILED,
         actorId: user?.id ?? null,
         entityId: user?.id ?? identifier,
         metadata: { identifier, reason: reasonOf(error), device: input.device.clientDeviceId },
@@ -214,7 +252,7 @@ export class AuthService {
     const session = await this.startSession(user!, input.device).catch(failed);
 
     await this.record(context, {
-      action: 'auth.login.succeeded',
+      action: AUDIT_ACTIONS.AUTH_LOGIN_SUCCEEDED,
       actorId: user!.id,
       entityId: user!.id,
       metadata: { identifier, device: input.device.clientDeviceId },
@@ -238,7 +276,7 @@ export class AuthService {
         sessionId = replayed.id;
         userId = replayed.userId;
         await this.record(context, {
-          action: 'auth.token.reuse_detected',
+          action: AUDIT_ACTIONS.AUTH_TOKEN_REUSE_DETECTED,
           actorId: replayed.userId,
           entityId: replayed.id,
           metadata: { deviceId: replayed.deviceId },
@@ -258,13 +296,13 @@ export class AuthService {
       const claims = await this.claimsFor(user, session.id, session.deviceId);
       const { token, expiresIn } = await this.deps.tokens.sign(claims);
 
-      await this.record(context, { action: 'auth.token.refreshed', actorId: user.id, entityId: session.id });
+      await this.record(context, { action: AUDIT_ACTIONS.AUTH_TOKEN_REFRESHED, actorId: user.id, entityId: session.id });
 
       return { accessToken: token, refreshToken: next, expiresIn };
     }
     catch (error) {
       await this.record(context, {
-        action: 'auth.token.refresh_failed',
+        action: AUDIT_ACTIONS.AUTH_TOKEN_REFRESH_FAILED,
         actorId: userId,
         entityId: sessionId ?? userId ?? 'unknown',
         metadata: { reason: reasonOf(error) },
@@ -275,12 +313,12 @@ export class AuthService {
 
   async logout(sessionId: string, context: AuditContext): Promise<void> {
     await this.sessions.revoke(sessionId, 'logout');
-    await this.record(context, { action: 'auth.logout', actorId: context.actorId, entityId: sessionId });
+    await this.record(context, { action: AUDIT_ACTIONS.AUTH_LOGOUT, actorId: context.actorId, entityId: sessionId });
   }
 
   async logoutEverywhere(userId: string, context: AuditContext): Promise<number> {
     const revoked = await this.sessions.revokeAllForUser(userId, 'logout_all');
-    await this.record(context, { action: 'auth.logout_all', actorId: userId, entityId: userId, metadata: { revokedSessions: revoked } });
+    await this.record(context, { action: AUDIT_ACTIONS.AUTH_LOGOUT_ALL, actorId: userId, entityId: userId, metadata: { revokedSessions: revoked } });
 
     return revoked;
   }
@@ -291,26 +329,41 @@ export class AuthService {
    */
   private async record(
     context: AuditContext,
-    event: { action: string; actorId: string | null; entityId: string; metadata?: Record<string, unknown> },
+    event: { action: AuditAction; actorId: string | null; entityId: string; metadata?: Record<string, unknown> },
   ): Promise<void> {
     await audit.log(this.db, { ...context, actorId: event.actorId }, {
       action: event.action,
-      entityType: 'auth',
+      entityType: AUDIT_ENTITIES.AUTH,
       entityId: event.entityId,
       metadata: event.metadata ?? null,
     });
   }
 
-  private async startSession(user: User, device: DeviceInfo): Promise<AuthTokens & { user: PublicUser }> {
+  private async startSession(user: User, device: DeviceInfo): Promise<SessionResult> {
     this.assertUsable(user);
 
     const deviceRow = await this.sessions.upsertDevice(device);
     const { session, refreshToken } = await this.sessions.issue(user.id, deviceRow.id);
 
-    const claims = await this.claimsFor(user, session.id, deviceRow.id);
-    const { token, expiresIn } = await this.deps.tokens.sign(claims);
+    // One query serves both the token claims and the response: the names cost
+    // nothing extra here, and the token still carries only ids.
+    const memberships = await this.membershipsFor(user.id);
+    const { token, expiresIn } = await this.deps.tokens.sign({
+      sub: user.id,
+      sid: session.id,
+      did: deviceRow.id,
+      memberships: toClaimMemberships(memberships),
+    });
 
-    return { accessToken: token, refreshToken, expiresIn, user: toPublicUser(user) };
+    return {
+      accessToken: token,
+      refreshToken,
+      expiresIn,
+      user: toPublicUser(user),
+      // Already loaded to sign the token — returning them saves the client a
+      // round trip to `/auth/me` just to learn what to render.
+      memberships,
+    };
   }
 
   private async assertCredentialsUnchanged(user: User, session: Session): Promise<void> {

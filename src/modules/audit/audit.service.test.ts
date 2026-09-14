@@ -3,17 +3,18 @@ import { randomUUID } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 import { afterAll, describe, expect, it } from 'vitest';
 import { auditLogs } from '@/db/schema';
+import { AUDIT_ACTIONS, AUDIT_ENTITIES } from '@/shared/constants/audit';
 import { createTestDb } from '@/test/db';
 import { audit } from './audit.service';
 
 const { db, close } = createTestDb();
-const entityType = `audit-test-${randomUUID()}`;
+const entityType = AUDIT_ENTITIES.SERVICE;
 const tenantId = randomUUID();
 const actorId = randomUUID();
 const context: AuditContext = { tenantId, actorId, actorType: 'user', requestId: 'request-1' };
 
 afterAll(async () => {
-  await db.delete(auditLogs).where(eq(auditLogs.entityType, entityType));
+  await db.delete(auditLogs).where(eq(auditLogs.tenantId, tenantId));
   await close();
 });
 
@@ -54,7 +55,7 @@ describe('audit service', () => {
 
   it('supports null-tenant system events', async () => {
     const row = await audit.log(db, { tenantId: null, actorId: null, actorType: 'system' }, {
-      action: 'system.started',
+      action: AUDIT_ACTIONS.STORAGE_CLEANED,
       entityType,
       entityId: 'worker',
     });
@@ -90,11 +91,11 @@ describe('audit service', () => {
   });
 
   it('queries only the requested tenant and action', async () => {
-    const wanted = await audit.log(db, context, { action: 'payment.refunded', entityType, entityId: 'payment-1' });
-    await audit.log(db, { ...context, tenantId: randomUUID() }, { action: 'payment.refunded', entityType, entityId: 'payment-2' });
+    const wanted = await audit.log(db, context, { action: AUDIT_ACTIONS.AUTH_LOGOUT, entityType, entityId: 'payment-1' });
+    await audit.log(db, { ...context, tenantId: randomUUID() }, { action: AUDIT_ACTIONS.AUTH_LOGOUT, entityType, entityId: 'payment-2' });
 
-    const rows = await audit.list(db, { tenantId, action: 'payment.refunded' });
+    const rows = await audit.list(db, { tenantId, action: AUDIT_ACTIONS.AUTH_LOGOUT });
     expect(rows.map(row => row.id)).toContain(wanted.id);
-    expect(rows.every(row => row.tenantId === tenantId && row.action === 'payment.refunded')).toBe(true);
+    expect(rows.every(row => row.tenantId === tenantId && row.action === AUDIT_ACTIONS.AUTH_LOGOUT)).toBe(true);
   });
 });

@@ -1,7 +1,7 @@
 import type { Static } from 'typebox';
-import type { BillingCycle, PackageType } from '@/shared/constants/crm';
+import type { BillingCycle, ChannelResolution, PackageType } from '@/shared/constants/crm';
 import { Type } from 'typebox';
-import { BILLING_CYCLES, PACKAGE_TYPES } from '@/shared/constants/crm';
+import { BILLING_CYCLES, CHANNEL_RESOLUTIONS, PACKAGE_TYPES } from '@/shared/constants/crm';
 import { PaginationQuerySchema } from '@/shared/pagination';
 
 /**
@@ -30,6 +30,7 @@ const Rate = Type.String({ pattern: '^[0-9]{1,3}(\\.[0-9]{1,2})?$', description:
 
 const PackageTypeSchema = Type.Unsafe<PackageType>({ type: 'string', enum: [...PACKAGE_TYPES] });
 const BillingCycleSchema = Type.Unsafe<BillingCycle>({ type: 'string', enum: [...BILLING_CYCLES] });
+const ResolutionSchema = Type.Unsafe<ChannelResolution>({ type: 'string', enum: [...CHANNEL_RESOLUTIONS] });
 
 export const IdParams = Type.Object({ id: Uuid });
 
@@ -39,6 +40,8 @@ export const PackageResponse = Type.Object({
   serviceProviderName: Type.String(),
   serviceId: Uuid,
   serviceName: Type.String(),
+  /** The icon of the service behind it, so a package list reads at a glance. */
+  serviceIcon: Type.Union([Type.String({ maxLength: 40 }), Type.Null()]),
   name: Name,
   slug: Slug,
   packageType: PackageTypeSchema,
@@ -52,6 +55,12 @@ export const PackageResponse = Type.Object({
   status: Status,
   /** How many channels the bouquet carries. The list itself is on `GET /packages/:id`. */
   channelCount: Type.Integer(),
+  /**
+   * The breadcrumbs this package is sold in, when it is narrower than its
+   * provider. Empty — the normal case — means it goes wherever the provider
+   * does; it is what tells two same-named packages for two areas apart.
+   */
+  coverageAreas: Type.Array(Type.String()),
   createdAt: Type.String({ format: 'date-time' }),
   updatedAt: Type.String({ format: 'date-time' }),
 });
@@ -87,7 +96,8 @@ export const ListPackagesQuery = Type.Intersect([
 export const CreatePackageBody = Type.Object({
   serviceProviderId: Uuid,
   name: Name,
-  slug: Slug,
+  /** Derived from `name` when absent — the app's forms only collect a name. */
+  slug: Type.Optional(Slug),
   packageType: Type.Optional(PackageTypeSchema),
   price: Type.Optional(Money),
   discount: Type.Optional(Money),
@@ -125,6 +135,18 @@ export const ListChannelsQuery = Type.Intersect([
   Type.Object({
     serviceProviderId: Type.Optional(Uuid),
     genre: Type.Optional(Type.String({ maxLength: 40 })),
+    /** `SD`, `HD` or `4K` — a lineup picker filters on all three, not HD/not-HD. */
+    resolution: Type.Optional(ResolutionSchema),
+    /**
+     * Narrow to what one package carries.
+     *
+     * With `inPackage: true` this is the package's own lineup, paginated the
+     * same way as everything else — so a bouquet of 800 channels is read a page
+     * at a time rather than pulled down whole to be filtered on the device.
+     * `false` is the complement: everything still available to add.
+     */
+    packageId: Type.Optional(Uuid),
+    inPackage: Type.Optional(Type.Boolean()),
     q: Type.Optional(Type.String({ minLength: 1, maxLength: 120 })),
   }),
 ]);

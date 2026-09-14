@@ -1,4 +1,5 @@
 import { index, jsonb, numeric, text, timestamp, uuid, varchar } from 'drizzle-orm/pg-core';
+import { CUSTOMER_STATUSES } from '@/shared/constants/crm';
 import { users } from '../auth/users';
 import { locations } from '../geo/locations';
 import { crm } from '../schemas';
@@ -18,11 +19,16 @@ export const customers = crm.table('customers', {
   nationalIdType: text('national_id_type'),
   nationalIdNumber: text('national_id_number'),
 
-  areaId: uuid('area_id').references(() => locations.id, { onDelete: 'set null' }),
-
+  /** Where the customer is, in the tenant's own hierarchy. The only structured address. */
   locationId: uuid('location_id').references(() => locations.id, { onDelete: 'set null' }),
 
-  status: text('status', { enum: ['active', 'inactive', 'pending'] }).notNull().default('active'),
+  /**
+   * Free text the customer or an agent typed, kept verbatim. A hint for a
+   * technician, never a substitute for `locationId` — nothing queries it.
+   */
+  address: text('address'),
+
+  status: text('status', { enum: CUSTOMER_STATUSES }).notNull().default('active'),
 
   outstandingBalance: numeric('outstanding_balance', { precision: 12, scale: 2 }).notNull().default('0'),
 
@@ -39,7 +45,6 @@ export const customers = crm.table('customers', {
   index('customers_tenant_created_idx').on(table.tenantId, table.createdAt.desc()),
   index('customers_tenant_status_idx').on(table.tenantId, table.status),
   index('customers_user_idx').on(table.userId),
-  index('customers_area_idx').on(table.areaId),
   index('customers_location_idx').on(table.locationId),
 ]);
 

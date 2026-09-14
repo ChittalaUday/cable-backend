@@ -75,6 +75,10 @@ export async function get(request: Req<{ params: typeof IdParams }>) {
   return request.server.locations.get(request.access, request.params.id);
 }
 
+export async function ancestors(request: Req<{ params: typeof IdParams }>) {
+  return request.server.locations.ancestorsOf(request.access, request.params.id);
+}
+
 export async function create(
   request: Req<{ body: typeof CreateLocationBody }>,
   reply: FastifyReply,

@@ -36,7 +36,7 @@ export interface SeededAuthData {
 export async function seedRoles(db: TestDb): Promise<void> {
   const grants = {
     [SYSTEM_ROLES.ADMIN]: ALL_PERMISSION_KEYS.map(key => [key, 'ALL'] as const),
-    [SYSTEM_ROLES.STAFF]: [[PERMISSIONS.CUSTOMERS_VIEW, 'AREA'] as const],
+    [SYSTEM_ROLES.STAFF]: [[PERMISSIONS.CUSTOMERS_VIEW, 'LOCATION'] as const],
     [SYSTEM_ROLES.CUSTOMER]: [[PERMISSIONS.CUSTOMERS_VIEW, 'OWN'] as const],
   };
 
