@@ -1,5 +1,5 @@
 import { index, integer, text, timestamp, uuid } from 'drizzle-orm/pg-core';
-import { DEVICE_PLATFORMS } from '@/shared/constants/auth';
+import { DEVICE_PLATFORMS } from '@/constants/auth';
 import { auth } from '../schemas';
 
 export const devices = auth.table('devices', {

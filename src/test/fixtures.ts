@@ -3,15 +3,18 @@ import { randomInt, randomUUID } from 'node:crypto';
 import { inArray } from 'drizzle-orm';
 import { SYSTEM_ROLES } from '@/config/constants';
 import { devices, rolePermissions, roles, tenantMemberships, tenants, users } from '@/db/schema';
-import { hashPassword } from '@/shared/security/password';
-import { ALL_PERMISSION_KEYS, PERMISSIONS } from '@/shared/security/permissions';
+import { hashPassword } from '@/security/password';
+import { ALL_PERMISSION_KEYS, PERMISSIONS } from '@/security/permissions';
+import { normaliseEmail } from '@/utils/email';
 
 export function uniquePhone(): string {
   return `999${String(randomInt(0, 10_000_000)).padStart(7, '0')}`;
 }
 
 export function uniqueEmail(prefix = 'user'): string {
-  return `${prefix}-${randomUUID()}@test.local`;
+  // Canonical, because the column will not take anything else — a `prefix`
+  // with a capital in it used to make an address nothing could sign in as.
+  return normaliseEmail(`${prefix}-${randomUUID()}@test.local`)!;
 }
 
 export function uniqueDeviceId(): string {

@@ -1,7 +1,7 @@
 import type { BuiltApp } from '@/app';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from '@/app';
-import { ALL_PERMISSION_KEYS } from '@/shared/security/permissions';
+import { ALL_PERMISSION_KEYS } from '@/security/permissions';
 
 let app: BuiltApp;
 

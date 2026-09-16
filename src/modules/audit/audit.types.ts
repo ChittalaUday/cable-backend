@@ -1,5 +1,5 @@
+import type { AuditAction, AuditEntity } from '@/constants/audit';
 import type { AuditJson } from '@/db/schema';
-import type { AuditAction, AuditEntity } from '@/shared/constants/audit';
 
 export interface AuditContext {
   tenantId: string | null;

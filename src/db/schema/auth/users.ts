@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm';
 import { check, index, text, timestamp, uuid, varchar } from 'drizzle-orm/pg-core';
+import { normaliseEmail } from '../functions';
 import { auth } from '../schemas';
 
 export const users = auth.table('users', {
@@ -26,6 +27,7 @@ export const users = auth.table('users', {
 }, table => [
   check('users_identifier_present', sql`${table.email} IS NOT NULL OR ${table.phone} IS NOT NULL`),
   check('users_phone_ten_digits', sql`${table.phone} IS NULL OR ${table.phone} ~ '^[0-9]{10}$'`),
+  check('users_email_normalised', sql`${table.email} IS NULL OR ${table.email} = ${normaliseEmail(table.email)}`),
   index('users_disabled_at_idx').on(table.disabledAt),
   index('users_name_trgm_idx').using('gin', sql`${table.name} gin_trgm_ops`),
   index('users_phone_trgm_idx').using('gin', sql`${table.phone} gin_trgm_ops`),

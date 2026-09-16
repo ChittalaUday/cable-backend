@@ -1,5 +1,4 @@
 import type { SQL } from 'drizzle-orm';
-import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import type {
   CreateTeamBody,
   ListTeamsQuery,
@@ -9,76 +8,57 @@ import type {
   TeamResponse,
   UpdateTeamBody,
 } from './staff.schema';
-import type * as schema from '@/db/schema';
+import type { TeamRecord } from './teams.repository';
+import type { Database } from '@/db/client';
 import type { AccessService, RequestAccess } from '@/modules/iam/access.service';
-import type { LocationsService } from '@/modules/locations/locations.service';
-import type { Page, PaginationQuery } from '@/shared/pagination';
-import type { PermissionKey } from '@/shared/security/permissions';
-import { and, asc, count, desc, eq, ilike, isNull, sql } from 'drizzle-orm';
-import {
-  teamLocations,
-  teams,
-  tenantMemberships,
-  users,
-} from '@/db/schema';
+import type { LocationsService } from '@/modules/locations/location.service';
+import type { PermissionKey } from '@/security/permissions';
+import type { Page, PaginationQuery } from '@/utils/pagination';
+import { eq, ilike } from 'drizzle-orm';
+import { AUDIT_ENTITIES } from '@/constants/audit';
+import { teams } from '@/db/schema';
+import { ERROR_CODES, isUniqueViolation } from '@/errors';
+import { badRequest, conflict, inUse, notFound } from '@/errors/domain-error';
 import { audit } from '@/modules/audit/audit.service';
-import { AUDIT_ENTITIES } from '@/shared/constants/audit';
-import { isUniqueViolation } from '@/shared/errors';
-import { conflict, inUse, notFound } from '@/shared/errors/domain-error';
-import { offsetOf } from '@/shared/pagination';
-import { PERMISSIONS } from '@/shared/security/permissions';
-import { uniqueSlug } from '@/shared/utils/slug';
+import { PERMISSIONS } from '@/security/permissions';
+import { offsetOf } from '@/utils/pagination';
+import { uniqueSlug } from '@/utils/slug';
 import { areaGrantsFor, assertWithinGrant, teamReach } from './staff.grants';
-
-type Db = NodePgDatabase<typeof schema>;
-type TeamRow = typeof teams.$inferSelect & { memberCount: number };
-
-const MEMBER_COUNT = sql<number>`(
-  SELECT count(*)::int FROM tenancy.tenant_memberships m WHERE m.team_id = tenancy.teams.id
-)`;
+import { TeamsRepository } from './teams.repository';
 
 export class TeamsService {
+  private readonly repo: TeamsRepository;
+
   constructor(
-    private readonly db: Db,
+    repoOrDb: TeamsRepository | Database,
     private readonly locations: LocationsService,
     private readonly access: AccessService,
-  ) {}
+  ) {
+    this.repo = repoOrDb instanceof TeamsRepository ? repoOrDb : new TeamsRepository(repoOrDb);
+  }
 
   async list(access: RequestAccess, query: ListTeamsQuery): Promise<Page<TeamResponse>> {
     const reach = teamReach(access, PERMISSIONS.STAFF_VIEW);
     if (reach === null)
       return { items: [], total: 0, page: query.page, limit: query.limit };
 
-    const filters: (SQL | undefined)[] = [
-      eq(teams.tenantId, access.tenantId),
-      isNull(teams.deletedAt),
-      ...reach,
-    ];
+    const filters: SQL[] = [...reach];
 
     if (query.status !== undefined)
       filters.push(eq(teams.status, query.status));
     if (query.q !== undefined)
       filters.push(ilike(teams.name, `%${query.q}%`));
 
-    const where = and(...filters);
-
-    const [rows, [totals]] = await Promise.all([
-      this.db
-        .select({ team: teams, memberCount: MEMBER_COUNT })
-        .from(teams)
-        .where(where)
-        .orderBy(asc(teams.name), asc(teams.id))
-        .limit(query.limit)
-        .offset(offsetOf(query as PaginationQuery)),
-      this.db.select({ total: count() }).from(teams).where(where),
+    const [rows, total] = await Promise.all([
+      this.repo.list(access.tenantId, filters, { limit: query.limit, offset: offsetOf(query as PaginationQuery) }),
+      this.repo.count(access.tenantId, filters),
     ]);
 
-    const flat = rows.map(row => ({ ...row.team, memberCount: row.memberCount }));
-    const grants = await this.grantsFor(flat.map(row => row.id));
+    const grants = await this.grantsFor(rows.map(row => row.id));
 
     return {
-      items: flat.map(row => present(row, grants.get(row.id) ?? [])),
-      total: totals?.total ?? 0,
+      items: rows.map(row => present(row, grants.get(row.id) ?? [])),
+      total,
       page: query.page,
       limit: query.limit,
     };
@@ -92,32 +72,22 @@ export class TeamsService {
     const nodes = [...new Set(input.locationIds ?? [])];
     await this.assertGrantable(access, nodes, PERMISSIONS.STAFF_CREATE);
 
-    const slug = input.slug ?? uniqueSlug(input.name, await this.takenSlugs(access.tenantId));
+    const slug = input.slug ?? uniqueSlug(input.name, await this.repo.takenSlugs(access.tenantId));
 
-    const id = await this.db.transaction(async (tx) => {
-      const [row] = await tx
-        .insert(teams)
-        .values({
-          tenantId: access.tenantId,
-          name: input.name,
-          slug,
-          description: input.description ?? null,
-          status: input.status ?? 'active',
-        })
-        .returning({ id: teams.id });
-
-      if (nodes.length > 0)
-        await tx.insert(teamLocations).values(nodes.map(locationId => ({ teamId: row!.id, locationId })));
-
-      return row!.id;
-    }).catch((error: unknown) => {
+    const id = await this.repo.create({
+      tenantId: access.tenantId,
+      name: input.name,
+      slug,
+      description: input.description ?? null,
+      status: input.status ?? 'active',
+    }, nodes).catch((error: unknown) => {
       if (isUniqueViolation(error))
         throw conflict(`A team with slug "${slug}" already exists`);
       throw error;
     });
 
     const created = await this.byId(access.tenantId, id);
-    await audit.created(this.db, access.audit, { entityType: AUDIT_ENTITIES.TEAM, entityId: id, after: created });
+    await audit.created(this.repo.database, access.audit, { entityType: AUDIT_ENTITIES.TEAM, entityId: id, after: created });
 
     return created;
   }
@@ -125,25 +95,24 @@ export class TeamsService {
   async update(access: RequestAccess, id: string, patch: UpdateTeamBody): Promise<TeamResponse> {
     const before = await this.readFor(access, id, PERMISSIONS.STAFF_UPDATE);
 
-    await this.db
-      .update(teams)
-      .set({ ...patch, updatedAt: new Date() })
-      .where(and(eq(teams.tenantId, access.tenantId), eq(teams.id, id)));
+    if (patch.leaderMembershipId !== undefined && patch.leaderMembershipId !== null) {
+      if (!await this.repo.isMemberOf(access.tenantId, id, patch.leaderMembershipId))
+        throw badRequest(ERROR_CODES.VALIDATION_FAILED, 'A crew may only be led by one of its own members');
+    }
+
+    await this.repo.update(access.tenantId, id, patch);
+
+    if (patch.leaderMembershipId !== undefined)
+      await this.invalidateLeaders(access.tenantId, [before.leaderMembershipId, patch.leaderMembershipId]);
 
     const after = await this.byId(access.tenantId, id);
-    await audit.updated(this.db, access.audit, { entityType: AUDIT_ENTITIES.TEAM, entityId: id, before, after });
+    await audit.updated(this.repo.database, access.audit, { entityType: AUDIT_ENTITIES.TEAM, entityId: id, before, after });
 
     return after;
   }
 
   async remove(access: RequestAccess, id: string): Promise<void> {
-    const [existing] = await this.db
-      .select({ id: teams.id })
-      .from(teams)
-      .where(and(eq(teams.tenantId, access.tenantId), eq(teams.id, id), isNull(teams.deletedAt)))
-      .limit(1);
-
-    if (existing === undefined)
+    if (await this.repo.findById(access.tenantId, id) === null)
       return;
 
     const before = await this.readFor(access, id, PERMISSIONS.STAFF_DELETE);
@@ -151,12 +120,8 @@ export class TeamsService {
     if (before.memberCount > 0)
       throw inUse('This team still has members; move them off it first');
 
-    await this.db
-      .update(teams)
-      .set({ deletedAt: new Date(), updatedAt: new Date() })
-      .where(and(eq(teams.tenantId, access.tenantId), eq(teams.id, id)));
-
-    await audit.deleted(this.db, access.audit, { entityType: AUDIT_ENTITIES.TEAM, entityId: id, before });
+    await this.repo.softDelete(access.tenantId, id);
+    await audit.deleted(this.repo.database, access.audit, { entityType: AUDIT_ENTITIES.TEAM, entityId: id, before });
   }
 
   async setLocations(access: RequestAccess, id: string, input: SetLocationsBody): Promise<TeamResponse> {
@@ -164,55 +129,34 @@ export class TeamsService {
     const wanted = [...new Set(input.locationIds)];
     await this.assertGrantable(access, wanted, PERMISSIONS.STAFF_UPDATE);
 
-    const members = await this.db
-      .select({ userId: tenantMemberships.userId })
-      .from(tenantMemberships)
-      .where(and(eq(tenantMemberships.tenantId, access.tenantId), eq(tenantMemberships.teamId, id)));
+    const affected = await this.repo.findMemberUserIds(access.tenantId, id);
 
-    await this.db.transaction(async (tx) => {
-      await tx.delete(teamLocations).where(eq(teamLocations.teamId, id));
-      if (wanted.length > 0)
-        await tx.insert(teamLocations).values(wanted.map(locationId => ({ teamId: id, locationId })));
-    });
+    await this.repo.replaceLocations(id, wanted);
 
-    for (const member of members)
-      this.access.invalidate(member.userId, access.tenantId);
+    for (const userId of affected)
+      this.access.invalidate(userId, access.tenantId);
 
     const after = await this.byId(access.tenantId, id);
-    await audit.updated(this.db, access.audit, {
+    await audit.updated(this.repo.database, access.audit, {
       entityType: AUDIT_ENTITIES.TEAM_LOCATIONS,
       entityId: id,
       before: { locations: before.locations },
       after: { locations: after.locations },
-      metadata: { membersAffected: members.length },
+      metadata: { membersAffected: affected.length },
     });
 
     return after;
   }
 
   async members(access: RequestAccess, id: string): Promise<TeamMemberResponse[]> {
-    await this.readFor(access, id, PERMISSIONS.STAFF_VIEW);
+    const { leaderMembershipId } = await this.readFor(access, id, PERMISSIONS.STAFF_VIEW);
 
-    const rows = await this.db
-      .select({
-        id: tenantMemberships.id,
-        userId: tenantMemberships.userId,
-        roleId: tenantMemberships.roleId,
-        status: tenantMemberships.status,
-        isTeamLeader: tenantMemberships.isTeamLeader,
-        name: users.name,
-        phone: users.phone,
-        email: users.email,
-      })
-      .from(tenantMemberships)
-      .innerJoin(users, eq(users.id, tenantMemberships.userId))
-      .where(and(eq(tenantMemberships.tenantId, access.tenantId), eq(tenantMemberships.teamId, id)))
-      .orderBy(desc(tenantMemberships.isTeamLeader), asc(users.name), asc(tenantMemberships.id));
+    const rows = await this.repo.findMembers(access.tenantId, id);
 
     if (rows.length === 0)
       return [];
 
-    const { own: ownBy, narrowed: narrowedBy } = await areaGrantsFor(this.db, {
+    const { own: ownBy, narrowed: narrowedBy } = await areaGrantsFor(this.repo.database, {
       membershipIds: rows.map(row => row.id),
     });
 
@@ -224,25 +168,28 @@ export class TeamsService {
       email: row.email,
       roleId: row.roleId as TeamMemberResponse['roleId'],
       status: row.status,
-      isTeamLeader: row.isTeamLeader,
+      isTeamLeader: row.id === leaderMembershipId,
       locations: ownBy.get(row.id) ?? [],
       teamAreas: narrowedBy.get(row.id) ?? [],
-    }));
+    })).sort((a, b) => Number(b.isTeamLeader) - Number(a.isTeamLeader));
+  }
+
+  private async invalidateLeaders(tenantId: string, ids: readonly (string | null)[]): Promise<void> {
+    const wanted = ids.filter((value): value is string => value !== null);
+
+    for (const userId of await this.repo.findUserIdsOf(tenantId, wanted))
+      this.access.invalidate(userId, tenantId);
   }
 
   private async byId(tenantId: string, id: string): Promise<TeamResponse> {
-    const [row] = await this.db
-      .select({ team: teams, memberCount: MEMBER_COUNT })
-      .from(teams)
-      .where(and(eq(teams.tenantId, tenantId), eq(teams.id, id), isNull(teams.deletedAt)))
-      .limit(1);
+    const row = await this.repo.findById(tenantId, id);
 
-    if (row === undefined)
+    if (row === null)
       throw notFound('Team');
 
     const grants = await this.grantsFor([id]);
 
-    return present({ ...row.team, memberCount: row.memberCount }, grants.get(id) ?? []);
+    return present(row, grants.get(id) ?? []);
   }
 
   private async readFor(access: RequestAccess, id: string, key: PermissionKey): Promise<TeamResponse> {
@@ -250,43 +197,32 @@ export class TeamsService {
     if (reach === null)
       throw notFound('Team');
 
-    const [row] = await this.db
-      .select({ id: teams.id })
-      .from(teams)
-      .where(and(eq(teams.tenantId, access.tenantId), eq(teams.id, id), isNull(teams.deletedAt), ...reach))
-      .limit(1);
-
-    if (row === undefined)
+    if (await this.repo.findIdWithin(access.tenantId, id, reach) === null)
       throw notFound('Team');
 
     return this.byId(access.tenantId, id);
   }
 
   private async grantsFor(ids: readonly string[]): Promise<Map<string, LocationRef[]>> {
-    const { team } = await areaGrantsFor(this.db, { teamIds: ids });
+    const { team } = await areaGrantsFor(this.repo.database, { teamIds: ids });
 
     return team;
   }
 
-  private async takenSlugs(tenantId: string): Promise<string[]> {
-    const rows = await this.db.select({ slug: teams.slug }).from(teams).where(eq(teams.tenantId, tenantId));
-
-    return rows.map(row => row.slug);
-  }
-
   private async assertGrantable(access: RequestAccess, ids: readonly string[], key: PermissionKey): Promise<void> {
     await this.locations.assertOwned(access, ids);
-    await assertWithinGrant(this.db, access, { ids, key });
+    await assertWithinGrant(this.repo.database, access, { ids, key });
   }
 }
 
-function present(row: TeamRow, locationRefs: LocationRef[]): TeamResponse {
+function present(row: TeamRecord, locationRefs: LocationRef[]): TeamResponse {
   return {
     id: row.id,
     name: row.name,
     slug: row.slug,
     description: row.description,
     status: row.status,
+    leaderMembershipId: row.leaderMembershipId,
     memberCount: row.memberCount,
     locations: locationRefs,
     createdAt: row.createdAt.toISOString(),

@@ -4,7 +4,7 @@ import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from '@/app';
 import { devices, sessions, users } from '@/db/schema';
-import { hashPassword } from '@/shared/security/password';
+import { hashPassword } from '@/security/password';
 import { createTestDb } from '@/test/db';
 import { seedAuthData, uniqueDeviceId, uniquePhone } from '@/test/fixtures';
 import { bodyOf } from '@/test/http';

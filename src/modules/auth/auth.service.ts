@@ -1,21 +1,24 @@
+import type { PublicMembership } from './auth.repository';
 import type { DeviceInfo, SessionsService } from './sessions.service';
+import type { AuditAction } from '@/constants/audit';
+import type { Database } from '@/db/client';
 import type { Session, User } from '@/db/schema';
 import type { AuditContext } from '@/modules/audit/audit.types';
-import type { MessagingService } from '@/modules/messaging/messaging.service';
-import type { Database } from '@/plugins/database';
-import type { AuditAction } from '@/shared/constants/audit';
-import type { AccessTokenClaims, TokenSigner } from '@/shared/security/tokens';
+import type { AccessTokenClaims, TokenSigner } from '@/security/tokens';
+import type { MessagingService } from '@/services/messaging/messaging.service';
 import { randomUUID } from 'node:crypto';
 import { and, desc, eq, isNull, or, sql } from 'drizzle-orm';
 import { SYSTEM_ROLES } from '@/config/constants';
+import { AUDIT_ACTIONS, AUDIT_ENTITIES } from '@/constants/audit';
 import { customers, otpCodes, tenantMemberships, tenants, users } from '@/db/schema';
+import { ERROR_CODES } from '@/errors';
+import { badRequest, DomainError, forbidden, unauthorized } from '@/errors/domain-error';
 import { audit } from '@/modules/audit/audit.service';
-import { normalisePhone, to10DigitPhone } from '@/modules/messaging/messaging.service';
-import { AUDIT_ACTIONS, AUDIT_ENTITIES } from '@/shared/constants/audit';
-import { ERROR_CODES } from '@/shared/errors';
-import { badRequest, DomainError, forbidden, unauthorized } from '@/shared/errors/domain-error';
-import { generateOtp, hashOtp, otpMatches } from '@/shared/security/otp';
-import { hashPassword, verifyPassword } from '@/shared/security/password';
+import { generateOtp, hashOtp, otpMatches } from '@/security/otp';
+import { hashPassword, verifyPassword } from '@/security/password';
+import { normalisePhone, to10DigitPhone } from '@/services/messaging/messaging.service';
+
+import { normaliseEmail } from '@/utils/email';
 
 function reasonOf(error: unknown): string {
   return error instanceof DomainError ? error.code : 'UNKNOWN';
@@ -42,11 +45,7 @@ export interface AuthTokens {
   expiresIn: number;
 }
 
-export interface PublicMembership {
-  tenantId: string;
-  tenantName: string;
-  roleId: string;
-}
+export type { PublicMembership };
 
 export interface PublicUser {
   id: string;
@@ -200,7 +199,7 @@ export class AuthService {
   }
 
   async login(input: LoginInput, context: AuditContext): Promise<SessionResult> {
-    const identifier = input.identifier.trim().toLowerCase();
+    const identifier = normaliseEmail(input.identifier) ?? '';
 
     const asPhone = identifier.includes('@')
       ? null

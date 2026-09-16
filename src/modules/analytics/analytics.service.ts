@@ -1,14 +1,15 @@
 import type { SQL } from 'drizzle-orm';
 import type { AdminDashboard, StaffCollectionMetrics, StaffDashboard } from './analytics.schema';
+import type { CustomerStatus } from '@/constants/crm';
+import type { Database } from '@/db/client';
 import type { RequestAccess } from '@/modules/iam/access.service';
-import type { Database } from '@/plugins/database';
-import type { CustomerStatus } from '@/shared/constants/crm';
 import { sql } from 'drizzle-orm';
-import { SYSTEM_ROLES } from '@/config/constants';
-import { customerWithinNodes } from '@/modules/customers/customers.service';
-import { ERROR_CODES } from '@/shared/errors';
-import { forbidden } from '@/shared/errors/domain-error';
-import { withinGrantedSubtree } from '@/shared/security/location-scope';
+import { ERROR_CODES } from '@/errors';
+import { forbidden } from '@/errors/domain-error';
+import { customerWithinNodes } from '@/modules/customers/customer.service';
+import { requireScope } from '@/modules/iam/access.service';
+import { withinGrantedSubtree } from '@/security/location-scope';
+import { PERMISSIONS } from '@/security/permissions';
 
 type CountRow = Record<string, string | number | null>;
 interface BarRow extends Record<string, unknown> { key: string; label: string; value: string }
@@ -32,8 +33,12 @@ export class AnalyticsService {
   constructor(private readonly db: Database) {}
 
   async adminDashboard(access: RequestAccess, now = new Date()): Promise<AdminDashboard> {
-    if (access.roleId !== SYSTEM_ROLES.ADMIN)
-      throw forbidden(ERROR_CODES.PERM_SCOPE_DENIED, 'Admin dashboard requires the admin role');
+    // Which dashboard you get is decided by the reach you hold, not by the
+    // name of your role: a tenant that defines its own roles still gets the
+    // right answer, and an `admin` narrowed to two areas no longer reads the
+    // whole tenant back out of a chart (§5).
+    if (requireScope(access, PERMISSIONS.REPORTS_VIEW) !== 'ALL')
+      throw forbidden(ERROR_CODES.PERM_SCOPE_DENIED, 'The tenant-wide dashboard needs reports.view at ALL');
 
     const { day, week, month, previousMonth } = boundaries(now);
     const tenantId = access.tenantId;
@@ -137,8 +142,8 @@ export class AnalyticsService {
   }
 
   async staffDashboard(access: RequestAccess, now = new Date()): Promise<StaffDashboard> {
-    if (access.roleId !== SYSTEM_ROLES.STAFF)
-      throw forbidden(ERROR_CODES.PERM_SCOPE_DENIED, 'Staff dashboard requires the staff role');
+    if (requireScope(access, PERMISSIONS.REPORTS_VIEW) === 'ALL')
+      throw forbidden(ERROR_CODES.PERM_SCOPE_DENIED, 'This is the scoped view — a tenant-wide grant gets the admin dashboard');
 
     const periods = boundaries(now);
     const [membership] = (await this.db.execute<{ teamId: string | null }>(sql`
@@ -240,7 +245,6 @@ export class AnalyticsService {
 
     const reachesCustomer = customerWithinNodes(access.locationIds, {
       id: sql`c.id`,
-      locationId: sql`c.location_id`,
     });
 
     const result = await this.db.execute<CountRow>(sql`
@@ -251,7 +255,7 @@ export class AnalyticsService {
       ), visible_connections AS (
         SELECT DISTINCT s.id, s.status FROM crm.subscriptions s
         WHERE s.tenant_id = ${access.tenantId} AND s.deleted_at IS NULL
-          AND ${withinGrantedSubtree(sql`s.location_id`, access.locationIds)}
+          AND ${withinGrantedSubtree(sql`s.installation_location_id`, access.locationIds)}
       )
       SELECT (SELECT count(*) FROM visible_customers)::int customers,
         (SELECT count(*) FROM visible_customers WHERE outstanding_balance > 0)::int due_customers,

@@ -1,5 +1,5 @@
 import type pg from 'pg';
-import type { Database } from '@/plugins/database';
+import type { Database } from '@/db/client';
 import { sql } from 'drizzle-orm';
 
 const CHANNEL = 'session_revoked';

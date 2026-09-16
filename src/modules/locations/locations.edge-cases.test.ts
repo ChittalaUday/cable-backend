@@ -5,7 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from '@/app';
 import { SYSTEM_ROLES } from '@/config/constants';
 import { tenantMemberships, users } from '@/db/schema';
-import { hashPassword } from '@/shared/security/password';
+import { hashPassword } from '@/security/password';
 import { createTestDb } from '@/test/db';
 import { seedAuthData, TEST_PASSWORD, uniqueDeviceId, uniqueEmail } from '@/test/fixtures';
 import { bodyOf } from '@/test/http';

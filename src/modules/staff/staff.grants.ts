@@ -3,7 +3,7 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import type { LocationRef } from './staff.schema';
 import type * as schema from '@/db/schema';
 import type { RequestAccess } from '@/modules/iam/access.service';
-import type { PermissionKey } from '@/shared/security/permissions';
+import type { PermissionKey } from '@/security/permissions';
 import { eq, inArray, sql } from 'drizzle-orm';
 import {
   locationPaths,
@@ -14,10 +14,10 @@ import {
   teams,
   tenantMemberships,
 } from '@/db/schema';
+import { ERROR_CODES } from '@/errors';
+import { forbidden } from '@/errors/domain-error';
 import { grantedNodes, requireScope } from '@/modules/iam/access.service';
-import { ERROR_CODES } from '@/shared/errors';
-import { forbidden } from '@/shared/errors/domain-error';
-import { underAnyGrant, withinGrantedSubtree } from '@/shared/security/location-scope';
+import { underAnyGrant, withinGrantedSubtree } from '@/security/location-scope';
 
 type Db = NodePgDatabase<typeof schema>;
 

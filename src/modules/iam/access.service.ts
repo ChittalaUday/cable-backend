@@ -1,15 +1,13 @@
-import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import type * as schema from '@/db/schema';
+import type { Database } from '@/db/client';
 import type { AuditContext } from '@/modules/audit/audit.types';
-import type { LocationScope } from '@/shared/security/location-scope';
-import type { PermissionKey, PermissionScope } from '@/shared/security/permissions';
-import { and, eq } from 'drizzle-orm';
-import { membershipLocations, rolePermissions, teamLocations, teamMemberLocations, tenantMemberships } from '@/db/schema';
-import { MEMBERSHIP_STATUS } from '@/shared/constants/tenancy';
-import { ERROR_CODES } from '@/shared/errors';
-import { forbidden } from '@/shared/errors/domain-error';
-import { PERMISSIONS } from '@/shared/security/permissions';
-import { widerScope } from '@/shared/security/scope';
+import type { LocationScope } from '@/security/location-scope';
+import type { PermissionKey, PermissionScope } from '@/security/permissions';
+import { MEMBERSHIP_STATUS } from '@/constants/tenancy';
+import { ERROR_CODES } from '@/errors';
+import { forbidden } from '@/errors/domain-error';
+import { PERMISSIONS } from '@/security/permissions';
+import { widerScope } from '@/security/scope';
+import { IamRepository } from './iam.repository';
 
 export interface AccessContext {
   userId: string;
@@ -24,16 +22,17 @@ export interface AccessContext {
 
 export type RequestAccess = AccessContext & { audit: AuditContext };
 
-type Db = NodePgDatabase<typeof schema>;
-
 const LEADER_KEYS = [PERMISSIONS.STAFF_VIEW, PERMISSIONS.STAFF_UPDATE] as const;
 
 interface CacheEntry { expiresAt: number; context: AccessContext }
 
 export class AccessService {
   private readonly cache = new Map<string, CacheEntry>();
+  private readonly repo: IamRepository;
 
-  constructor(private readonly db: Db, private readonly ttlMs: number = 60_000) {}
+  constructor(repoOrDb: IamRepository | Database, private readonly ttlMs: number = 60_000) {
+    this.repo = repoOrDb instanceof IamRepository ? repoOrDb : new IamRepository(repoOrDb);
+  }
 
   async resolve(userId: string, tenantId: string): Promise<AccessContext | null> {
     const key = `${userId}:${tenantId}`;
@@ -56,52 +55,29 @@ export class AccessService {
   }
 
   private async load(userId: string, tenantId: string): Promise<AccessContext | null> {
-    const [membership] = await this.db
-      .select({
-        id: tenantMemberships.id,
-        roleId: tenantMemberships.roleId,
-        status: tenantMemberships.status,
-        teamId: tenantMemberships.teamId,
-        isTeamLeader: tenantMemberships.isTeamLeader,
-      })
-      .from(tenantMemberships)
-      .where(and(eq(tenantMemberships.userId, userId), eq(tenantMemberships.tenantId, tenantId)))
-      .limit(1);
+    const membership = await this.repo.findMembership(userId, tenantId);
 
-    if (membership === undefined || membership.status !== MEMBERSHIP_STATUS.ACTIVE)
+    if (membership === null || membership.status !== MEMBERSHIP_STATUS.ACTIVE)
       return null;
 
+    const teamId = membership.teamId;
+
     const [grants, ownNodes, teamNodes, narrowedNodes] = await Promise.all([
-      this.db
-        .select({ key: rolePermissions.permissionKey, scope: rolePermissions.scope })
-        .from(rolePermissions)
-        .where(eq(rolePermissions.roleId, membership.roleId)),
-      this.db
-        .select({ id: membershipLocations.locationId })
-        .from(membershipLocations)
-        .where(eq(membershipLocations.membershipId, membership.id)),
-      membership.teamId === null
-        ? []
-        : this.db
-            .select({ id: teamLocations.locationId })
-            .from(teamLocations)
-            .where(eq(teamLocations.teamId, membership.teamId)),
-      membership.teamId === null
-        ? []
-        : this.db
-            .select({ id: teamMemberLocations.locationId })
-            .from(teamMemberLocations)
-            .where(eq(teamMemberLocations.membershipId, membership.id)),
+      this.repo.findRoleGrants(membership.roleId),
+      this.repo.findMembershipNodes(membership.id),
+      teamId === null ? [] : this.repo.findTeamNodes(teamId),
+      teamId === null ? [] : this.repo.findNarrowedNodes(membership.id),
     ]);
 
     const permissions = new Map<PermissionKey, PermissionScope>();
     for (const grant of grants) {
-      const key = grant.key as PermissionKey;
-      const existing = permissions.get(key);
-      permissions.set(key, existing === undefined ? grant.scope : widerScope(existing, grant.scope));
+      const existing = permissions.get(grant.key);
+      permissions.set(grant.key, existing === undefined ? grant.scope : widerScope(existing, grant.scope));
     }
 
-    if (membership.isTeamLeader && membership.teamId !== null) {
+    const isTeamLeader = membership.ledTeamId !== null && membership.ledTeamId === teamId;
+
+    if (isTeamLeader) {
       for (const key of LEADER_KEYS) {
         const existing = permissions.get(key);
         permissions.set(key, existing === undefined ? 'TEAM' : widerScope(existing, 'TEAM'));
@@ -113,10 +89,10 @@ export class AccessService {
       tenantId,
       membershipId: membership.id,
       roleId: membership.roleId,
-      teamId: membership.teamId,
-      isTeamLeader: membership.isTeamLeader,
+      teamId,
+      isTeamLeader,
       permissions,
-      locationIds: [...new Set([...ownNodes, ...(narrowedNodes.length > 0 ? narrowedNodes : teamNodes)].map(l => l.id))],
+      locationIds: [...new Set([...ownNodes, ...(narrowedNodes.length > 0 ? narrowedNodes : teamNodes)])],
     };
   }
 }

@@ -1,11 +1,11 @@
 import type { Static } from 'typebox';
-import type { EntityStatus } from '@/shared/constants/crm';
+import type { EntityStatus } from '@/constants/crm';
 import { Type } from 'typebox';
-import { STAFF_ROLES } from '@/shared/constants/auth';
-import { ENTITY_STATUSES } from '@/shared/constants/crm';
-import { MEMBERSHIP_SETTABLE_STATUSES, MEMBERSHIP_STATUSES } from '@/shared/constants/tenancy';
-import { PaginationQuerySchema } from '@/shared/pagination';
-import { StringEnum } from '@/shared/types/typebox';
+import { STAFF_ROLES } from '@/constants/auth';
+import { ENTITY_STATUSES } from '@/constants/crm';
+import { MEMBERSHIP_SETTABLE_STATUSES, MEMBERSHIP_STATUSES } from '@/constants/tenancy';
+import { StringEnum } from '@/types/typebox';
+import { PaginationQuerySchema } from '@/utils/pagination';
 
 const Uuid = Type.String({ format: 'uuid' });
 const Nullable = <T extends ReturnType<typeof Type.String>>(inner: T) => Type.Union([inner, Type.Null()]);
@@ -69,7 +69,6 @@ export const UpdateStaffBody = Type.Partial(Type.Object({
   roleId: StaffRole,
   status: MembershipStatus,
   teamId: Type.Union([Uuid, Type.Null()]),
-  isTeamLeader: Type.Boolean(),
 }), { minProperties: 1 });
 
 export const SetTeamAreasBody = Type.Object({
@@ -99,6 +98,7 @@ export const TeamResponse = Type.Object({
   slug: Type.String(),
   description: Nullable(Type.String()),
   status: TeamStatus,
+  leaderMembershipId: Type.Union([Uuid, Type.Null()], { description: 'The membership leading this crew; a membership may lead at most one' }),
   memberCount: Type.Integer(),
   locations: Type.Array(LocationRef),
   createdAt: Type.String({ format: 'date-time' }),
@@ -125,6 +125,7 @@ export const UpdateTeamBody = Type.Partial(Type.Object({
   name: Type.String({ minLength: 1, maxLength: 120 }),
   description: Type.Union([Type.String({ maxLength: 500 }), Type.Null()]),
   status: TeamStatus,
+  leaderMembershipId: Type.Union([Uuid, Type.Null()]),
 }), { minProperties: 1 });
 
 export type LocationRef = Static<typeof LocationRef>;

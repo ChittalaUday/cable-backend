@@ -1,5 +1,5 @@
 import { index, jsonb, text, timestamp, uuid } from 'drizzle-orm/pg-core';
-import { ENTITY_STATUSES } from '@/shared/constants/crm';
+import { ENTITY_STATUSES } from '@/constants/crm';
 import { crm } from '../schemas';
 import { tenants } from '../tenancy/tenants';
 

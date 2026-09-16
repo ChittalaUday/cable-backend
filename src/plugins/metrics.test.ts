@@ -1,11 +1,18 @@
 import Fastify from 'fastify';
+import metricsPlugin from 'fastify-metrics';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import metricsPlugin from '@/plugins/metrics';
 
 const app = Fastify();
 
 beforeAll(async () => {
-  await app.register(metricsPlugin);
+  await app.register(metricsPlugin, {
+    endpoint: '/metrics',
+    defaultMetrics: { enabled: false },
+    routeMetrics: {
+      enabled: true,
+      registeredRoutesOnly: true,
+    },
+  });
   app.get('/customers/:id', async () => ({ ok: true }));
   await app.ready();
 });

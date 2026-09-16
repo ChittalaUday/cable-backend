@@ -1,8 +1,8 @@
 import type { Static } from 'typebox';
 import { Type } from 'typebox';
-import { ACTIVITY_KINDS } from '@/shared/constants/analytics';
-import { CUSTOMER_STATUSES } from '@/shared/constants/crm';
-import { StringEnum } from '@/shared/types/typebox';
+import { ACTIVITY_KINDS } from '@/constants/analytics';
+import { CUSTOMER_STATUSES } from '@/constants/crm';
+import { StringEnum } from '@/types/typebox';
 
 const Money = Type.String({ pattern: '^\\d+\\.\\d{2}$' });
 const NullableNumber = Type.Union([Type.Number(), Type.Null()]);

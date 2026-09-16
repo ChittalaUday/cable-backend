@@ -1,4 +1,4 @@
-import type { GenerateLevel } from './locations.schema';
+import type { GenerateLevel } from './location.schema';
 
 export interface GeneratedNode {
   parentIndex: number;

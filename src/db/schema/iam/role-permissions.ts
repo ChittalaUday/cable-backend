@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
 import { check, primaryKey, text } from 'drizzle-orm/pg-core';
-import { PERMISSION_SCOPES } from '@/shared/security/permissions';
+import { PERMISSION_SCOPES } from '@/security/permissions';
 import { iam } from '../schemas';
 import { roles } from './roles';
 

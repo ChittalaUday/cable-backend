@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
 import { index, integer, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
-import { OTP_PURPOSES } from '@/shared/constants/auth';
+import { OTP_PURPOSES } from '@/constants/auth';
 import { auth } from '../schemas';
 
 export const otpCodes = auth.table('otp_codes', {

@@ -1,8 +1,7 @@
 import type { FastifyPluginAsyncTypebox } from '@fastify/type-provider-typebox';
 import { Type } from 'typebox';
-import { paginated } from '@/shared/pagination';
-import { PERMISSIONS } from '@/shared/security/permissions';
-import * as controller from '../locations.controller';
+import { PERMISSIONS } from '@/security/permissions';
+import { paginated } from '@/utils/pagination';
 import {
   AncestorResponse,
   CreateLocationBody,
@@ -10,7 +9,7 @@ import {
   ListLocationsQuery,
   LocationResponse,
   UpdateLocationBody,
-} from '../locations.schema';
+} from '../location.schema';
 
 const routes: FastifyPluginAsyncTypebox = async (app) => {
   const errorRef = { $ref: 'ErrorResponse#' };
@@ -25,7 +24,9 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
       querystring: ListLocationsQuery,
       response: { 200: paginated(LocationResponse), ...errors },
     },
-  }, controller.list);
+  }, async (request) => {
+    return request.server.locations.list(request.access, request.query);
+  });
 
   app.post('/locations', {
     preHandler: app.requirePermission(PERMISSIONS.LOCATIONS_CREATE),
@@ -36,7 +37,10 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
       body: CreateLocationBody,
       response: { 201: LocationResponse, ...errors },
     },
-  }, controller.create);
+  }, async (request, reply) => {
+    const location = await request.server.locations.create(request.access, request.body);
+    return reply.status(201).header('location', `${request.url}/${location.id}`).send(location);
+  });
 
   app.get('/locations/:id', {
     preHandler: app.requirePermission(PERMISSIONS.LOCATIONS_VIEW),
@@ -46,7 +50,9 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
       params: IdParams,
       response: { 200: LocationResponse, ...errors },
     },
-  }, controller.get);
+  }, async (request) => {
+    return request.server.locations.get(request.access, request.params.id);
+  });
 
   app.get('/locations/:id/ancestors', {
     preHandler: app.requirePermission(PERMISSIONS.LOCATIONS_VIEW),
@@ -57,7 +63,9 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
       params: IdParams,
       response: { 200: Type.Array(AncestorResponse), ...errors },
     },
-  }, controller.ancestors);
+  }, async (request) => {
+    return request.server.locations.ancestorsOf(request.access, request.params.id);
+  });
 
   app.patch('/locations/:id', {
     preHandler: app.requirePermission(PERMISSIONS.LOCATIONS_UPDATE),
@@ -68,7 +76,9 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
       body: UpdateLocationBody,
       response: { 200: LocationResponse, ...errors },
     },
-  }, controller.update);
+  }, async (request) => {
+    return request.server.locations.update(request.access, request.params.id, request.body);
+  });
 
   app.delete('/locations/:id', {
     preHandler: app.requirePermission(PERMISSIONS.LOCATIONS_DELETE),
@@ -79,7 +89,10 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
       params: IdParams,
       response: { 204: Type.Null(), ...errors },
     },
-  }, controller.remove);
+  }, async (request, reply) => {
+    await request.server.locations.remove(request.access, request.params.id);
+    return reply.status(204).send(null);
+  });
 };
 
 export default routes;

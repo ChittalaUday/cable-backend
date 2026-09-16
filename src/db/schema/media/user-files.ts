@@ -1,5 +1,5 @@
 import { index, jsonb, text, timestamp, uuid } from 'drizzle-orm/pg-core';
-import { FILE_KINDS, FILE_VISIBILITIES } from '@/shared/constants/media';
+import { FILE_KINDS, FILE_VISIBILITIES } from '@/constants/media';
 import { users } from '../auth/users';
 import { media } from '../schemas';
 import { tenants } from '../tenancy/tenants';

@@ -10,8 +10,8 @@ import {
   STOCK_LEVEL_FILTERS,
   STOCK_MOVEMENT_TYPES,
   TRACKING_TYPES,
-} from '@/shared/constants/inventory';
-import { StringEnum, StringEnumWithDefault } from '@/shared/types/typebox';
+} from '@/constants/inventory';
+import { StringEnum, StringEnumWithDefault } from '@/types/typebox';
 
 export const IdParams = Type.Object({
   id: Type.String({ format: 'uuid' }),
@@ -52,6 +52,26 @@ export const StockItemResponse = Type.Object({
   inTransitStock: Type.Integer(),
   locationId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
   locationName: Type.Union([Type.String(), Type.Null()]),
+});
+
+export const CatalogItemResponse = Type.Object({
+  id: Type.String({ format: 'uuid' }),
+  tenantId: Type.String({ format: 'uuid' }),
+  name: Type.String(),
+  code: Type.Union([Type.String(), Type.Null()]),
+  brand: Type.Union([Type.String(), Type.Null()]),
+  model: Type.Union([Type.String(), Type.Null()]),
+  icon: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  description: Type.Union([Type.String(), Type.Null()]),
+  trackingType: StringEnum(TRACKING_TYPES),
+  isBundle: Type.Boolean(),
+  defaultOwnership: StringEnum(EQUIPMENT_OWNERSHIPS),
+  defaultSalePrice: Type.String(),
+  defaultDepositAmount: Type.String(),
+  defaultRentalPrice: Type.String(),
+  isReturnable: Type.Boolean(),
+  createdAt: Type.Any(),
+  updatedAt: Type.Any(),
 });
 
 export const LowStockItem = Type.Object({
@@ -192,6 +212,19 @@ export const ApprovalRequestResponse = Type.Object({
   reviewedAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
   reviewNotes: Type.Union([Type.String(), Type.Null()]),
   createdAt: Type.String({ format: 'date-time' }),
+});
+
+export const CreateApprovalRequestResponse = Type.Object({
+  id: Type.String({ format: 'uuid' }),
+  tenantId: Type.String({ format: 'uuid' }),
+  requestedBy: Type.String({ format: 'uuid' }),
+  requestType: StringEnum(INVENTORY_REQUEST_TYPES),
+  targetItemId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
+  proposedData: Type.Union([Type.Record(Type.String(), Type.Unknown()), Type.Null()]),
+  reason: Type.String(),
+  status: Type.String(),
+  createdAt: Type.Any(),
+  updatedAt: Type.Any(),
 });
 
 export const StockMovementResponse = Type.Object({

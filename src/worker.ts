@@ -4,8 +4,8 @@ import pg from 'pg';
 import { env } from '@/config/env';
 import * as schema from '@/db/schema';
 import { startScheduler } from '@/jobs/scheduler';
-import { createStorageService } from '@/modules/storage/storage.service';
-import { createLogger } from '@/shared/logging/logger';
+import { createStorageService } from '@/services/storage/storage.service';
+import { createLogger } from '@/utils/logging/logger';
 
 const log = createLogger('worker');
 

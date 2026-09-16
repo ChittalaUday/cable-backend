@@ -1,9 +1,9 @@
 import type { FastifyBaseLogger } from 'fastify';
-import type { StorageService } from '@/modules/storage/storage.service';
+import type { StorageService } from '@/services/storage/storage.service';
 import { PgBoss } from 'pg-boss';
 import { env } from '@/config/env';
-import { runLogCleanupJob } from './log-cleanup.job';
-import { runStorageCleanupJob } from './storage-cleanup.job';
+import { runLogCleanupJob } from './cron/log-cleanup.cron';
+import { runStorageCleanupJob } from './cron/storage-cleanup.cron';
 
 const LOG_CLEANUP = 'log-cleanup';
 const STORAGE_CLEANUP = 'storage-cleanup';

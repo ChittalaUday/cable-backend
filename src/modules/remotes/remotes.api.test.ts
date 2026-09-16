@@ -1,9 +1,9 @@
-import type { RemoteDetail, RemoteSummary } from './remotes.schema';
+import type { RemoteDetail, RemoteSummary } from './remote.schema';
 import type { BuiltApp } from '@/app';
 import type { SeededAuthData } from '@/test/fixtures';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from '@/app';
-import { seedRemotes } from '@/db/seed/seed-remotes';
+import { seedRemotes } from '@/db/seeds/seed-remotes';
 import { createTestDb } from '@/test/db';
 import { seedAuthData, TEST_PASSWORD, uniqueDeviceId } from '@/test/fixtures';
 import { bodyOf } from '@/test/http';

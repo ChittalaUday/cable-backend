@@ -1,5 +1,5 @@
 import { index, integer, text, timestamp, uuid } from 'drizzle-orm/pg-core';
-import { TENANT_STATUSES } from '@/shared/constants/tenancy';
+import { TENANT_STATUSES } from '@/constants/tenancy';
 import { tenancy } from '../schemas';
 
 export const tenants = tenancy.table('tenants', {

@@ -17,14 +17,26 @@ import type {
   StockItemResponse,
   TransferStockBody,
 } from './inventory.schema';
+import type { EquipmentOwnership } from '@/constants/inventory';
 import type * as schema from '@/db/schema';
 import type { StockMovementRecord } from '@/db/schema';
 import type { RequestAccess } from '@/modules/iam/access.service';
-import type { LocationsService } from '@/modules/locations/locations.service';
-import type { EquipmentOwnership } from '@/shared/constants/inventory';
+import type { LocationsService } from '@/modules/locations/location.service';
 import { and, desc, eq, ilike, isNull, or, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { Assert, Errors } from 'typebox/value';
+import { AUDIT_ENTITIES } from '@/constants/audit';
+import { SUBSCRIPTION_STATUS } from '@/constants/crm';
+import {
+  CUSTOMER_EQUIPMENT_STATUS,
+  EQUIPMENT_OWNERSHIP,
+  INVENTORY_REQUEST_STATUS,
+  INVENTORY_REQUEST_TYPE,
+  INVENTORY_STATUS,
+  STOCK_LEVEL_FILTER,
+  STOCK_MOVEMENT_TYPE,
+  TRACKING_TYPE,
+} from '@/constants/inventory';
 import {
   approvalRequests,
   bundleItems,
@@ -39,24 +51,12 @@ import {
   tenantMemberships,
   users,
 } from '@/db/schema';
+import { ERROR_CODES } from '@/errors';
+import { badRequest, forbidden, notFound } from '@/errors/domain-error';
 import { audit } from '@/modules/audit/audit.service';
 import { locationScopeFor } from '@/modules/iam/access.service';
-import { AUDIT_ENTITIES } from '@/shared/constants/audit';
-import { SUBSCRIPTION_STATUS } from '@/shared/constants/crm';
-import {
-  CUSTOMER_EQUIPMENT_STATUS,
-  EQUIPMENT_OWNERSHIP,
-  INVENTORY_REQUEST_STATUS,
-  INVENTORY_REQUEST_TYPE,
-  INVENTORY_STATUS,
-  STOCK_LEVEL_FILTER,
-  STOCK_MOVEMENT_TYPE,
-  TRACKING_TYPE,
-} from '@/shared/constants/inventory';
-import { ERROR_CODES } from '@/shared/errors';
-import { badRequest, forbidden, notFound } from '@/shared/errors/domain-error';
-import { withinGrantedSubtree } from '@/shared/security/location-scope';
-import { PERMISSIONS } from '@/shared/security/permissions';
+import { withinGrantedSubtree } from '@/security/location-scope';
+import { PERMISSIONS } from '@/security/permissions';
 import { CreateCatalogItemBody, UpdateCatalogItemBody } from './inventory.schema';
 
 type Db = NodePgDatabase<typeof schema>;
@@ -98,7 +98,11 @@ export class InventoryService {
   constructor(private readonly db: Db, private readonly locations: LocationsService) {}
 
   private async assertLocations(access: RequestAccess, ids: readonly (string | undefined)[]): Promise<void> {
-    await this.locations.assertOwned(access, ids.filter((id): id is string => id !== undefined));
+    await this.locations.assertWithinReach(
+      access,
+      PERMISSIONS.INVENTORY_UPDATE,
+      ids.filter((id): id is string => id !== undefined),
+    );
   }
 
   private async assertStaffMember(tenantId: string, userId: string | undefined): Promise<void> {
@@ -129,6 +133,15 @@ export class InventoryService {
       withinGrantedSubtree(sql`${equipment.locationId}`, reach.nodeIds),
       eq(equipment.staffId, access.userId),
     )!];
+  }
+
+  private visibleLocations(access: RequestAccess): SQL[] {
+    const reach = locationScopeFor(access, PERMISSIONS.INVENTORY_VIEW);
+
+    if (reach.kind === 'ALL_TENANT_LOCATIONS')
+      return [];
+
+    return [withinGrantedSubtree(sql`${locations.id}`, reach.nodeIds)];
   }
 
   async getDashboard(access: RequestAccess, locationId?: string): Promise<InventoryDashboardResponse> {
@@ -369,7 +382,7 @@ export class InventoryService {
       .from(equipment)
       .leftJoin(locations, eq(equipment.locationId, locations.id))
       .leftJoin(users, eq(equipment.staffId, users.id))
-      .where(and(eq(equipment.catalogId, id), eq(equipment.tenantId, tenantId)))
+      .where(and(eq(equipment.catalogId, id), eq(equipment.tenantId, tenantId), ...this.visibleStock(access)))
       .limit(50);
 
     const totalStock = unitRows.reduce((acc, u) => acc + u.quantity, 0);
@@ -423,7 +436,7 @@ export class InventoryService {
   private async resolveIssuableUnit(spec: {
     tenantId: string;
     input: IssueEquipmentBody;
-    customer: { locationId: string | null };
+    customer: { id: string; name?: string | null; code?: string | null; locationId?: string | null };
     defaultOwnership: EquipmentOwnership;
   }): Promise<{ unitId: string; serialNumber: string | null; unitLocationId: string | null }> {
     const { tenantId, input, customer, defaultOwnership } = spec;
@@ -463,7 +476,7 @@ export class InventoryService {
       .values({
         tenantId,
         catalogId: input.catalogId,
-        locationId: customer.locationId,
+        locationId: customer.locationId ?? null,
         serialNumber: input.serialNumber ?? `SN-${Date.now().toString().slice(-6)}`,
         inventoryStatus: INVENTORY_STATUS.AVAILABLE,
         ownershipType: input.ownershipType ?? defaultOwnership,
@@ -497,7 +510,7 @@ export class InventoryService {
   private async resolveSubscriptionId(tenantId: string, customer: {
     id: string;
     code: string | null;
-    locationId: string | null;
+    locationId?: string | null;
   }): Promise<string> {
     const [sub] = await this.db
       .select({ id: subscriptions.id })
@@ -517,7 +530,7 @@ export class InventoryService {
     if (!pkg)
       throw notFound('No active subscription or package found for customer');
 
-    const locationId = customer.locationId ?? await this.anyLocationId(tenantId);
+    const locationId = await this.anyLocationId(tenantId);
     if (locationId === null)
       throw notFound('No location found for subscription');
 
@@ -526,7 +539,7 @@ export class InventoryService {
       .values({
         tenantId,
         customerId: customer.id,
-        locationId,
+        installationLocationId: locationId,
         serviceProviderId: pkg.providerId,
         packageId: pkg.packageId,
         serviceAccountNumber: `SA-${customer.code ?? Date.now().toString().slice(-6)}`,
@@ -551,7 +564,7 @@ export class InventoryService {
     const tenantId = access.tenantId;
 
     const [cust] = await this.db
-      .select({ id: customers.id, name: customers.name, code: customers.customerCode, locationId: customers.locationId })
+      .select({ id: customers.id, name: customers.name, code: customers.customerCode })
       .from(customers)
       .where(and(eq(customers.id, input.customerId), eq(customers.tenantId, tenantId)));
 
@@ -585,7 +598,7 @@ export class InventoryService {
         .update(equipment)
         .set({
           inventoryStatus: INVENTORY_STATUS.ALLOCATED,
-          locationId: cust.locationId ?? unitLocationId,
+          locationId: unitLocationId,
           updatedAt: new Date(),
         })
         .where(and(eq(equipment.id, unitId), eq(equipment.tenantId, tenantId)));
@@ -611,7 +624,7 @@ export class InventoryService {
         equipmentId: unitId,
         movementType: STOCK_MOVEMENT_TYPE.CUSTOMER_ISSUE,
         fromLocationId: unitLocationId,
-        toLocationId: cust.locationId ?? null,
+        toLocationId: unitLocationId,
         performedBy: access.userId,
         quantity: 1,
         notes: `Issued to customer ${cust.name} (${cust.code ?? ''})`,
@@ -660,7 +673,7 @@ export class InventoryService {
       after: created!,
     });
 
-    return created;
+    return created!;
   }
 
   async updateCatalogItem(access: RequestAccess, id: string, input: UpdateCatalogItemBody) {
@@ -749,7 +762,7 @@ export class InventoryService {
       after: created!,
     });
 
-    return created;
+    return created!;
   }
 
   async listApprovalRequests(access: RequestAccess) {
@@ -908,6 +921,7 @@ export class InventoryService {
         and(
           eq(locations.tenantId, tenantId),
           eq(locations.isActive, true),
+          ...this.visibleLocations(access),
           or(
             isNull(locations.parentId),
             sql`exists (select 1 from inventory.equipment eq where eq.location_id = ${locations.id} and eq.tenant_id = ${tenantId})`,
@@ -1136,7 +1150,7 @@ export class InventoryService {
     return {
       success: true,
       quantity,
-      movementId: primaryMovement?.id,
+      movementId: primaryMovement?.id ?? null,
     };
   }
 

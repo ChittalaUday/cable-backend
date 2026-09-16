@@ -36,7 +36,6 @@ export async function runPreflight(app: BuiltApp): Promise<PreflightResult> {
     ...await databaseChecks(app),
     await cacheCheck(app),
     ...await messagingChecks(app),
-    await firebaseCheck(app),
     await storageCheck(app),
   ];
 
@@ -131,8 +130,12 @@ async function cacheCheck(app: BuiltApp): Promise<Check> {
   if (!env.CACHE_ENABLED)
     return degraded(name, 'disabled — every read hits Postgres');
 
+  const appWithCache = app as unknown as { cache?: { ping: () => Promise<unknown> } };
+  if (!appWithCache.cache)
+    return degraded(name, 'disabled — cache is not configured');
+
   try {
-    await app.cache.ping();
+    await appWithCache.cache.ping();
     return ok(name, `redis reachable, ttl=${env.CACHE_TTL_SECONDS}s prefix="${env.CACHE_PREFIX}"`);
   }
   catch (error) {
@@ -177,24 +180,6 @@ async function messagingChecks(app: BuiltApp): Promise<Check[]> {
   }
   catch (error) {
     return [degraded(name, `OpenWA unreachable at ${env.MESSAGING_BASE_URL}: ${message(error)}`)];
-  }
-}
-
-async function firebaseCheck(app: BuiltApp): Promise<Check> {
-  const name = 'firebase';
-
-  if (!app.firebase)
-    return degraded(name, 'not configured — Firebase services are unavailable');
-
-  try {
-    const credential = app.firebase.app.options.credential as { getAccessToken?: () => Promise<unknown> } | undefined;
-    if (credential?.getAccessToken)
-      await credential.getAccessToken();
-
-    return ok(name, `Admin SDK verified for ${app.firebase.projectId}`);
-  }
-  catch (error) {
-    return degraded(name, `configured for ${app.firebase.projectId} but credential check failed: ${message(error)}`);
   }
 }
 

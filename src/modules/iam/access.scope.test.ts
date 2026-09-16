@@ -1,8 +1,8 @@
 import type { AccessContext } from './access.service';
-import type { PermissionKey, PermissionScope } from '@/shared/security/permissions';
+import type { PermissionKey, PermissionScope } from '@/security/permissions';
 import { describe, expect, it } from 'vitest';
-import { DomainError, ERROR_CODES } from '@/shared/errors';
-import { PERMISSION_SCOPES, PERMISSIONS } from '@/shared/security/permissions';
+import { DomainError, ERROR_CODES } from '@/errors';
+import { PERMISSION_SCOPES, PERMISSIONS } from '@/security/permissions';
 import { locationScopeFor, requireScope, scopeFor } from './access.service';
 
 const NODES = ['node-a', 'node-b'] as const;

@@ -878,6 +878,30 @@ its service, not copied: `customerWithinNodes` lives in the customers module and
 the staff dashboard imports it, because "which customers can this person see"
 must have exactly one answer.
 
+**A rule the database can hold, the database holds.** `auth.normalise_email(text)`
+is the canonical form of an address, and `users_email_normalised` is a CHECK
+built on it — not a trigger. A trigger would rewrite the row silently, so a
+caller that forgot the rule keeps working and nobody finds out until the rule
+moves; a constraint refuses the write, which is a failing test the same
+afternoon. It caught a test fixture the first time the suite ran. The same rule
+is `normaliseEmail` in `shared/utils/email.ts`, used by `auth.login` and
+`POST /staff`, and the constraint is what keeps the two from drifting apart.
+
+**A role id is not a permission.** The two dashboards used to ask
+`roleId === 'admin' | 'staff'`, which answers a different question from the
+grant: a role a tenant names itself matched neither, and an `admin` narrowed to
+two areas still read the whole tenant back out of a chart. Both now gate on the
+scope held for `reports.view` — `ALL` gets the tenant-wide view, anything below
+it gets the scoped one. Nothing in a service should branch on `roleId` where a
+scope answers it.
+
+**A write that names a node is checked against the grant, not just the tenant.**
+`locations.assertOwned` answers "is this node this tenant's"; `assertWithinReach`
+answers that *and* "does the caller's grant reach it". Coverage writes and
+inventory inward/transfer take the second, because otherwise an area manager
+books stock into a depot they do not hold and it simply disappears from their
+own list.
+
 **Inventory is scoped by location OR assignment, not location alone.** Below
 `ALL`, a unit is visible if it sits in a granted subtree **or** if its
 `staff_id` is the caller. `transferStock` clears `location_id` when stock goes
@@ -1075,6 +1099,19 @@ the surface.
 | `GET` `POST` `PATCH` `DELETE` | `/packages[/:id]` `?serviceProviderId=` `?serviceId=` | `packages.*` |
 | `PUT` | `/packages/:id/channels` | `packages.update` |
 | `GET` | `/channels` `?serviceProviderId=` | `packages.view` |
+
+**The catalogue answers the areas the caller holds.** Below `ALL`, a service,
+provider, package or channel is returned only when its coverage reaches into
+one of the caller's granted subtrees, and one out of reach is a `404` — the same
+rule and the same silence as a customer in another area (§4.5). An entry with no
+coverage rows sells everywhere, so it is visible to everyone; that is what keeps
+a tenant who configured nothing from showing its staff nothing. The predicate is
+`coverageReachesGrant` (`modules/services/coverage.scope.ts`), which probes
+`crm.coverage_allows` at the granted nodes and at every served node inside them
+— availability only changes where a coverage row sits, so those are every
+distinct region a grant contains. `GET /locations/:id/availability` refuses a
+node outside the grant with `403 PERM_SCOPE_DENIED`, and the coverage lists
+return only the rows that govern the caller's areas.
 
 Three rules that are easy to get backwards:
 
@@ -1515,6 +1552,7 @@ database needs it:
 | `crm.normalize_phone(text)` | An **expression index** needs it. `create index on crm.customers (crm.normalize_phone(phone))` makes a search for `83091 54716` hit `+91-8309154716`. Application code cannot supply a function to an index. |
 | `geo.location_descendants(uuid)` / `geo.location_ancestors(uuid)` | Other **queries** compose with them — a subtree filter is `location_id IN (SELECT id FROM geo.location_descendants($1))` (§8.6). Written once, cycle-guarded once. |
 | `iam.scope_rank(text)` | Lets SQL compare §5 scopes. Mirrors `SCOPE_RANK` in TypeScript, and **a test asserts the two agree** — two copies of a privilege ranking that drift is a security bug. |
+| `auth.normalise_email(text)` | The `users_email_normalised` CHECK constraint holds `users.email` to its canonical form so un-normalised addresses are refused at the database boundary. |
 
 Every such function is `IMMUTABLE` and `PARALLEL SAFE`. A volatile function
 silently makes its index unusable, which is a performance bug that looks like
@@ -1857,7 +1895,6 @@ A warning nobody fixes is a rule that does not exist.
 | Rule | Setting | Why |
 |---|---|---|
 | `unicorn/filename-case` | `kebabCase` | Matches the mobile repo |
-| `max-params` | `3` | Past three, pass an object |
 | `max-lines-per-function` | `110` | Matches the mobile repo |
 | `complexity` | `12` | Branchy code is where authorization bugs hide |
 | `ts/no-explicit-any` | error | `any` in a service erases the tenant type |
@@ -1936,8 +1973,14 @@ migration is caught by the suite instead of by a deploy. It needs Docker in CI;
 that is the price and it is worth paying. There is no SQLite or in-memory
 substitute: a test against a different database tests a different database.
 
-Each test runs inside a transaction that rolls back, so tests are
-order-independent and safe to parallelise.
+**Test files run one at a time** (`fileParallelism: false`). `inRollback` wraps
+a unit test in a transaction that rolls back, but an API test that goes through
+`app.inject()` commits, and every file shares one database — including the three
+roles, which `roles_known_id` fixes at `admin | staff | customer`. A file that
+grants `staff.view` to `staff` to test a scope is granting it to every other
+file's staff caller at the same time. Serialising files is what makes a grant
+taken back in `afterAll` actually mean that; the cost is about 17 seconds, and
+the alternative is a flake nobody can reproduce.
 
 **The database is reset at the start of every run, not cleaned up after.**
 `src/test/global-setup.ts` drops every application schema and re-migrates before

@@ -1,5 +1,5 @@
 import type { TypeBoxTypeProvider } from '@fastify/type-provider-typebox';
-import type { PermissionKey } from '@/shared/security/permissions';
+import type { PermissionKey } from '@/security/permissions';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import autoload from '@fastify/autoload';
@@ -8,7 +8,7 @@ import Fastify from 'fastify';
 import { Type } from 'typebox';
 import { API_PREFIX, API_VERSION } from '@/config/constants';
 import { isTest } from '@/config/env';
-import { createLogger } from '@/shared/logging/logger';
+import { createLogger } from '@/utils/logging/logger';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 

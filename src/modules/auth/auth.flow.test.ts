@@ -1,14 +1,18 @@
 import type { BuiltApp } from '@/app';
 import type { SeededAuthData } from '@/test/fixtures';
+import { randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from '@/app';
 import { otpCodes, sessions, users } from '@/db/schema';
-import { normalisePhone } from '@/modules/messaging/messaging.service';
-import { hashOtp } from '@/shared/security/otp';
+import { isCheckViolation } from '@/errors/postgres';
+import { hashOtp } from '@/security/otp';
+import { hashPassword } from '@/security/password';
+import { normalisePhone } from '@/services/messaging/messaging.service';
 import { createTestDb } from '@/test/db';
-import { seedAuthData, uniqueDeviceId, uniquePhone } from '@/test/fixtures';
+import { seedAuthData, TEST_PASSWORD, uniqueDeviceId, uniquePhone } from '@/test/fixtures';
 import { bodyOf } from '@/test/http';
+import { normaliseEmail } from '@/utils/email';
 
 const { db, close } = createTestDb();
 
@@ -107,6 +111,42 @@ describe('password login', () => {
     expect(byTenant[data.tenantB.id]).toBe('customer');
 
     expect(body.memberships.find(m => m.tenantId === data.tenantA.id)?.tenantName).toBe('Alpha Cable');
+  });
+
+  it('signs in whatever case the address was typed in, on either side', async () => {
+    // Sign-in has always lowercased the identifier; nothing lowercased it on
+    // the way in, so an address with a capital in it could never sign in.
+    const address = `Mixed.Case-${randomUUID().slice(0, 8)}@Test.Local`;
+    const [stored] = await db.insert(users).values({
+      email: normaliseEmail(address),
+      name: 'Mixed Case',
+      passwordHash: await hashPassword(TEST_PASSWORD),
+    }).returning();
+
+    try {
+      expect(stored!.email).toBe(address.toLowerCase());
+
+      for (const typed of [address, address.toLowerCase(), address.toUpperCase(), ` ${address} `]) {
+        const response = await login(typed, TEST_PASSWORD);
+
+        expect(response.statusCode, `${typed}: ${response.body}`).toBe(200);
+        expect(bodyOf(response).user.id).toBe(stored!.id);
+      }
+    }
+    finally {
+      await db.delete(users).where(eq(users.id, stored!.id));
+    }
+  });
+
+  it('refuses to store an address in any other form, so the two rules cannot drift', async () => {
+    // The CHECK is the reason `normaliseEmail` can be trusted: a call site that
+    // forgets it fails here, rather than filing an account nothing can find.
+    const refused = await db
+      .insert(users)
+      .values({ email: 'Not.Normalised@Example.COM', name: 'refused' })
+      .catch((error: unknown) => error);
+
+    expect(isCheckViolation(refused)).toBe(true);
   });
 
   it('gives the same answer for a wrong password and an unknown account', async () => {

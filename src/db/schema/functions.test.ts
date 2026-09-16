@@ -1,7 +1,8 @@
 import { sql } from 'drizzle-orm';
 import { afterAll, describe, expect, it } from 'vitest';
-import { PERMISSION_SCOPES, SCOPE_RANK } from '@/shared/security/permissions';
+import { PERMISSION_SCOPES, SCOPE_RANK } from '@/security/permissions';
 import { createTestDb } from '@/test/db';
+import { normaliseEmail, normalizeEmail } from './functions';
 
 const { db, close } = createTestDb();
 afterAll(async () => close());
@@ -55,4 +56,31 @@ describe('read models', () => {
       expect(Array.isArray(result.rows)).toBe(true);
     },
   );
+});
+
+describe('auth.normalise_email', () => {
+  it.each([
+    ['  Ravi.Kumar@Example.COM ', 'ravi.kumar@example.com'],
+    ['ravi@example.com', 'ravi@example.com'],
+    ['   ', null],
+    ['', null],
+  ])('normalises %j to %j', async (input, expected) => {
+    const result = await db.execute<{ out: string | null }>(sql`SELECT ${normaliseEmail(input)} AS out`);
+    expect(result.rows[0]?.out).toBe(expected);
+  });
+
+  it('returns null for null', async () => {
+    const result = await db.execute<{ out: string | null }>(sql`SELECT ${normalizeEmail(null)} AS out`);
+    expect(result.rows[0]?.out).toBeNull();
+  });
+
+  it('is IMMUTABLE and PARALLEL SAFE', async () => {
+    const result = await db.execute<{ provolatile: string; proparallel: string }>(sql`
+      SELECT p.provolatile, p.proparallel FROM pg_proc p
+      JOIN pg_namespace n ON n.oid = p.pronamespace
+      WHERE n.nspname = 'auth' AND p.proname = 'normalise_email'
+    `);
+    expect(result.rows[0]?.provolatile).toBe('i');
+    expect(result.rows[0]?.proparallel).toBe('s');
+  });
 });

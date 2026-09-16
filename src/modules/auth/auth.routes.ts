@@ -1,6 +1,6 @@
 import type { FastifyPluginAsyncTypebox } from '@fastify/type-provider-typebox';
+import type { DeviceInfo } from './sessions.service';
 import { env } from '@/config/env';
-import * as controller from './auth.controller';
 import {
   DeviceHeaders,
   LoginBody,
@@ -13,6 +13,16 @@ import {
   TokensResponse,
   VerifyOtpBody,
 } from './auth.schema';
+
+function deviceFrom(headers: DeviceHeaders): DeviceInfo {
+  return {
+    clientDeviceId: headers['x-device-id'],
+    platform: headers['x-platform'],
+    appVersion: headers['x-app-version'] ?? null,
+    osVersion: headers['x-os-version'] ?? null,
+    model: headers['x-device-model'] ?? null,
+  };
+}
 
 const routes: FastifyPluginAsyncTypebox = async (app) => {
   const errorRef = { $ref: 'ErrorResponse#' };
@@ -35,7 +45,14 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
       response: { 202: RequestOtpResponse, 400: errorRef, 429: errorRef, 502: errorRef, 503: errorRef },
       security: [],
     },
-  }, controller.requestOtp);
+  }, async (request, reply) => {
+    const { channel } = await request.server.auth.requestOtp(request.body, request.auditContext);
+    return reply.status(202).send({
+      status: 'accepted' as const,
+      channel,
+      expiresInSeconds: request.server.auth.otpTtlSeconds,
+    });
+  });
 
   app.post('/auth/otp/verify', {
     ...signInLimit,
@@ -47,7 +64,21 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
       response: { 200: SessionResponse, 400: errorRef, 401: errorRef, 403: errorRef, 429: errorRef },
       security: [],
     },
-  }, controller.verifyOtp);
+  }, async (request, reply) => {
+    const result = await request.server.auth.verifyOtp({
+      ...request.body,
+      device: deviceFrom(request.headers),
+    }, request.auditContext);
+
+    return reply.status(200).send({
+      accessToken: result.accessToken,
+      refreshToken: result.refreshToken,
+      expiresIn: result.expiresIn,
+      tokenType: 'Bearer' as const,
+      user: result.user,
+      memberships: result.memberships,
+    });
+  });
 
   app.post('/auth/login', {
     ...signInLimit,
@@ -59,7 +90,21 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
       response: { 200: SessionResponse, 400: errorRef, 401: errorRef, 403: errorRef, 429: errorRef },
       security: [],
     },
-  }, controller.login);
+  }, async (request, reply) => {
+    const result = await request.server.auth.login({
+      ...request.body,
+      device: deviceFrom(request.headers),
+    }, request.auditContext);
+
+    return reply.status(200).send({
+      accessToken: result.accessToken,
+      refreshToken: result.refreshToken,
+      expiresIn: result.expiresIn,
+      tokenType: 'Bearer' as const,
+      user: result.user,
+      memberships: result.memberships,
+    });
+  });
 
   app.post('/auth/refresh', {
     ...signInLimit,
@@ -71,7 +116,10 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
       response: { 200: TokensResponse, 400: errorRef, 401: errorRef, 429: errorRef },
       security: [],
     },
-  }, controller.refresh);
+  }, async (request, reply) => {
+    const tokens = await request.server.auth.refresh(request.body.refreshToken, request.auditContext);
+    return reply.status(200).send({ ...tokens, tokenType: 'Bearer' as const });
+  });
 
   app.post('/auth/logout', {
     config: { cache: false },
@@ -81,7 +129,10 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
       description: 'Other accounts signed in on the same device are untouched.',
       response: { 200: LogoutResponse, 401: errorRef },
     },
-  }, controller.logout);
+  }, async (request, reply) => {
+    await request.server.auth.logout(request.session.sid, request.auditContext);
+    return reply.status(200).send({ revokedSessions: 1 });
+  });
 
   app.post('/auth/logout-all', {
     config: { cache: false },
@@ -90,7 +141,10 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
       summary: 'Sign out of every session for this user, on every device',
       response: { 200: LogoutResponse, 401: errorRef },
     },
-  }, controller.logoutEverywhere);
+  }, async (request, reply) => {
+    const revoked = await request.server.auth.logoutEverywhere(request.session.sub, request.auditContext);
+    return reply.status(200).send({ revokedSessions: revoked });
+  });
 
   app.get('/auth/me', {
     config: { cache: false },
@@ -99,7 +153,22 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
       summary: 'The signed-in user, session and memberships',
       response: { 200: MeResponse, 401: errorRef },
     },
-  }, controller.me);
+  }, async (request, reply) => {
+    const user = await request.server.auth.userById(request.session.sub);
+    const memberships = await request.server.auth.membershipsFor(request.session.sub);
+
+    const customer = request.tenantId === undefined
+      ? null
+      : await request.server.customers.profileFor(request.tenantId, request.session.sub);
+
+    return reply.status(200).send({
+      user,
+      sessionId: request.session.sid,
+      deviceId: request.session.did,
+      memberships,
+      customer,
+    });
+  });
 };
 
 export default routes;

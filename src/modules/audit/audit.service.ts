@@ -1,9 +1,9 @@
 import type { AuditContext, AuditEvent, AuditMutation, AuditQuery } from './audit.types';
+import type { Database } from '@/db/client';
 import type { AuditLog } from '@/db/schema';
-import type { Database } from '@/plugins/database';
 import { and, desc, eq, isNull, lt, or } from 'drizzle-orm';
+import { AUDIT_VERBS, auditAction } from '@/constants/audit';
 import { auditLogs } from '@/db/schema';
-import { AUDIT_VERBS, auditAction } from '@/shared/constants/audit';
 import { auditDiff, sanitizeAuditValue } from './audit.utils';
 
 type AuditDb = Pick<Database, 'insert' | 'select'>;

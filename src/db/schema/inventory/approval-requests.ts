@@ -1,5 +1,5 @@
 import { index, jsonb, text, timestamp, uuid } from 'drizzle-orm/pg-core';
-import { INVENTORY_REQUEST_STATUSES, INVENTORY_REQUEST_TYPES } from '@/shared/constants/inventory';
+import { INVENTORY_REQUEST_STATUSES, INVENTORY_REQUEST_TYPES } from '@/constants/inventory';
 import { users } from '../auth/users';
 import { inventory } from '../schemas';
 import { tenants } from '../tenancy/tenants';

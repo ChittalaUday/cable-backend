@@ -1,5 +1,5 @@
 import { index, jsonb, text, timestamp, uuid } from 'drizzle-orm/pg-core';
-import { NOTIFICATION_CHANNELS, NOTIFICATION_STATUSES } from '@/shared/constants/notify';
+import { NOTIFICATION_CHANNELS, NOTIFICATION_STATUSES } from '@/constants/notify';
 import { users } from '../auth/users';
 import { files } from '../media/files';
 import { notify } from '../schemas';

@@ -22,8 +22,8 @@ import {
   tenantMemberships,
   users,
 } from '@/db/schema';
-import { hashPassword } from '@/shared/security/password';
-import { PERMISSIONS } from '@/shared/security/permissions';
+import { hashPassword } from '@/security/password';
+import { PERMISSIONS } from '@/security/permissions';
 import { createTestDb } from '@/test/db';
 import { seedAuthData, TEST_PASSWORD, uniqueDeviceId, uniqueEmail, uniquePhone } from '@/test/fixtures';
 import { bodyOf } from '@/test/http';
@@ -131,7 +131,6 @@ async function seedTenant(tenantId: string, prefix: string): Promise<Tenant> {
       customerCode: `${prefix.toUpperCase()}-${unique()}`,
       name: `${prefix} Subscriber`,
       phone: uniquePhone(),
-      locationId: location!.id,
     })
     .returning();
 
@@ -143,7 +142,7 @@ async function seedTenant(tenantId: string, prefix: string): Promise<Tenant> {
       serviceProviderId: provider!.id,
       packageId: pkg!.id,
       serviceAccountNumber: `ACC-${unique()}`,
-      locationId: location!.id,
+      installationLocationId: location!.id,
     })
     .returning();
 
@@ -241,7 +240,7 @@ describe('inventory tenant isolation', () => {
   it('refuses a subscription belonging to a different customer of the same tenant', async () => {
     const [other] = await db
       .insert(customers)
-      .values({ tenantId: alpha.id, name: 'Someone else', phone: uniquePhone(), locationId: alpha.locationId })
+      .values({ tenantId: alpha.id, name: 'Someone else', phone: uniquePhone() })
       .returning();
 
     const response = await post('/api/v1/inventory/issue', {

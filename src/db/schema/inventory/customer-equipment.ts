@@ -3,7 +3,7 @@ import {
   CUSTOMER_EQUIPMENT_STATUSES,
   EQUIPMENT_OWNERSHIPS,
   EQUIPMENT_RETURN_CONDITIONS,
-} from '@/shared/constants/inventory';
+} from '@/constants/inventory';
 import { users } from '../auth/users';
 import { customers } from '../crm/customers';
 import { subscriptions } from '../crm/subscriptions';

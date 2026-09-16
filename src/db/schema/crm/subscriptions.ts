@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
 import { index, jsonb, numeric, text, timestamp, uuid } from 'drizzle-orm/pg-core';
-import { BILLING_CYCLES, SUBSCRIPTION_STATUSES } from '@/shared/constants/crm';
+import { BILLING_CYCLES, SUBSCRIPTION_STATUSES } from '@/constants/crm';
 import { locations } from '../geo/locations';
 import { crm } from '../schemas';
 import { tenants } from '../tenancy/tenants';
@@ -25,8 +25,9 @@ export const subscriptions = crm.table('subscriptions', {
 
   billingCycle: text('billing_cycle', { enum: BILLING_CYCLES }).notNull().default('monthly'),
   price: numeric('price', { precision: 12, scale: 2 }).notNull().default('0'),
+  outstandingBalance: numeric('outstanding_balance', { precision: 12, scale: 2 }).notNull().default('0'),
 
-  locationId: uuid('location_id').notNull().references(() => locations.id, { onDelete: 'restrict' }),
+  installationLocationId: uuid('installation_location_id').notNull().references(() => locations.id, { onDelete: 'restrict' }),
 
   installationAddress: text('installation_address'),
 
@@ -44,7 +45,7 @@ export const subscriptions = crm.table('subscriptions', {
   index('subscriptions_search_trgm_idx').using('gin', sql`(
     ${table.serviceAccountNumber} || ' ' || coalesce(${table.installationAddress}, '')
   ) gin_trgm_ops`).where(sql`${table.deletedAt} IS NULL`),
-  index('subscriptions_location_idx').on(table.locationId),
+  index('subscriptions_installation_location_idx').on(table.installationLocationId),
 ]);
 
 export type Subscription = typeof subscriptions.$inferSelect;

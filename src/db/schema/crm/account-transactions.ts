@@ -1,5 +1,5 @@
 import { foreignKey, index, numeric, text, timestamp, uuid } from 'drizzle-orm/pg-core';
-import { TRANSACTION_TYPES } from '@/shared/constants/crm';
+import { TRANSACTION_TYPES } from '@/constants/crm';
 import { crm } from '../schemas';
 import { tenantMemberships } from '../tenancy/tenant-memberships';
 import { tenants } from '../tenancy/tenants';

@@ -1,17 +1,30 @@
 import type { AuditContext } from '@/modules/audit/audit.types';
+import type { AccessTokenClaims } from '@/security/tokens';
 import Fastify from 'fastify';
 import fp from 'fastify-plugin';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import auditContextPlugin from './audit-context';
+import { auditContextFor } from '@/hooks/audit.hook';
 
 const app = Fastify();
+
+const auditContextPlugin = fp(async (instance) => {
+  instance.decorateRequest('auditContext');
+  instance.addHook('preHandler', async (request) => {
+    request.auditContext = auditContextFor(request);
+  });
+});
 
 beforeAll(async () => {
   await app.register(fp(async () => {}, { name: 'auth' }));
   await app.register(auditContextPlugin);
   app.get('/context', {
     onRequest: async (request) => {
-      request.session = { sub: 'user-1', sid: 'session-1', did: 'device-1', memberships: [] };
+      (request as unknown as { session?: AccessTokenClaims }).session = {
+        sub: 'user-1',
+        sid: 'session-1',
+        did: 'device-1',
+        memberships: [],
+      };
     },
   }, async request => request.auditContext);
   await app.ready();

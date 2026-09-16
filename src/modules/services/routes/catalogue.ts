@@ -1,14 +1,13 @@
 import type { FastifyPluginAsyncTypebox } from '@fastify/type-provider-typebox';
 import { Type } from 'typebox';
-import { PERMISSIONS } from '@/shared/security/permissions';
-import * as controller from '../services.controller';
+import { PERMISSIONS } from '@/security/permissions';
 import {
   CreateServiceBody,
   IdParams,
   ListServicesQuery,
   ServiceResponse,
   UpdateServiceBody,
-} from '../services.schema';
+} from '../service.schema';
 
 const routes: FastifyPluginAsyncTypebox = async (app) => {
   const errorRef = { $ref: 'ErrorResponse#' };
@@ -22,7 +21,9 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
       querystring: ListServicesQuery,
       response: { 200: Type.Array(ServiceResponse), ...errors },
     },
-  }, controller.list);
+  }, async (request) => {
+    return request.server.services.list(request.access, request.query);
+  });
 
   app.post('/services', {
     preHandler: app.requirePermission(PERMISSIONS.SERVICES_CREATE),
@@ -33,7 +34,10 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
       body: CreateServiceBody,
       response: { 201: ServiceResponse, ...errors },
     },
-  }, controller.create);
+  }, async (request, reply) => {
+    const service = await request.server.services.create(request.access, request.body);
+    return reply.status(201).header('location', `${request.url}/${service.id}`).send(service);
+  });
 
   app.get('/services/:id', {
     preHandler: app.requirePermission(PERMISSIONS.SERVICES_VIEW),
@@ -43,7 +47,9 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
       params: IdParams,
       response: { 200: ServiceResponse, ...errors },
     },
-  }, controller.get);
+  }, async (request) => {
+    return request.server.services.get(request.access, request.params.id);
+  });
 
   app.patch('/services/:id', {
     preHandler: app.requirePermission(PERMISSIONS.SERVICES_UPDATE),
@@ -55,18 +61,22 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
       body: UpdateServiceBody,
       response: { 200: ServiceResponse, ...errors },
     },
-  }, controller.update);
+  }, async (request) => {
+    return request.server.services.update(request.access, request.params.id, request.body);
+  });
 
   app.delete('/services/:id', {
     preHandler: app.requirePermission(PERMISSIONS.SERVICES_DELETE),
     schema: {
       tags: ['services'],
-      summary: 'Retire a service that has no providers left',
-      description: 'Soft delete — a three-year-old subscription still names what it was for (§8).',
+      summary: 'Delete a service that has no providers',
       params: IdParams,
       response: { 204: Type.Null(), ...errors },
     },
-  }, controller.remove);
+  }, async (request, reply) => {
+    await request.server.services.remove(request.access, request.params.id);
+    return reply.status(204).send(null);
+  });
 };
 
 export default routes;

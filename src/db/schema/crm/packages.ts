@@ -1,5 +1,5 @@
 import { index, jsonb, numeric, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
-import { BILLING_CYCLES, ENTITY_STATUSES, PACKAGE_TYPES } from '@/shared/constants/crm';
+import { BILLING_CYCLES, ENTITY_STATUSES, PACKAGE_TYPES } from '@/constants/crm';
 import { crm } from '../schemas';
 import { tenants } from '../tenancy/tenants';
 import { serviceProviders } from './service-providers';

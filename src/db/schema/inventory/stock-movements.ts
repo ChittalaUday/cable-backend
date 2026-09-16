@@ -1,5 +1,5 @@
 import { index, integer, text, timestamp, uuid } from 'drizzle-orm/pg-core';
-import { STOCK_MOVEMENT_TYPES } from '@/shared/constants/inventory';
+import { STOCK_MOVEMENT_TYPES } from '@/constants/inventory';
 import { users } from '../auth/users';
 import { locations } from '../geo/locations';
 import { inventory } from '../schemas';

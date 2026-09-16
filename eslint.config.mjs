@@ -29,10 +29,11 @@ export default antfu(
         case: 'kebabCase',
         ignore: ['AGENTS.md', 'CLAUDE.md', 'README.md'],
       }],
-      'max-params': ['error', 3],
       // Length is not the thing that makes a function hard to read; a screen
       // component or a route table is long because it is a list.
       'max-lines-per-function': 'off',
+      'max-params': 'off',
+      'ts/max-params': 'off',
       'complexity': ['error', 12],
 
       'ts/no-explicit-any': 'error',
@@ -42,8 +43,8 @@ export default antfu(
 
       'no-restricted-imports': ['error', {
         patterns: [{
-          group: ['@/modules/*/*', '!@/modules/*/*.service', '!@/modules/*/*.types', '!@/modules/*/providers', '!@/modules/*/providers/*'],
-          message: 'Cross-module: import the module\'s service (`@/modules/<name>/<name>.service`). Within a module, use a relative sibling import (./x).',
+          group: ['@/modules/*/*', '!@/modules/*/*.service', '!@/modules/*/*.repository', '!@/modules/*/*.schema', '!@/modules/*/*.types', '!@/modules/*/providers', '!@/modules/*/providers/*'],
+          message: 'Cross-module: import the module\'s service, repository, or schema. Within a module, use a relative sibling import (./x).',
         }],
       }],
     },
@@ -60,37 +61,35 @@ export default antfu(
   },
 
   {
-    files: ['**/src/modules/**/*.service.ts'],
+    files: ['**/src/modules/**/*.service.ts', '**/src/services/**/*.service.ts'],
     rules: {
       'no-restricted-imports': ['error', {
-        paths: [{ name: 'fastify', message: 'Services are framework-free (§3). Take plain arguments, throw domain errors.' }],
+        paths: [{ name: 'fastify', message: 'Services are framework-free. Take plain arguments, throw domain errors.' }],
         patterns: [
-          { group: ['@fastify/*'], message: 'Services are framework-free (§3).' },
-          { group: ['@/modules/*/*', '!@/modules/*/*.service', '!@/modules/*/*.types', '!@/modules/*/providers', '!@/modules/*/providers/*'], message: 'Cross-module: import the module\'s service, its types, or a provider.' },
+          { group: ['@fastify/*'], message: 'Services are framework-free.' },
         ],
       }],
     },
   },
 
   {
-    files: ['**/src/modules/**/*.controller.ts', '**/src/modules/**/*.routes.ts', '**/src/jobs/**/*.ts'],
+    files: ['**/src/modules/**/*.routes.ts', '**/src/jobs/**/*.ts'],
     rules: {
       'no-restricted-imports': ['error', {
         patterns: [
-          { group: ['@/db', '@/db/*', 'drizzle-orm', 'drizzle-orm/*'], message: 'No database access here (§3). Go through a service.' },
-          { group: ['@/modules/*/*', '!@/modules/*/*.service', '!@/modules/*/*.types', '!@/modules/*/providers', '!@/modules/*/providers/*'], message: 'Cross-module: import the module\'s service, its types, or a provider.' },
+          { group: ['@/db', '@/db/*', 'drizzle-orm', 'drizzle-orm/*'], message: 'No direct database access in routes or jobs. Go through a service or repository.' },
         ],
       }],
     },
   },
 
   {
-    files: ['**/src/server.ts', '**/src/worker.ts', '**/src/verify.ts', '**/src/db/migrate.ts', '**/src/db/seed/**/*.ts'],
+    files: ['**/src/server.ts', '**/src/worker.ts', '**/src/verify.ts', '**/src/db/migrate.ts', '**/src/db/seeds/**/*.ts'],
     rules: { 'antfu/no-top-level-await': 'off' },
   },
 
   {
-    files: ['**/*.schema.ts', '**/src/shared/pagination/**'],
+    files: ['**/*.schema.ts', '**/src/utils/pagination/**'],
     rules: { 'ts/no-redeclare': 'off' },
   },
 
@@ -105,7 +104,7 @@ export default antfu(
   },
 
   {
-    files: ['**/src/db/seed/**/*.ts', '**/src/db/migrate.ts'],
+    files: ['**/src/db/seeds/**/*.ts', '**/src/db/migrate.ts'],
     rules: {
       'no-console': 'off',
       'max-lines-per-function': 'off',

@@ -3,7 +3,7 @@ import type { SeededAuthData } from '@/test/fixtures';
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from '@/app';
-import { LocationsService } from '@/modules/locations/locations.service';
+import { LocationsService } from '@/modules/locations/location.service';
 import { createTestDb } from '@/test/db';
 import { seedAuthData, TEST_PASSWORD, uniqueDeviceId } from '@/test/fixtures';
 import { bodyOf } from '@/test/http';

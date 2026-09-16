@@ -1,24 +1,43 @@
 import type { FastifyPluginAsyncTypebox } from '@fastify/type-provider-typebox';
-import { PERMISSIONS } from '@/shared/security/permissions';
-import * as controller from './analytics.controller';
+import { PERMISSIONS } from '@/security/permissions';
 import { AdminDashboardResponse, StaffDashboardResponse } from './analytics.schema';
 import { AnalyticsService } from './analytics.service';
-import './analytics.types';
+
+declare module 'fastify' {
+  interface FastifyInstance {
+    analytics: AnalyticsService;
+  }
+}
 
 const routes: FastifyPluginAsyncTypebox = async (app) => {
   app.decorate('analytics', new AnalyticsService(app.db));
+
   const errorRef = { $ref: 'ErrorResponse#' };
-  const errors = { 400: errorRef, 401: errorRef, 403: errorRef };
+  const errors = { 400: errorRef, 401: errorRef, 403: errorRef, 404: errorRef };
 
-  app.get('/analytics/admin-dashboard', {
+  app.get('/analytics/dashboard/admin', {
     preHandler: app.requirePermission(PERMISSIONS.REPORTS_VIEW),
-    schema: { tags: ['analytics'], summary: 'Admin dashboard analytics', response: { 200: AdminDashboardResponse, ...errors } },
-  }, controller.adminDashboard);
+    schema: {
+      tags: ['analytics'],
+      summary: 'High-level business telemetry for tenant administrators',
+      description: 'Provides KPI summaries, status breakdowns, revenue trends, and recent transaction activities.',
+      response: { 200: AdminDashboardResponse, ...errors },
+    },
+  }, async (request) => {
+    return request.server.analytics.adminDashboard(request.access);
+  });
 
-  app.get('/analytics/staff-dashboard', {
-    preHandler: app.requirePermission(PERMISSIONS.REPORTS_VIEW),
-    schema: { tags: ['analytics'], summary: 'Personal and team staff analytics', response: { 200: StaffDashboardResponse, ...errors } },
-  }, controller.staffDashboard);
+  app.get('/analytics/dashboard/staff', {
+    preHandler: app.requirePermission(PERMISSIONS.STAFF_VIEW),
+    schema: {
+      tags: ['analytics'],
+      summary: 'Operational and territory telemetry for field agents and managers',
+      description: 'Provides territorial stats, connection status, collection metrics, and assigned customers.',
+      response: { 200: StaffDashboardResponse, ...errors },
+    },
+  }, async (request) => {
+    return request.server.analytics.staffDashboard(request.access);
+  });
 };
 
 export default routes;

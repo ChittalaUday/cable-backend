@@ -2,8 +2,14 @@ import type { BuiltApp } from '@/app';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { runPreflight } from './preflight';
 
+type MockApp = BuiltApp & {
+  cache: {
+    ping: ReturnType<typeof vi.fn>;
+  };
+};
+
 describe('runPreflight', () => {
-  let mockApp: BuiltApp;
+  let mockApp: MockApp;
 
   beforeEach(() => {
     mockApp = {
@@ -30,16 +36,6 @@ describe('runPreflight', () => {
         supports: vi.fn((ch: string) => ch === 'whatsapp'),
         providerFor: vi.fn(() => 'openwa'),
       },
-      firebase: {
-        app: {
-          options: {
-            credential: {
-              getAccessToken: vi.fn().mockResolvedValue({ access_token: 'fake', expires_in: 3600 }),
-            },
-          },
-        },
-        projectId: 'test-project',
-      },
       storage: {
         configured: true,
         bucket: 'test-bucket',
@@ -50,7 +46,7 @@ describe('runPreflight', () => {
         warn: vi.fn(),
         error: vi.fn(),
       },
-    } as unknown as BuiltApp;
+    } as unknown as MockApp;
   });
 
   it('reports ok when storage ping succeeds', async () => {
@@ -71,27 +67,8 @@ describe('runPreflight', () => {
     expect(storageCheck?.detail).toContain('configured for "test-bucket" but unreachable: Access Denied');
   });
 
-  it('reports ok when firebase token check succeeds', async () => {
-    const result = await runPreflight(mockApp);
-    const firebaseCheck = result.checks.find(c => c.name === 'firebase');
-
-    expect(firebaseCheck?.status).toBe('ok');
-    expect(firebaseCheck?.detail).toContain('Admin SDK verified for test-project');
-  });
-
-  it('reports degraded when firebase token check fails', async () => {
-    const credential = mockApp.firebase?.app.options.credential as { getAccessToken: ReturnType<typeof vi.fn> };
-    credential.getAccessToken.mockRejectedValue(new Error('Invalid service account key'));
-
-    const result = await runPreflight(mockApp);
-    const firebaseCheck = result.checks.find(c => c.name === 'firebase');
-
-    expect(firebaseCheck?.status).toBe('warn');
-    expect(firebaseCheck?.detail).toContain('credential check failed: Invalid service account key');
-  });
-
   it('reports degraded when cache ping fails', async () => {
-    (mockApp.cache.ping as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('Connection refused'));
+    mockApp.cache.ping.mockRejectedValue(new Error('Connection refused'));
 
     const result = await runPreflight(mockApp);
     const cacheCheck = result.checks.find(c => c.name === 'cache');

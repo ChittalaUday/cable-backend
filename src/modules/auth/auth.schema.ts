@@ -1,8 +1,8 @@
 import type { Static } from 'typebox';
 import { Type } from 'typebox';
-import { CustomerProfileResponse } from '@/modules/customers/customers.service';
-import { DEVICE_PLATFORMS, OTP_CHANNELS } from '@/shared/constants/auth';
-import { StringEnum } from '@/shared/types/typebox';
+import { DEVICE_PLATFORMS, OTP_CHANNELS } from '@/constants/auth';
+import { CustomerProfileResponse } from '@/modules/customers/customer.service';
+import { StringEnum } from '@/types/typebox';
 
 export const DeviceHeaders = Type.Object({
   'x-device-id': Type.String({ minLength: 8, maxLength: 128 }),

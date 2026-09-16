@@ -1,8 +1,7 @@
 import { sql } from 'drizzle-orm';
 import { index, jsonb, numeric, text, timestamp, uuid, varchar } from 'drizzle-orm/pg-core';
-import { CUSTOMER_STATUSES } from '@/shared/constants/crm';
+import { CUSTOMER_STATUSES } from '@/constants/crm';
 import { users } from '../auth/users';
-import { locations } from '../geo/locations';
 import { crm } from '../schemas';
 import { tenants } from '../tenancy/tenants';
 
@@ -22,7 +21,6 @@ export const customers = crm.table('customers', {
 
   nationalIdType: text('national_id_type'),
   nationalIdNumber: text('national_id_number'),
-  locationId: uuid('location_id').references(() => locations.id, { onDelete: 'set null' }),
   address: text('address'),
   status: text('status', { enum: CUSTOMER_STATUSES }).notNull().default('active'),
   outstandingBalance: numeric('outstanding_balance', { precision: 12, scale: 2 }).notNull().default('0'),
@@ -44,7 +42,6 @@ export const customers = crm.table('customers', {
   ) gin_trgm_ops`).where(sql`${table.deletedAt} IS NULL`),
   index('customers_tenant_status_idx').on(table.tenantId, table.status),
   index('customers_user_idx').on(table.userId),
-  index('customers_location_idx').on(table.locationId),
 ]);
 
 export type Customer = typeof customers.$inferSelect;

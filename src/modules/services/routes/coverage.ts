@@ -1,13 +1,12 @@
 import type { FastifyPluginAsyncTypebox } from '@fastify/type-provider-typebox';
 import { Type } from 'typebox';
-import { PERMISSIONS } from '@/shared/security/permissions';
-import * as controller from '../services.controller';
+import { PERMISSIONS } from '@/security/permissions';
 import {
   AvailabilityResponse,
   CoverageResponse,
   IdParams,
   SetCoverageBody,
-} from '../services.schema';
+} from '../service.schema';
 
 const routes: FastifyPluginAsyncTypebox = async (app) => {
   const errorRef = { $ref: 'ErrorResponse#' };
@@ -22,7 +21,9 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
       params: IdParams,
       response: { 200: coverageList, ...errors },
     },
-  }, controller.listProviderCoverage);
+  }, async (request) => {
+    return request.server.coverage.listForProvider(request.access, request.params.id);
+  });
 
   app.put('/service-providers/:id/coverage', {
     preHandler: app.requirePermission(PERMISSIONS.SERVICES_UPDATE),
@@ -34,7 +35,9 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
       body: SetCoverageBody,
       response: { 200: coverageList, ...errors },
     },
-  }, controller.setProviderCoverage);
+  }, async (request) => {
+    return request.server.coverage.replaceForProvider(request.access, request.params.id, request.body);
+  });
 
   app.get('/packages/:id/coverage', {
     preHandler: app.requirePermission(PERMISSIONS.PACKAGES_VIEW),
@@ -45,7 +48,9 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
       params: IdParams,
       response: { 200: coverageList, ...errors },
     },
-  }, controller.listPackageCoverage);
+  }, async (request) => {
+    return request.server.coverage.listForPackage(request.access, request.params.id);
+  });
 
   app.put('/packages/:id/coverage', {
     preHandler: app.requirePermission(PERMISSIONS.PACKAGES_UPDATE),
@@ -57,40 +62,48 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
       body: SetCoverageBody,
       response: { 200: coverageList, ...errors },
     },
-  }, controller.setPackageCoverage);
+  }, async (request) => {
+    return request.server.coverage.replaceForPackage(request.access, request.params.id, request.body);
+  });
 
   app.get('/services/:id/coverage', {
     preHandler: app.requirePermission(PERMISSIONS.SERVICES_VIEW),
     schema: {
       tags: ['services'],
-      summary: 'Where this service is sold, whoever supplies it',
+      summary: 'Fallback coverage for the whole service',
+      description: 'Used when neither a provider nor a package has a row at this location. Providers usually declare their own.',
       params: IdParams,
       response: { 200: coverageList, ...errors },
     },
-  }, controller.listServiceCoverage);
+  }, async (request) => {
+    return request.server.coverage.listForService(request.access, request.params.id);
+  });
 
   app.put('/services/:id/coverage', {
     preHandler: app.requirePermission(PERMISSIONS.SERVICES_UPDATE),
     schema: {
       tags: ['services'],
-      summary: 'Replace the service-wide coverage',
-      description: 'A provider row beats a service row at the same depth; both lose to a deeper row.',
+      summary: 'Replace fallback coverage for the whole service',
       params: IdParams,
       body: SetCoverageBody,
       response: { 200: coverageList, ...errors },
     },
-  }, controller.setServiceCoverage);
+  }, async (request) => {
+    return request.server.coverage.replaceForService(request.access, request.params.id, request.body);
+  });
 
-  app.get('/locations/:id/availability', {
+  app.get('/locations/:id/available-services', {
     preHandler: app.requirePermission(PERMISSIONS.SERVICES_VIEW),
     schema: {
       tags: ['services'],
-      summary: 'What a customer at this location can be sold',
-      description: 'Services, their providers that reach here, and each provider’s active packages — one call for the add-customer wizard.',
+      summary: 'The catalogue as a customer at this address sees it',
+      description: 'Resolves inheritance up the tree: a provider declared on the building, the street, or the city is visible here unless an `isAvailable: false` on an ancestor turned it off.',
       params: IdParams,
       response: { 200: AvailabilityResponse, ...errors },
     },
-  }, controller.availability);
+  }, async (request) => {
+    return request.server.coverage.availabilityAt(request.access, request.params.id);
+  });
 };
 
 export default routes;

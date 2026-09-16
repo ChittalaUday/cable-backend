@@ -4,7 +4,7 @@ import { boolean, index, integer, jsonb, numeric, text, timestamp, uuid } from '
 import {
   EQUIPMENT_OWNERSHIPS,
   INVENTORY_STATUSES,
-} from '@/shared/constants/inventory';
+} from '@/constants/inventory';
 import { users } from '../auth/users';
 import { locations } from '../geo/locations';
 import { inventory } from '../schemas';

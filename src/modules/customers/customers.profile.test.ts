@@ -1,4 +1,4 @@
-import type { CustomerProfile } from './customers.schema';
+import type { CustomerProfile } from './customer.schema';
 import type { BuiltApp } from '@/app';
 import type { SeededAuthData } from '@/test/fixtures';
 import { randomUUID } from 'node:crypto';
@@ -7,7 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from '@/app';
 import { SYSTEM_ROLES } from '@/config/constants';
 import { customers, subscriptions, tenantMemberships, users } from '@/db/schema';
-import { hashPassword } from '@/shared/security/password';
+import { hashPassword } from '@/security/password';
 import { createTestDb } from '@/test/db';
 import { seedAuthData, TEST_PASSWORD, uniqueDeviceId, uniqueEmail, uniquePhone } from '@/test/fixtures';
 import { bodyOf } from '@/test/http';
@@ -114,7 +114,6 @@ beforeAll(async () => {
     customerCode: `SSCN-${unique()}`,
     outstandingBalance: '120.50',
     whatsappNumber: '9876543210',
-    locationId: area.id,
     address: '4-21, Main Road, Mandapeta 533308',
   }).returning();
   customerId = customer!.id;
@@ -127,7 +126,7 @@ beforeAll(async () => {
     serviceAccountNumber: `ACC-${unique()}`,
     price: '349.00',
     billingCycle: 'monthly',
-    locationId: area.id,
+    installationLocationId: area.id,
   });
 
   customerAuth = await signIn(subscriber.email);

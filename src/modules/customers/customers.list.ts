@@ -1,16 +1,16 @@
 import type { SQL } from 'drizzle-orm';
-import type { CustomerListItem, CustomerPage, ListCustomersQuery } from './customers.schema';
-import type { Db } from './customers.service';
+import type { CustomerListItem, CustomerPage, ListCustomersQuery } from './customer.schema';
+import type { Database as Db } from '@/db/client';
 import type { RequestAccess } from '@/modules/iam/access.service';
 import { Buffer } from 'node:buffer';
 import { and, count, desc, eq, exists, gte, ilike, isNull, lt, lte, or, sql } from 'drizzle-orm';
 import { customers, subscriptions, users } from '@/db/schema';
+import { ERROR_CODES } from '@/errors';
+import { badRequest } from '@/errors/domain-error';
 import { locationScopeFor, requireScope } from '@/modules/iam/access.service';
-import { ERROR_CODES } from '@/shared/errors';
-import { badRequest } from '@/shared/errors/domain-error';
-import { withinGrantedSubtree } from '@/shared/security/location-scope';
-import { PERMISSIONS } from '@/shared/security/permissions';
-import { likeTerm } from '@/shared/utils/search';
+import { withinGrantedSubtree } from '@/security/location-scope';
+import { PERMISSIONS } from '@/security/permissions';
+import { likeTerm } from '@/utils/search';
 import { hydrateCustomerItems } from './customers.search';
 
 interface PathRow extends Record<string, unknown> {
@@ -37,16 +37,16 @@ function decodeCursor(cursor: string): { createdAt: Date; id: string } {
 
 export function customerWithinNodes(
   nodeIds: readonly string[],
-  columns: { id: SQL; locationId: SQL },
+  columns: { id: SQL },
 ): SQL {
   const within = (column: SQL) => withinGrantedSubtree(column, nodeIds);
 
-  return sql`(${within(columns.locationId)} OR EXISTS (
+  return sql`EXISTS (
     SELECT 1 FROM crm.subscriptions s
     WHERE s.customer_id = ${columns.id}
       AND s.deleted_at IS NULL
-      AND ${within(sql`s.location_id`)}
-  ))`;
+      AND ${within(sql`s.installation_location_id`)}
+  )`;
 }
 
 export function reachCondition(access: RequestAccess): SQL[] | null {
@@ -65,18 +65,15 @@ export function reachCondition(access: RequestAccess): SQL[] | null {
 
   return [customerWithinNodes(reach.nodeIds, {
     id: sql`${customers.id}`,
-    locationId: sql`${customers.locationId}`,
   })];
 }
 
 export function subtreeFilter(locationId: string): SQL {
-  return sql`(EXISTS (
-    SELECT 1 FROM geo.location_descendants(${locationId}) AS d WHERE d.id = ${customers.locationId}
-  ) OR EXISTS (
+  return sql`EXISTS (
     SELECT 1 FROM crm.subscriptions s
-    JOIN geo.location_descendants(${locationId}) AS d ON d.id = s.location_id
+    JOIN geo.location_descendants(${locationId}) AS d ON d.id = s.installation_location_id
     WHERE s.customer_id = ${customers.id} AND s.deleted_at IS NULL
-  ))`;
+  )`;
 }
 
 export function multiBoxFilter(tenantId: string): SQL {
@@ -193,7 +190,11 @@ export async function listCustomers(
       phone: displayPhone,
       status: customers.status,
       outstandingBalance: customers.outstandingBalance,
-      locationId: customers.locationId,
+      locationId: sql<string | null>`(
+        SELECT s.installation_location_id FROM crm.subscriptions s
+        WHERE s.customer_id = ${customers.id} AND s.deleted_at IS NULL
+        LIMIT 1
+      )`,
       createdAt: customers.createdAt,
     })
       .from(customers)

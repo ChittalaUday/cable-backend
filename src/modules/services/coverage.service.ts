@@ -1,18 +1,22 @@
 import type { SQL } from 'drizzle-orm';
-import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import type { AvailabilityResponse, CoverageEntry, CoverageResponse, SetCoverageBody } from './services.schema';
-import type * as schema from '@/db/schema';
+import type { AvailabilityResponse, CoverageEntry, CoverageResponse, SetCoverageBody } from './service.schema';
+import type { Database as Db } from '@/db/client';
 import type { RequestAccess } from '@/modules/iam/access.service';
-import type { LocationsService } from '@/modules/locations/locations.service';
+import type { LocationsService } from '@/modules/locations/location.service';
+import type { PermissionKey } from '@/security/permissions';
 import { and, asc, eq, isNull, sql } from 'drizzle-orm';
+import { AUDIT_ENTITIES } from '@/constants/audit';
+import { owned } from '@/db/owned';
 import { locationPaths, packages, serviceCoverage, serviceProviders, services } from '@/db/schema';
+import { ERROR_CODES } from '@/errors/codes';
+import { badRequest, forbidden, orNotFound } from '@/errors/domain-error';
 import { audit } from '@/modules/audit/audit.service';
-import { AUDIT_ENTITIES } from '@/shared/constants/audit';
-import { owned } from '@/shared/db/owned';
-import { ERROR_CODES } from '@/shared/errors/codes';
-import { badRequest, orNotFound } from '@/shared/errors/domain-error';
+import { locationScopeFor } from '@/modules/iam/access.service';
+import { overlapsAnyGrant, underAnyGrant } from '@/security/location-scope';
+import { PERMISSIONS } from '@/security/permissions';
+import { coverageReachesGrant } from './coverage.scope';
 
-type Db = NodePgDatabase<typeof schema>;
+export { coverageReachesGrant } from './coverage.scope';
 
 interface AvailabilityRow extends Record<string, unknown> {
   serviceId: string;
@@ -35,23 +39,52 @@ interface AvailabilityRow extends Record<string, unknown> {
 export class CoverageService {
   constructor(private readonly db: Db, private readonly locations: LocationsService) {}
 
+  /** The coverage rows that have anything to say about the areas the caller holds. */
+  private rowsInReach(access: RequestAccess, key: PermissionKey): SQL[] {
+    const reach = locationScopeFor(access, key);
+
+    if (reach.kind === 'ALL_TENANT_LOCATIONS')
+      return [];
+
+    return [overlapsAnyGrant(sql`${serviceCoverage.locationId}`, reach.nodeIds)];
+  }
+
+  private catalogueInReach(access: RequestAccess, key: PermissionKey, target: {
+    serviceId: SQL;
+    serviceProviderId?: SQL;
+    packageId?: SQL;
+  }): SQL[] {
+    const reach = locationScopeFor(access, key);
+
+    if (reach.kind === 'ALL_TENANT_LOCATIONS')
+      return [];
+
+    return [coverageReachesGrant({
+      tenantId: access.tenantId,
+      serviceId: target.serviceId,
+      serviceProviderId: target.serviceProviderId ?? null,
+      packageId: target.packageId ?? null,
+    }, reach.nodeIds)];
+  }
+
   async listForProvider(access: RequestAccess, providerId: string): Promise<CoverageResponse[]> {
-    await this.findProvider(access.tenantId, providerId);
+    await this.findProvider(access, providerId, PERMISSIONS.SERVICES_VIEW);
 
     return this.rowsWhere(
       and(eq(serviceCoverage.serviceProviderId, providerId), isNull(serviceCoverage.packageId))!,
-      access.tenantId,
+      access,
+      PERMISSIONS.SERVICES_VIEW,
     );
   }
 
   async listForPackage(access: RequestAccess, packageId: string): Promise<CoverageResponse[]> {
-    await this.findPackage(access.tenantId, packageId);
+    await this.findPackage(access, packageId, PERMISSIONS.PACKAGES_VIEW);
 
-    return this.rowsWhere(eq(serviceCoverage.packageId, packageId), access.tenantId);
+    return this.rowsWhere(eq(serviceCoverage.packageId, packageId), access, PERMISSIONS.PACKAGES_VIEW);
   }
 
   async listForService(access: RequestAccess, serviceId: string): Promise<CoverageResponse[]> {
-    await this.findService(access.tenantId, serviceId);
+    await this.findService(access, serviceId, PERMISSIONS.SERVICES_VIEW);
 
     return this.rowsWhere(
       and(
@@ -59,13 +92,14 @@ export class CoverageService {
         isNull(serviceCoverage.serviceProviderId),
         isNull(serviceCoverage.packageId),
       )!,
-      access.tenantId,
+      access,
+      PERMISSIONS.SERVICES_VIEW,
     );
   }
 
   async replaceForProvider(access: RequestAccess, providerId: string, input: SetCoverageBody): Promise<CoverageResponse[]> {
-    const provider = await this.findProvider(access.tenantId, providerId);
-    await this.locations.assertOwned(access, input.entries.map(e => e.locationId));
+    const provider = await this.findProvider(access, providerId, PERMISSIONS.SERVICES_UPDATE);
+    await this.locations.assertWithinReach(access, PERMISSIONS.SERVICES_UPDATE, input.entries.map(e => e.locationId));
     await this.assertWithinParent(access, {
       serviceId: provider.serviceId,
       serviceProviderId: null,
@@ -94,8 +128,8 @@ export class CoverageService {
   }
 
   async replaceForPackage(access: RequestAccess, packageId: string, input: SetCoverageBody): Promise<CoverageResponse[]> {
-    const pkg = await this.findPackage(access.tenantId, packageId);
-    await this.locations.assertOwned(access, input.entries.map(e => e.locationId));
+    const pkg = await this.findPackage(access, packageId, PERMISSIONS.PACKAGES_UPDATE);
+    await this.locations.assertWithinReach(access, PERMISSIONS.PACKAGES_UPDATE, input.entries.map(e => e.locationId));
     await this.assertWithinParent(access, {
       serviceId: pkg.serviceId,
       serviceProviderId: pkg.serviceProviderId,
@@ -125,8 +159,8 @@ export class CoverageService {
   }
 
   async replaceForService(access: RequestAccess, serviceId: string, input: SetCoverageBody): Promise<CoverageResponse[]> {
-    await this.findService(access.tenantId, serviceId);
-    await this.locations.assertOwned(access, input.entries.map(e => e.locationId));
+    await this.findService(access, serviceId, PERMISSIONS.SERVICES_UPDATE);
+    await this.locations.assertWithinReach(access, PERMISSIONS.SERVICES_UPDATE, input.entries.map(e => e.locationId));
 
     const before = await this.listForService(access, serviceId);
 
@@ -144,7 +178,10 @@ export class CoverageService {
     return after;
   }
 
-  async availabilityAt({ tenantId }: RequestAccess, locationId: string): Promise<AvailabilityResponse> {
+  async availabilityAt(access: RequestAccess, locationId: string): Promise<AvailabilityResponse> {
+    const { tenantId } = access;
+    await this.assertNodeInReach(access, locationId);
+
     const result = await this.db.execute<AvailabilityRow>(sql`
       WITH chain AS (
         SELECT id, depth FROM geo.location_ancestors(${locationId})
@@ -332,7 +369,7 @@ export class CoverageService {
     });
   }
 
-  private async findPackage(tenantId: string, id: string) {
+  private async findPackage(access: RequestAccess, id: string, key: PermissionKey) {
     const [row] = await this.db
       .select({
         id: packages.id,
@@ -341,13 +378,33 @@ export class CoverageService {
       })
       .from(packages)
       .innerJoin(serviceProviders, eq(serviceProviders.id, packages.serviceProviderId))
-      .where(owned(packages, tenantId, id))
+      .where(and(owned(packages, access.tenantId, id), ...this.catalogueInReach(access, key, {
+        serviceId: sql`${serviceProviders.serviceId}`,
+        serviceProviderId: sql`${packages.serviceProviderId}`,
+        packageId: sql`${packages.id}`,
+      })))
       .limit(1);
 
     return orNotFound(row, 'Package');
   }
 
-  private async rowsWhere(where: SQL, tenantId: string): Promise<CoverageResponse[]> {
+  private async assertNodeInReach(access: RequestAccess, locationId: string): Promise<void> {
+    await this.locations.assertOwned(access, [locationId]);
+
+    const reach = locationScopeFor(access, PERMISSIONS.SERVICES_VIEW);
+
+    if (reach.kind === 'ALL_TENANT_LOCATIONS')
+      return;
+
+    const result = await this.db.execute<{ reaches: boolean }>(
+      sql`SELECT ${underAnyGrant(locationId, reach.nodeIds)} AS reaches`,
+    );
+
+    if (result.rows[0]?.reaches !== true)
+      throw forbidden(ERROR_CODES.PERM_SCOPE_DENIED, 'This location is outside your grant');
+  }
+
+  private async rowsWhere(where: SQL, access: RequestAccess, key: PermissionKey): Promise<CoverageResponse[]> {
     const rows = await this.db
       .select({
         id: serviceCoverage.id,
@@ -361,7 +418,7 @@ export class CoverageService {
       })
       .from(serviceCoverage)
       .innerJoin(locationPaths, eq(locationPaths.id, serviceCoverage.locationId))
-      .where(and(eq(serviceCoverage.tenantId, tenantId), where))
+      .where(and(eq(serviceCoverage.tenantId, access.tenantId), where, ...this.rowsInReach(access, key)))
       .orderBy(asc(locationPaths.path));
 
     return rows;
@@ -410,21 +467,26 @@ export class CoverageService {
     return [...byService.values()];
   }
 
-  private async findProvider(tenantId: string, id: string) {
+  private async findProvider(access: RequestAccess, id: string, key: PermissionKey) {
     const [row] = await this.db
       .select({ id: serviceProviders.id, serviceId: serviceProviders.serviceId })
       .from(serviceProviders)
-      .where(owned(serviceProviders, tenantId, id))
+      .where(and(owned(serviceProviders, access.tenantId, id), ...this.catalogueInReach(access, key, {
+        serviceId: sql`${serviceProviders.serviceId}`,
+        serviceProviderId: sql`${serviceProviders.id}`,
+      })))
       .limit(1);
 
     return orNotFound(row, 'Service provider');
   }
 
-  private async findService(tenantId: string, id: string) {
+  private async findService(access: RequestAccess, id: string, key: PermissionKey) {
     const [row] = await this.db
       .select({ id: services.id })
       .from(services)
-      .where(owned(services, tenantId, id))
+      .where(and(owned(services, access.tenantId, id), ...this.catalogueInReach(access, key, {
+        serviceId: sql`${services.id}`,
+      })))
       .limit(1);
 
     return orNotFound(row, 'Service');

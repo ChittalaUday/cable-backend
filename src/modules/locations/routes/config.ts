@@ -1,7 +1,6 @@
 import type { FastifyPluginAsyncTypebox } from '@fastify/type-provider-typebox';
 import { Type } from 'typebox';
-import { PERMISSIONS } from '@/shared/security/permissions';
-import * as controller from '../locations.controller';
+import { PERMISSIONS } from '@/security/permissions';
 import {
   CategoryResponse,
   CreateCategoryBody,
@@ -12,7 +11,7 @@ import {
   SchemaResponse,
   UpdateCategoryBody,
   UpdateSchemaBody,
-} from '../locations.schema';
+} from '../location.schema';
 
 const routes: FastifyPluginAsyncTypebox = async (app) => {
   const errorRef = { $ref: 'ErrorResponse#' };
@@ -25,7 +24,9 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
       summary: 'List the tenant’s location categories',
       response: { 200: Type.Array(CategoryResponse), ...errors },
     },
-  }, controller.listCategories);
+  }, async (request) => {
+    return request.server.locations.listCategories(request.access);
+  });
 
   app.post('/location-categories', {
     preHandler: app.requirePermission(PERMISSIONS.LOCATIONS_CONFIGURE),
@@ -35,7 +36,10 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
       body: CreateCategoryBody,
       response: { 201: CategoryResponse, ...errors },
     },
-  }, controller.createCategory);
+  }, async (request, reply) => {
+    const category = await request.server.locations.createCategory(request.access, request.body);
+    return reply.status(201).header('location', `${request.url}/${category.id}`).send(category);
+  });
 
   app.patch('/location-categories/:id', {
     preHandler: app.requirePermission(PERMISSIONS.LOCATIONS_CONFIGURE),
@@ -46,7 +50,9 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
       body: UpdateCategoryBody,
       response: { 200: CategoryResponse, ...errors },
     },
-  }, controller.updateCategory);
+  }, async (request) => {
+    return request.server.locations.updateCategory(request.access, request.params.id, request.body);
+  });
 
   app.delete('/location-categories/:id', {
     preHandler: app.requirePermission(PERMISSIONS.LOCATIONS_CONFIGURE),
@@ -56,7 +62,10 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
       params: IdParams,
       response: { 204: Type.Null(), ...errors },
     },
-  }, controller.deleteCategory);
+  }, async (request, reply) => {
+    await request.server.locations.deleteCategory(request.access, request.params.id);
+    return reply.status(204).send(null);
+  });
 
   app.get('/location-schemas', {
     preHandler: app.requirePermission(PERMISSIONS.LOCATIONS_VIEW),
@@ -65,7 +74,9 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
       summary: 'List hierarchy shapes with their ordered levels — a tenant runs several at once',
       response: { 200: Type.Array(SchemaResponse), ...errors },
     },
-  }, controller.listSchemas);
+  }, async (request) => {
+    return request.server.locations.listSchemas(request.access);
+  });
 
   app.post('/location-schemas', {
     preHandler: app.requirePermission(PERMISSIONS.LOCATIONS_CONFIGURE),
@@ -75,7 +86,10 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
       body: CreateSchemaBody,
       response: { 201: SchemaResponse, ...errors },
     },
-  }, controller.createSchema);
+  }, async (request, reply) => {
+    const created = await request.server.locations.createSchema(request.access, request.body);
+    return reply.status(201).header('location', `${request.url}/${created.id}`).send(created);
+  });
 
   app.patch('/location-schemas/:id', {
     preHandler: app.requirePermission(PERMISSIONS.LOCATIONS_CONFIGURE),
@@ -86,7 +100,9 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
       body: UpdateSchemaBody,
       response: { 200: SchemaResponse, ...errors },
     },
-  }, controller.updateSchema);
+  }, async (request) => {
+    return request.server.locations.updateSchema(request.access, request.params.id, request.body);
+  });
 
   app.delete('/location-schemas/:id', {
     preHandler: app.requirePermission(PERMISSIONS.LOCATIONS_CONFIGURE),
@@ -96,7 +112,10 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
       params: IdParams,
       response: { 204: Type.Null(), ...errors },
     },
-  }, controller.deleteSchema);
+  }, async (request, reply) => {
+    await request.server.locations.deleteSchema(request.access, request.params.id);
+    return reply.status(204).send(null);
+  });
 
   app.post('/location-schemas/:id/generate', {
     preHandler: app.requirePermission(PERMISSIONS.LOCATIONS_CONFIGURE),
@@ -108,7 +127,10 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
       body: GenerateBody,
       response: { 201: GenerateResponse, ...errors },
     },
-  }, controller.generate);
+  }, async (request, reply) => {
+    const result = await request.server.locations.generate(request.access, request.params.id, request.body);
+    return reply.status(201).send(result);
+  });
 };
 
 export default routes;

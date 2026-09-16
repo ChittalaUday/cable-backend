@@ -2,8 +2,8 @@ import type { AuditContext } from './audit.types';
 import { randomUUID } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 import { afterAll, describe, expect, it } from 'vitest';
+import { AUDIT_ACTIONS, AUDIT_ENTITIES } from '@/constants/audit';
 import { auditLogs } from '@/db/schema';
-import { AUDIT_ACTIONS, AUDIT_ENTITIES } from '@/shared/constants/audit';
 import { createTestDb } from '@/test/db';
 import { audit } from './audit.service';
 

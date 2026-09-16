@@ -1,4 +1,4 @@
-import type { CustomerDetail, CustomerPage } from './customers.schema';
+import type { CustomerDetail, CustomerPage } from './customer.schema';
 import type { BuiltApp } from '@/app';
 import type { SeededAuthData } from '@/test/fixtures';
 import { randomUUID } from 'node:crypto';
@@ -16,7 +16,7 @@ import {
   tenantMemberships,
   users,
 } from '@/db/schema';
-import { hashPassword } from '@/shared/security/password';
+import { hashPassword } from '@/security/password';
 import { createTestDb } from '@/test/db';
 import { seedAuthData, TEST_PASSWORD, uniqueDeviceId, uniqueEmail, uniquePhone } from '@/test/fixtures';
 import { bodyOf } from '@/test/http';
@@ -89,7 +89,6 @@ async function makeCustomer(input: {
     customerCode: `SSCN-${unique()}`,
     name: input.name,
     phone: input.phone,
-    locationId: input.locationId,
     address: input.address,
     outstandingBalance: '120.50',
   }).returning();
@@ -102,7 +101,7 @@ async function makeCustomer(input: {
     serviceAccountNumber: input.accountNumber ?? `ACC-${unique()}`,
     price: '349.00',
     billingCycle: 'monthly',
-    locationId: input.locationId,
+    installationLocationId: input.locationId,
   });
 
   createdCustomerIds.push(customer!.id);
@@ -536,7 +535,7 @@ describe('the customer detail', () => {
       serviceAccountNumber: `ACC-${unique()}`,
       price: '349.00',
       billingCycle: 'monthly',
-      locationId: northAreaId,
+      installationLocationId: northAreaId,
     });
 
     const multiBoxCustId = await makeCustomer({
@@ -578,7 +577,7 @@ describe('the customer detail', () => {
       serviceAccountNumber: `ACC-BB-${unique()}`,
       price: '699.00',
       billingCycle: 'monthly',
-      locationId: northAreaId,
+      installationLocationId: northAreaId,
     });
 
     const multiBoxPage = await list(adminAuth, '?multiBox=true');

@@ -275,6 +275,14 @@ in one call — coverage is edited as a list in the UI, and a diff of
 packages, already filtered. One call for the wizard instead of three plus
 client-side filtering that will not match the server's rules.
 
+**Reading the catalogue is area-scoped.** `services.view` and `packages.view`
+held below `ALL` return only what coverage sells in the holder's granted
+subtrees, plus everything nobody bounded — the seed grants both at `LOCATION`
+for `staff`, so a collector's picker offers the packages that can actually be
+sold at the door they are standing at. An admin at `ALL` still sees the whole
+catalogue, which is what configuring it needs. See `coverage.scope.ts` and
+`modules/iam/staff-scope.api.test.ts`.
+
 **No new permission keys.** Providers and coverage are catalogue configuration,
 which `services.*` already names. `packages.*` stays as it is.
 

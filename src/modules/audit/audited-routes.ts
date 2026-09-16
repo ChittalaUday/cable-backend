@@ -1,5 +1,5 @@
-import type { AuditAction } from '@/shared/constants/audit';
-import { AUDIT_ACTIONS, AUDIT_ENTITIES, AUDIT_VERBS, auditAction } from '@/shared/constants/audit';
+import type { AuditAction } from '@/constants/audit';
+import { AUDIT_ACTIONS, AUDIT_ENTITIES, AUDIT_VERBS, auditAction } from '@/constants/audit';
 
 export const AUDITED_ROUTES: Readonly<Record<string, readonly AuditAction[]>> = {
   'POST /api/v1/auth/otp/request': [AUDIT_ACTIONS.AUTH_OTP_REQUESTED, AUDIT_ACTIONS.AUTH_OTP_REFUSED],

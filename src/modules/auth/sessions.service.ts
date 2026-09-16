@@ -1,10 +1,10 @@
+import type { Database } from '@/db/client';
 import type { Device, Session, SessionRevokeReason } from '@/db/schema';
-import type { Database } from '@/plugins/database';
 import { and, asc, eq, isNull, sql } from 'drizzle-orm';
 import { devices, sessions } from '@/db/schema';
-import { ERROR_CODES } from '@/shared/errors';
-import { DomainError, forbidden, unauthorized } from '@/shared/errors/domain-error';
-import { generateRefreshToken, hashRefreshToken } from '@/shared/security/tokens';
+import { ERROR_CODES } from '@/errors';
+import { DomainError, forbidden, unauthorized } from '@/errors/domain-error';
+import { generateRefreshToken, hashRefreshToken } from '@/security/tokens';
 
 export interface DeviceInfo {
   clientDeviceId: string;

@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
 import { boolean, index, integer, jsonb, numeric, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
-import { CHANNEL_GENRES, CHANNEL_RESOLUTIONS, ENTITY_STATUSES } from '@/shared/constants/crm';
+import { CHANNEL_GENRES, CHANNEL_RESOLUTIONS, ENTITY_STATUSES } from '@/constants/crm';
 import { crm } from '../schemas';
 import { tenants } from '../tenancy/tenants';
 import { serviceProviders } from './service-providers';

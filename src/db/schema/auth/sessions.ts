@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
 import { index, text, timestamp, uuid } from 'drizzle-orm/pg-core';
-import { SESSION_REVOKE_REASONS } from '@/shared/constants/auth';
+import { SESSION_REVOKE_REASONS } from '@/constants/auth';
 import { auth } from '../schemas';
 import { devices } from './devices';
 import { users } from './users';

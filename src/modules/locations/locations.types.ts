@@ -1,4 +1,4 @@
-import type { LocationsService } from './locations.service';
+import type { LocationsService } from './location.service';
 
 declare module 'fastify' {
   interface FastifyInstance {

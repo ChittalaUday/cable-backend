@@ -1,15 +1,15 @@
 import type { BuiltApp } from '@/app';
+import type { AuditAction } from '@/constants/audit';
 import type { AuditLog } from '@/db/schema';
-import type { AuditAction } from '@/shared/constants/audit';
 import type { SeededAuthData } from '@/test/fixtures';
 import { randomUUID } from 'node:crypto';
 import { and, desc, eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from '@/app';
 import { SYSTEM_ROLES } from '@/config/constants';
+import { AUDIT_ACTIONS, AUDIT_ENTITIES, AUDIT_VERBS, auditAction } from '@/constants/audit';
 import { auditLogs, tenantMemberships, users } from '@/db/schema';
-import { AUDIT_ACTIONS, AUDIT_ENTITIES, AUDIT_VERBS, auditAction } from '@/shared/constants/audit';
-import { hashPassword } from '@/shared/security/password';
+import { hashPassword } from '@/security/password';
 import { createTestDb } from '@/test/db';
 import { seedAuthData, TEST_PASSWORD, uniqueDeviceId, uniqueEmail } from '@/test/fixtures';
 import { bodyOf } from '@/test/http';

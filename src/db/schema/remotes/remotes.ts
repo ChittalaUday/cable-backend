@@ -1,5 +1,5 @@
-import type { RemoteDeviceType, RemoteSource } from '@/shared/constants/remotes';
-import type { RemoteButton } from '@/shared/types/remotes';
+import type { RemoteDeviceType, RemoteSource } from '@/constants/remotes';
+import type { RemoteButton } from '@/types/remotes';
 import { boolean, index, jsonb, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
 import { remotesSchema } from '../schemas';
 import { tenants } from '../tenancy/tenants';
@@ -34,4 +34,4 @@ export const remotes = remotesSchema.table('remotes', {
 export type RemoteRecord = typeof remotes.$inferSelect;
 export type NewRemoteRecord = typeof remotes.$inferInsert;
 
-export type { IrCommand, RemoteButton } from '@/shared/types/remotes';
+export type { IrCommand, RemoteButton } from '@/types/remotes';

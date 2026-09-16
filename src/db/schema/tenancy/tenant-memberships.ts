@@ -1,5 +1,5 @@
-import { boolean, foreignKey, index, integer, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
-import { MEMBERSHIP_STATUSES } from '@/shared/constants/tenancy';
+import { foreignKey, index, integer, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
+import { MEMBERSHIP_STATUSES } from '@/constants/tenancy';
 import { users } from '../auth/users';
 import { roles } from '../iam/roles';
 import { tenancy } from '../schemas';
@@ -15,8 +15,6 @@ export const tenantMemberships = tenancy.table('tenant_memberships', {
   status: text('status', { enum: MEMBERSHIP_STATUSES }).notNull().default('active'),
 
   teamId: uuid('team_id'),
-
-  isTeamLeader: boolean('is_team_leader').notNull().default(false),
 
   permissionVersion: integer('permission_version').notNull().default(1),
 

@@ -4,8 +4,8 @@ import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from '@/app';
 import { accountTransactions, customers, membershipLocations, rolePermissions, subscriptions, teams, tenantMemberships, users } from '@/db/schema';
-import { hashPassword } from '@/shared/security/password';
-import { PERMISSIONS } from '@/shared/security/permissions';
+import { hashPassword } from '@/security/password';
+import { PERMISSIONS } from '@/security/permissions';
 import { createTestDb } from '@/test/db';
 import { seedAuthData, TEST_PASSWORD, uniqueDeviceId, uniqueEmail, uniquePhone } from '@/test/fixtures';
 import { bodyOf } from '@/test/http';
@@ -69,7 +69,6 @@ beforeAll(async () => {
     tenantId: data.tenantA.id,
     name: 'Live Customer',
     phone: uniquePhone(),
-    locationId: location.id,
     status: 'active',
     outstandingBalance: '125.00',
   }).returning();
@@ -79,7 +78,7 @@ beforeAll(async () => {
     serviceProviderId: provider.id,
     packageId: pkg.id,
     serviceAccountNumber: 'ACC-LIVE',
-    locationId: location.id,
+    installationLocationId: location.id,
     status: 'active',
     price: '350.00',
   });
@@ -168,7 +167,6 @@ describe('analytics dashboards', () => {
       tenantId,
       name: 'Reachable Only By Line',
       phone: uniquePhone(),
-      locationId: null,
       status: 'active',
     }).returning();
 
@@ -179,7 +177,7 @@ describe('analytics dashboards', () => {
         serviceProviderId: providerId,
         packageId,
         serviceAccountNumber: `ACC-${randomUUID().slice(0, 8)}`,
-        locationId: areaId,
+        installationLocationId: areaId,
         status: 'active',
       });
 

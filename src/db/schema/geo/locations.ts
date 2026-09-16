@@ -1,7 +1,7 @@
 import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { boolean, check, index, jsonb, numeric, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
-import { LOCATION_SOURCES, LOCATION_STATUSES } from '@/shared/constants/geo';
+import { LOCATION_SOURCES, LOCATION_STATUSES } from '@/constants/geo';
 import { users } from '../auth/users';
 import { geo } from '../schemas';
 import { tenants } from '../tenancy/tenants';

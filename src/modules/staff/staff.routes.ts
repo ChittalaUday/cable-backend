@@ -1,14 +1,14 @@
 import type { FastifyPluginAsyncTypebox } from '@fastify/type-provider-typebox';
 import { Type } from 'typebox';
-import { LocationsService } from '@/modules/locations/locations.service';
-import { paginated } from '@/shared/pagination';
-import { PERMISSIONS } from '@/shared/security/permissions';
-import * as controller from './staff.controller';
+import { LocationsService } from '@/modules/locations/location.service';
+import { PERMISSIONS } from '@/security/permissions';
+import { paginated } from '@/utils/pagination';
 import {
   CreateStaffBody,
   IdParams,
   ListStaffQuery,
   SetLocationsBody,
+  SetTeamAreasBody,
   StaffResponse,
   UpdateStaffBody,
 } from './staff.schema';
@@ -41,7 +41,9 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
       querystring: ListStaffQuery,
       response: { 200: paginated(StaffResponse), ...errors },
     },
-  }, controller.list);
+  }, async (request) => {
+    return request.server.staff.list(request.access, request.query);
+  });
 
   app.post('/staff', {
     preHandler: app.requirePermission(PERMISSIONS.STAFF_CREATE),
@@ -58,52 +60,77 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
       body: CreateStaffBody,
       response: { 201: StaffResponse, ...errors },
     },
-  }, controller.create);
+  }, async (request, reply) => {
+    const member = await request.server.staff.create(request.access, request.body);
+    return reply.status(201).header('location', `${request.url}/${member.id}`).send(member);
+  });
 
   app.get('/staff/:id', {
     preHandler: app.requirePermission(PERMISSIONS.STAFF_VIEW),
     schema: {
       tags: ['staff'],
-      summary: 'One staff member, with their crew and areas resolved',
+      summary: 'One employee, with their active areas resolved',
       params: IdParams,
       response: { 200: StaffResponse, ...errors },
     },
-  }, controller.get);
+  }, async (request) => {
+    return request.server.staff.get(request.access, request.params.id);
+  });
 
   app.patch('/staff/:id', {
     preHandler: app.requirePermission(PERMISSIONS.STAFF_UPDATE),
     schema: {
       tags: ['staff'],
-      summary: 'Change the job: role, status, or crew',
-      description: 'Moving someone to a crew is how they join it — there is no second write path on the team. `name` corrects the global account, so it changes everywhere that person appears.',
+      summary: 'Change name, phone, or crew membership',
       params: IdParams,
       body: UpdateStaffBody,
       response: { 200: StaffResponse, ...errors },
     },
-  }, controller.update);
+  }, async (request) => {
+    return request.server.staff.update(request.access, request.params.id, request.body);
+  });
 
   app.delete('/staff/:id', {
     preHandler: app.requirePermission(PERMISSIONS.STAFF_DELETE),
     schema: {
       tags: ['staff'],
-      summary: 'End the job — the account survives',
-      description: 'Removes the membership and its area grants. The `auth.users` row stays: the same person may be a subscriber elsewhere, and revoking a role is not a reason to delete a login.',
+      summary: 'End someone’s employment here',
+      description: 'Their account continues to exist, and their memberships at other operators are untouched. You cannot fire the last `admin`.',
       params: IdParams,
       response: { 204: Type.Null(), ...errors },
     },
-  }, controller.remove);
+  }, async (request, reply) => {
+    await request.server.staff.remove(request.access, request.params.id);
+    return reply.status(204).send(null);
+  });
 
   app.put('/staff/:id/locations', {
     preHandler: app.requirePermission(PERMISSIONS.STAFF_UPDATE),
     schema: {
       tags: ['staff'],
-      summary: 'Replace the areas this person reaches',
-      description: 'A set, not a diff: send the whole list. A node covers everything beneath it, so an apartment is one id rather than one per door. Areas inherited from a crew are not editable here.',
+      summary: 'Replace the areas this person serves directly',
+      description: 'Replaces the entire set of direct grants. You cannot grant an area you do not hold yourself.',
       params: IdParams,
       body: SetLocationsBody,
       response: { 200: StaffResponse, ...errors },
     },
-  }, controller.setLocations);
+  }, async (request) => {
+    return request.server.staff.setLocations(request.access, request.params.id, request.body);
+  });
+
+  app.put('/staff/:id/team-areas', {
+    preHandler: app.requirePermission(PERMISSIONS.STAFF_UPDATE),
+    schema: {
+      tags: ['staff'],
+      summary: 'Narrow this person to part of their crew’s patch',
+      description: 'An empty list widens them back to the crew’s whole patch. Every area must sit inside it.',
+      params: IdParams,
+      body: SetTeamAreasBody,
+      response: { 200: StaffResponse, ...errors },
+    },
+  }, async (request) => {
+    return request.server.staff.setTeamAreas(request.access, request.params.id, request.body);
+  });
 
   await app.register(teamRoutes);
 };

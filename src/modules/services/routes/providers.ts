@@ -1,14 +1,13 @@
 import type { FastifyPluginAsyncTypebox } from '@fastify/type-provider-typebox';
 import { Type } from 'typebox';
-import { PERMISSIONS } from '@/shared/security/permissions';
-import * as controller from '../services.controller';
+import { PERMISSIONS } from '@/security/permissions';
 import {
   CreateProviderBody,
   IdParams,
   ListProvidersQuery,
   ProviderResponse,
   UpdateProviderBody,
-} from '../services.schema';
+} from '../service.schema';
 
 const routes: FastifyPluginAsyncTypebox = async (app) => {
   const errorRef = { $ref: 'ErrorResponse#' };
@@ -22,7 +21,9 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
       querystring: ListProvidersQuery,
       response: { 200: Type.Array(ProviderResponse), ...errors },
     },
-  }, controller.listProviders);
+  }, async (request) => {
+    return request.server.services.listProviders(request.access, request.query);
+  });
 
   app.post('/service-providers', {
     preHandler: app.requirePermission(PERMISSIONS.SERVICES_CREATE),
@@ -33,7 +34,10 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
       body: CreateProviderBody,
       response: { 201: ProviderResponse, ...errors },
     },
-  }, controller.createProvider);
+  }, async (request, reply) => {
+    const provider = await request.server.services.createProvider(request.access, request.body);
+    return reply.status(201).header('location', `${request.url}/${provider.id}`).send(provider);
+  });
 
   app.get('/service-providers/:id', {
     preHandler: app.requirePermission(PERMISSIONS.SERVICES_VIEW),
@@ -43,7 +47,9 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
       params: IdParams,
       response: { 200: ProviderResponse, ...errors },
     },
-  }, controller.getProvider);
+  }, async (request) => {
+    return request.server.services.getProvider(request.access, request.params.id);
+  });
 
   app.patch('/service-providers/:id', {
     preHandler: app.requirePermission(PERMISSIONS.SERVICES_UPDATE),
@@ -55,18 +61,22 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
       body: UpdateProviderBody,
       response: { 200: ProviderResponse, ...errors },
     },
-  }, controller.updateProvider);
+  }, async (request) => {
+    return request.server.services.updateProvider(request.access, request.params.id, request.body);
+  });
 
   app.delete('/service-providers/:id', {
     preHandler: app.requirePermission(PERMISSIONS.SERVICES_DELETE),
     schema: {
       tags: ['services'],
-      summary: 'Retire a provider',
-      description: 'Soft delete, so its packages and their subscriptions keep explaining themselves.',
+      summary: 'Delete a provider that has no packages and no subscriptions',
       params: IdParams,
       response: { 204: Type.Null(), ...errors },
     },
-  }, controller.removeProvider);
+  }, async (request, reply) => {
+    await request.server.services.removeProvider(request.access, request.params.id);
+    return reply.status(204).send(null);
+  });
 };
 
 export default routes;

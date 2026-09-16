@@ -1,5 +1,5 @@
-import type { CustomerListItem, CustomerPage, ListCustomersQuery } from './customers.schema';
-import type { Db } from './customers.service';
+import type { CustomerListItem, CustomerPage, ListCustomersQuery } from './customer.schema';
+import type { Database as Db } from '@/db/client';
 import type { RequestAccess } from '@/modules/iam/access.service';
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import {
@@ -13,9 +13,9 @@ import {
   subscriptions,
   users,
 } from '@/db/schema';
-import { ERROR_CODES } from '@/shared/errors';
-import { badRequest } from '@/shared/errors/domain-error';
-import { escapeLike } from '@/shared/utils/search';
+import { ERROR_CODES } from '@/errors';
+import { badRequest } from '@/errors/domain-error';
+import { escapeLike } from '@/utils/search';
 import { baseFilters } from './customers.list';
 
 export interface CustomerResultRef extends Record<string, unknown> {
@@ -285,15 +285,7 @@ async function candidates(db: Db, context: SearchContext): Promise<CustomerResul
       SELECT e.id, lm.score, lm.matched_field
       FROM location_matches lm
       CROSS JOIN LATERAL geo.location_descendants(lm.id) d
-      JOIN crm.customers c ON c.location_id = d.id AND c.tenant_id = ${access.tenantId}
-      JOIN eligible e ON e.id = c.id
-
-      UNION ALL
-
-      SELECT e.id, lm.score, lm.matched_field
-      FROM location_matches lm
-      CROSS JOIN LATERAL geo.location_descendants(lm.id) d
-      JOIN crm.subscriptions s ON s.location_id = d.id AND s.tenant_id = ${access.tenantId} AND s.deleted_at IS NULL
+      JOIN crm.subscriptions s ON s.installation_location_id = d.id AND s.tenant_id = ${access.tenantId} AND s.deleted_at IS NULL
       JOIN eligible e ON e.id = s.customer_id
     )
     SELECT customer_id AS "customerId",
@@ -328,24 +320,20 @@ export async function hydrateCustomerItems(
       status: customers.status,
       address: customers.address,
       outstandingBalance: customers.outstandingBalance,
-      locationId: customers.locationId,
-      locationPath: locationPathsView.path,
-      locationCodes: sql<string[]>`coalesce(${locationPathsView.codes}, ARRAY[]::text[])`,
+      locationId: sql<string | null>`null`,
+      locationPath: sql<string | null>`null`,
+      locationCodes: sql<string[]>`ARRAY[]::text[]`,
       createdAt: customers.createdAt,
     })
       .from(customers)
       .leftJoin(users, eq(users.id, customers.userId))
-      .leftJoin(locationPathsView, and(
-        eq(locationPathsView.id, customers.locationId),
-        eq(locationPathsView.tenantId, access.tenantId),
-      ))
       .where(and(eq(customers.tenantId, access.tenantId), inArray(customers.id, ids))),
     db.select({
       customerId: subscriptions.customerId,
       subscriptionId: subscriptions.id,
       accountNumber: subscriptions.serviceAccountNumber,
       installationAddress: subscriptions.installationAddress,
-      locationId: subscriptions.locationId,
+      locationId: subscriptions.installationLocationId,
       locationPath: locationPathsView.path,
       locationCodes: sql<string[]>`coalesce(${locationPathsView.codes}, ARRAY[]::text[])`,
       status: subscriptions.status,
@@ -355,7 +343,7 @@ export async function hydrateCustomerItems(
       .innerJoin(serviceProviders, eq(serviceProviders.id, subscriptions.serviceProviderId))
       .innerJoin(services, eq(services.id, serviceProviders.serviceId))
       .leftJoin(locationPathsView, and(
-        eq(locationPathsView.id, subscriptions.locationId),
+        eq(locationPathsView.id, subscriptions.installationLocationId),
         eq(locationPathsView.tenantId, access.tenantId),
       ))
       .where(and(

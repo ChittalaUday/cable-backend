@@ -3,7 +3,7 @@ import { boolean, index, jsonb, numeric, text, timestamp, unique, uuid } from 'd
 import {
   EQUIPMENT_OWNERSHIPS,
   TRACKING_TYPES,
-} from '@/shared/constants/inventory';
+} from '@/constants/inventory';
 import { inventory } from '../schemas';
 import { tenants } from '../tenancy/tenants';
 import { itemTypes } from './item-types';

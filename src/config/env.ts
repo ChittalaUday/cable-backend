@@ -3,7 +3,7 @@ import process from 'node:process';
 import { Type } from 'typebox';
 import { Assert, Clean, Clone, Convert, Default, Errors } from 'typebox/value';
 
-const EnvSchema = Type.Object({
+export const EnvSchema = Type.Object({
   NODE_ENV: Type.Union([
     Type.Literal('development'),
     Type.Literal('test'),

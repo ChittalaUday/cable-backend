@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
 import { bigint, index, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
-import { CHECKSUM_ALGORITHMS, FILE_STATUSES } from '@/shared/constants/media';
+import { CHECKSUM_ALGORITHMS, FILE_STATUSES } from '@/constants/media';
 import { media } from '../schemas';
 
 export const files = media.table('files', {

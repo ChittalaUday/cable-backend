@@ -1,5 +1,5 @@
 import { index, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
-import { LOCATION_ALIAS_SOURCES } from '@/shared/constants/geo';
+import { LOCATION_ALIAS_SOURCES } from '@/constants/geo';
 import { geo } from '../schemas';
 import { tenants } from '../tenancy/tenants';
 import { locations } from './locations';

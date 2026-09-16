@@ -12,11 +12,12 @@ import type {
 } from './staff.schema';
 import type * as schema from '@/db/schema';
 import type { AccessService, RequestAccess } from '@/modules/iam/access.service';
-import type { LocationsService } from '@/modules/locations/locations.service';
-import type { Page, PaginationQuery } from '@/shared/pagination';
-import type { PermissionKey } from '@/shared/security/permissions';
+import type { LocationsService } from '@/modules/locations/location.service';
+import type { PermissionKey } from '@/security/permissions';
+import type { Page, PaginationQuery } from '@/utils/pagination';
 import { and, count, desc, eq, ilike, inArray, isNull, or, sql } from 'drizzle-orm';
 import { SYSTEM_ROLES } from '@/config/constants';
+import { AUDIT_ENTITIES } from '@/constants/audit';
 import {
   membershipLocations,
   teamLocations,
@@ -25,15 +26,15 @@ import {
   tenantMemberships,
   users,
 } from '@/db/schema';
+import { ERROR_CODES, isUniqueViolation } from '@/errors';
+import { badRequest, conflict, forbidden, notFound } from '@/errors/domain-error';
 import { audit } from '@/modules/audit/audit.service';
 import { scopeFor } from '@/modules/iam/access.service';
-import { AUDIT_ENTITIES } from '@/shared/constants/audit';
-import { ERROR_CODES, isUniqueViolation } from '@/shared/errors';
-import { badRequest, conflict, forbidden, notFound } from '@/shared/errors/domain-error';
-import { offsetOf } from '@/shared/pagination';
-import { underAnyGrant } from '@/shared/security/location-scope';
-import { hashPassword } from '@/shared/security/password';
-import { PERMISSIONS } from '@/shared/security/permissions';
+import { underAnyGrant } from '@/security/location-scope';
+import { hashPassword } from '@/security/password';
+import { PERMISSIONS } from '@/security/permissions';
+import { normaliseEmail } from '@/utils/email';
+import { offsetOf } from '@/utils/pagination';
 import { areaGrantsFor, assertWithinGrant, servesNode, staffReach } from './staff.grants';
 
 type Db = NodePgDatabase<typeof schema>;
@@ -134,7 +135,7 @@ export class StaffService {
     await this.assertGrantable(access, input.locationIds ?? [], PERMISSIONS.STAFF_CREATE);
     await this.assertTeamOfTenant(access.tenantId, input.teamId ?? null);
 
-    const email = input.email?.toLowerCase() ?? null;
+    const email = normaliseEmail(input.email);
 
     const id = await this.db.transaction(async (tx) => {
       const userId = await this.resolveUser(tx, { ...input, email });
@@ -185,20 +186,22 @@ export class StaffService {
     const { name, ...membership } = patch;
 
     const leavesTeam = patch.teamId !== undefined && patch.teamId !== before.team?.id;
-    const membershipSet = leavesTeam
-      ? { ...membership, isTeamLeader: patch.isTeamLeader ?? false }
-      : membership;
 
     await this.db.transaction(async (tx) => {
-      if (Object.keys(membershipSet).length > 0) {
+      if (Object.keys(membership).length > 0) {
         await tx
           .update(tenantMemberships)
-          .set({ ...membershipSet, updatedAt: new Date() })
+          .set({ ...membership, updatedAt: new Date() })
           .where(and(eq(tenantMemberships.tenantId, access.tenantId), eq(tenantMemberships.id, id)));
       }
 
-      if (leavesTeam)
+      if (leavesTeam) {
         await tx.delete(teamMemberLocations).where(eq(teamMemberLocations.membershipId, id));
+        await tx
+          .update(teams)
+          .set({ leaderMembershipId: null, updatedAt: new Date() })
+          .where(and(eq(teams.tenantId, access.tenantId), eq(teams.leaderMembershipId, id)));
+      }
 
       if (name !== undefined)
         await tx.update(users).set({ name, updatedAt: new Date() }).where(eq(users.id, before.userId));
@@ -326,7 +329,7 @@ export class StaffService {
         roleId: tenantMemberships.roleId,
         status: tenantMemberships.status,
         teamId: tenantMemberships.teamId,
-        isTeamLeader: tenantMemberships.isTeamLeader,
+        isTeamLeader: sql<boolean>`coalesce(${teams.leaderMembershipId} = ${tenantMemberships.id}, false)`,
         createdAt: tenantMemberships.createdAt,
         updatedAt: tenantMemberships.updatedAt,
         name: users.name,
@@ -394,7 +397,7 @@ export class StaffService {
       team: row.teamId === null
         ? null
         : { id: row.teamId, name: row.teamName ?? '', slug: row.teamSlug ?? '' },
-      isTeamLeader: row.teamId !== null && row.isTeamLeader,
+      isTeamLeader: row.isTeamLeader,
       locations: grants.own.get(row.id) ?? EMPTY,
       inheritedLocations: row.teamId === null ? EMPTY : this.inherited(row, grants),
       teamAreas: row.teamId === null ? EMPTY : (grants.narrowed.get(row.id) ?? EMPTY),

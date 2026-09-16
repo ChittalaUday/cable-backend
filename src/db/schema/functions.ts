@@ -23,3 +23,9 @@ export function locationDescendants(rootId: unknown) {
 export function locationAncestors(nodeId: unknown) {
   return sql`geo.location_ancestors(${nodeId})`;
 }
+
+export function normalizeEmail(value: unknown) {
+  return sql<string | null>`auth.normalise_email(${value})`;
+}
+
+export const normaliseEmail = normalizeEmail;
