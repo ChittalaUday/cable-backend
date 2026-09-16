@@ -42,7 +42,6 @@ beforeAll(async () => {
   const token = await login(data.active.email);
   adminAuthA = as(token, data.tenantA.id);
 
-  // Setup basic categories and schema for Tenant A
   const areaRes = await app.inject({
     method: 'POST',
     url: '/api/v1/location-categories',
@@ -125,7 +124,6 @@ describe('location APIs edge cases and error responses', () => {
     });
 
     it('returns 404 RESOURCE_NOT_FOUND when accessing another tenant’s location node (tenant isolation)', async () => {
-      // Create node in Tenant A
       const nodeRes = await app.inject({
         method: 'POST',
         url: '/api/v1/locations',
@@ -135,7 +133,6 @@ describe('location APIs edge cases and error responses', () => {
       expect(nodeRes.statusCode).toBe(201);
       const nodeId = bodyOf<{ id: string }>(nodeRes).id;
 
-      // Create an admin user for Tenant B
       const [adminBUser] = await db.insert(users)
         .values({
           email: uniqueEmail('admin-b'),
@@ -149,7 +146,6 @@ describe('location APIs edge cases and error responses', () => {
       const tenantBAdminToken = await login(adminBUser!.email!);
       const tenantBAdminAuth = as(tenantBAdminToken, data.tenantB.id);
 
-      // Access Tenant A's node from Tenant B
       const crossRes = await app.inject({
         method: 'GET',
         url: `/api/v1/locations/${nodeId}`,
@@ -191,7 +187,6 @@ describe('location APIs edge cases and error responses', () => {
       });
       const areaNode = bodyOf<{ id: string }>(areaRes);
 
-      // Attempt to create child with Area category instead of Street
       const response = await app.inject({
         method: 'POST',
         url: '/api/v1/locations',
@@ -320,7 +315,6 @@ describe('location APIs edge cases and error responses', () => {
 
   describe('mandapeta gated community and village street hierarchy tests', () => {
     it('creates and traverses Mandapeta Gated community with Groups, Flats, and Doors (G1..G8, F1..F8, TF1)', async () => {
-      // 1. Create categories: Group, Flat, Door
       const groupCat = bodyOf<{ id: string }>(await app.inject({
         method: 'POST',
         url: '/api/v1/location-categories',
@@ -342,7 +336,6 @@ describe('location APIs edge cases and error responses', () => {
         payload: { name: 'Door', slug: `door-${randomUUID().slice(0, 6)}` },
       }));
 
-      // 2. Create Gated Apartment Schema (Area -> Group -> Flat -> Door)
       const gatedSchema = bodyOf<{ id: string }>(await app.inject({
         method: 'POST',
         url: '/api/v1/location-schemas',
@@ -359,7 +352,6 @@ describe('location APIs edge cases and error responses', () => {
         },
       }));
 
-      // 3. Create Root Area: Mandapeta Gated
       const gatedArea = bodyOf<{ id: string; name: string }>(await app.inject({
         method: 'POST',
         url: '/api/v1/locations',
@@ -367,7 +359,6 @@ describe('location APIs edge cases and error responses', () => {
         payload: { schemaId: gatedSchema.id, name: `Mandapeta Gated ${randomUUID().slice(0, 4)}` },
       }));
 
-      // 4. Create Group A
       const groupA = bodyOf<{ id: string }>(await app.inject({
         method: 'POST',
         url: '/api/v1/locations',
@@ -375,7 +366,6 @@ describe('location APIs edge cases and error responses', () => {
         payload: { parentId: gatedArea.id, name: 'Group A' },
       }));
 
-      // 5. Create Flat A1
       const flatA1 = bodyOf<{ id: string }>(await app.inject({
         method: 'POST',
         url: '/api/v1/locations',
@@ -383,7 +373,6 @@ describe('location APIs edge cases and error responses', () => {
         payload: { parentId: groupA.id, name: 'A1' },
       }));
 
-      // 6. Generate door series: G1..G8, F1..F8, TF1
       const doorNames = [
         ...Array.from({ length: 8 }, (_, i) => `G${i + 1}`),
         ...Array.from({ length: 8 }, (_, i) => `F${i + 1}`),
@@ -403,7 +392,6 @@ describe('location APIs edge cases and error responses', () => {
       expect(generateDoors.statusCode).toBe(201);
       expect(bodyOf<{ created: number }>(generateDoors).created).toBe(17);
 
-      // 7. Verify door list under A1
       const doorsList = bodyOf<{ total: number; items: { id: string; name: string; path: string }[] }>(await app.inject({
         method: 'GET',
         url: `/api/v1/locations?parentId=${flatA1.id}&limit=50`,
@@ -418,7 +406,6 @@ describe('location APIs edge cases and error responses', () => {
       expect(names).toContain('F8');
       expect(names).toContain('TF1');
 
-      // 8. Verify resolved breadcrumbs on a single door
       const g1Node = doorsList.items.find(d => d.name === 'G1')!;
       const g1Details = bodyOf<{ path: string; depth: number }>(await app.inject({
         method: 'GET',

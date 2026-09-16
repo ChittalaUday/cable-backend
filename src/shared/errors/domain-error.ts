@@ -49,3 +49,10 @@ export function badRequest(code: ErrorCode, message: string, details?: Validatio
     details ? { code, statusCode: 400, message, details } : { code, statusCode: 400, message },
   );
 }
+
+export function orNotFound<T>(row: T | undefined, what: string): T {
+  if (row === undefined)
+    throw notFound(what);
+
+  return row;
+}

@@ -45,12 +45,11 @@ export default fp(async (app) => {
 
   function partsFor(request: FastifyRequest) {
     const config = request.routeOptions.config.cache;
-    const tenantId = (request.headers['x-tenant-id'] as string | undefined) ?? null;
 
     return {
       resource: resourceOf(request.url),
       url: request.url,
-      tenantId,
+      tenantId: request.tenantId ?? null,
       userId: config !== false && config?.scope === 'tenant'
         ? null
         : (request as { session?: { sub: string } }).session?.sub ?? 'anon',
@@ -75,8 +74,7 @@ export default fp(async (app) => {
     const status = reply.statusCode;
 
     if (MUTATING.has(request.method) && status >= 200 && status < 300) {
-      const { resource, tenantId } = partsFor(request);
-      await cache.invalidate(resource, tenantId).catch(() => {});
+      await cache.invalidate(partsFor(request).tenantId).catch(() => {});
       return payload;
     }
 
@@ -89,4 +87,7 @@ export default fp(async (app) => {
 
     return payload;
   });
-}, { name: 'cache', dependencies: ['database'] });
+}, {
+  name: 'cache',
+  dependencies: ['database', 'tenant'],
+});

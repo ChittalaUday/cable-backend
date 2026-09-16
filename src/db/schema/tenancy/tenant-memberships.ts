@@ -1,4 +1,5 @@
-import { foreignKey, index, integer, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
+import { boolean, foreignKey, index, integer, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
+import { MEMBERSHIP_STATUSES } from '@/shared/constants/tenancy';
 import { users } from '../auth/users';
 import { roles } from '../iam/roles';
 import { tenancy } from '../schemas';
@@ -11,13 +12,11 @@ export const tenantMemberships = tenancy.table('tenant_memberships', {
   tenantId: uuid('tenant_id').notNull().references(() => tenants.id, { onDelete: 'cascade' }),
   roleId: text('role_id').notNull().references(() => roles.id),
 
-  status: text('status', { enum: ['active', 'invited', 'suspended'] }).notNull().default('active'),
+  status: text('status', { enum: MEMBERSHIP_STATUSES }).notNull().default('active'),
 
-  /**
-   * The member's crew, or null for someone on none. Tied to `teams` through the
-   * composite key below, never by `team_id` alone — see that constraint.
-   */
   teamId: uuid('team_id'),
+
+  isTeamLeader: boolean('is_team_leader').notNull().default(false),
 
   permissionVersion: integer('permission_version').notNull().default(1),
 
@@ -26,14 +25,6 @@ export const tenantMemberships = tenancy.table('tenant_memberships', {
 }, table => [
   unique('tenant_memberships_user_tenant_uq').on(table.userId, table.tenantId),
 
-  /**
-   * `(tenant_id, team_id)` rather than `team_id` alone, so a membership can only
-   * join a team belonging to the same tenant it is a membership of. A plain FK
-   * on `team_id` would happily accept another operator's team id.
-   *
-   * `team_id` is nullable and the default MATCH SIMPLE skips the check when any
-   * referencing column is null, so "no team" stays legal.
-   */
   foreignKey({
     columns: [table.tenantId, table.teamId],
     foreignColumns: [teams.tenantId, teams.id],

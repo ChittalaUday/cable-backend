@@ -1,4 +1,5 @@
 import type { TypeBoxTypeProvider } from '@fastify/type-provider-typebox';
+import type { PermissionKey } from '@/shared/security/permissions';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import autoload from '@fastify/autoload';
@@ -11,7 +12,23 @@ import { createLogger } from '@/shared/logging/logger';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
-export interface RouteRecord { method: string | string[]; url: string }
+export interface RouteRecord {
+  method: string | string[];
+  url: string;
+  permission: PermissionKey | undefined;
+}
+
+function permissionOf(preHandler: unknown): PermissionKey | undefined {
+  const hooks = Array.isArray(preHandler) ? preHandler : [preHandler];
+
+  for (const hook of hooks) {
+    const key = (hook as { permission?: PermissionKey } | undefined)?.permission;
+    if (key !== undefined)
+      return key;
+  }
+
+  return undefined;
+}
 
 declare module 'fastify' {
   interface FastifyInstance {
@@ -32,15 +49,10 @@ export async function buildApp() {
     },
   }).withTypeProvider<TypeBoxTypeProvider>();
 
-  /**
-   * Every route this app registers, for the audit-coverage check in
-   * `modules/audit/audited-routes.ts`. Declared before the autoloads because
-   * `onRoute` only fires for routes added after the hook.
-   */
   const routeTable: RouteRecord[] = [];
   app.decorate('routeTable', routeTable);
   app.addHook('onRoute', (route) => {
-    routeTable.push({ method: route.method, url: route.url });
+    routeTable.push({ method: route.method, url: route.url, permission: permissionOf(route.preHandler) });
   });
 
   await app.register(autoload, {

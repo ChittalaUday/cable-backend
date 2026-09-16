@@ -41,7 +41,6 @@ export default fp(async (app) => {
       : false,
   });
 
-  // Additional security headers: Permissions-Policy
   app.addHook('onSend', async (_request, reply) => {
     reply.header(
       'permissions-policy',

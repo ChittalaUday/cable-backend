@@ -30,7 +30,9 @@ export default antfu(
         ignore: ['AGENTS.md', 'CLAUDE.md', 'README.md'],
       }],
       'max-params': ['error', 3],
-      'max-lines-per-function': ['error', 110],
+      // Length is not the thing that makes a function hard to read; a screen
+      // component or a route table is long because it is a list.
+      'max-lines-per-function': 'off',
       'complexity': ['error', 12],
 
       'ts/no-explicit-any': 'error',

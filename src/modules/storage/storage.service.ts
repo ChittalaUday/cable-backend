@@ -24,6 +24,7 @@ import { files, userFiles } from '@/db/schema';
 import { audit } from '@/modules/audit/audit.service';
 import { systemAuditContext } from '@/modules/audit/audit.types';
 import { AUDIT_ACTIONS, AUDIT_ENTITIES } from '@/shared/constants/audit';
+import { FILE_STATUS } from '@/shared/constants/media';
 import { ERROR_CODES } from '@/shared/errors';
 import { DomainError, notFound } from '@/shared/errors/domain-error';
 import { createR2Provider } from './providers/r2.provider';
@@ -106,7 +107,7 @@ export class StorageService {
         contentType: input.contentType,
         sizeBytes,
         checksum,
-        status: 'ready',
+        status: FILE_STATUS.READY,
       }).returning();
 
       if (!newFile)
@@ -175,7 +176,7 @@ export class StorageService {
       contentType: input.contentType,
       sizeBytes: input.sizeBytes ?? null,
       checksum: input.checksum ?? null,
-      status: 'pending',
+      status: FILE_STATUS.PENDING,
     }).returning();
 
     if (!file)
@@ -241,14 +242,14 @@ export class StorageService {
   async confirmUpload(userFileId: string, tenantId: string | null): Promise<UserFileWithFile> {
     const { userFile, file } = await this.findOwned(userFileId, tenantId);
 
-    if (file.status === 'ready')
+    if (file.status === FILE_STATUS.READY)
       return { userFile, file };
 
     const head = await this.options.provider.head(file.storageKey);
 
     if (!head) {
       await this.db.update(files)
-        .set({ status: 'failed', updatedAt: new Date() })
+        .set({ status: FILE_STATUS.FAILED, updatedAt: new Date() })
         .where(eq(files.id, file.id));
 
       throw new DomainError({
@@ -261,7 +262,7 @@ export class StorageService {
     if (head.sizeBytes > this.options.maxUploadBytes) {
       await this.options.provider.remove(file.storageKey);
       await this.db.update(files)
-        .set({ status: 'failed', updatedAt: new Date() })
+        .set({ status: FILE_STATUS.FAILED, updatedAt: new Date() })
         .where(eq(files.id, file.id));
 
       throw this.tooLarge(head.sizeBytes);
@@ -287,7 +288,7 @@ export class StorageService {
         }
 
         await this.db.update(files)
-          .set({ status: 'deleted', deletedAt: new Date(), updatedAt: new Date() })
+          .set({ status: FILE_STATUS.DELETED, deletedAt: new Date(), updatedAt: new Date() })
           .where(eq(files.id, file.id));
 
         return { userFile: updatedUserFile ?? userFile, file: existingReadyFile };
@@ -296,7 +297,7 @@ export class StorageService {
 
     const [ready] = await this.db.update(files)
       .set({
-        status: 'ready',
+        status: FILE_STATUS.READY,
         sizeBytes: head.sizeBytes,
         checksum: resolvedChecksum,
         updatedAt: new Date(),
@@ -310,7 +311,7 @@ export class StorageService {
   async downloadUrl(userFileId: string, tenantId: string | null): Promise<{ url: string; expiresAt: Date }> {
     const { file } = await this.findOwned(userFileId, tenantId);
 
-    if (file.status !== 'ready')
+    if (file.status !== FILE_STATUS.READY)
       throw notFound('File');
 
     const signed = await this.options.provider.createDownloadUrl(file.storageKey, this.options.downloadUrlTtlSeconds);
@@ -356,8 +357,6 @@ export class StorageService {
     const report = { ...pendingStats, ...readyStats };
     const changed = report.stalePendingCleaned + report.orphanedFilesCleaned + report.missingObjectsFlagged;
 
-    // Only when it actually did something. A nightly no-op would otherwise add
-    // 365 empty rows a year to the one table people read to find real events.
     if (changed > 0) {
       await audit.log(this.db, systemAuditContext('job:storage-cleanup'), {
         action: AUDIT_ACTIONS.STORAGE_CLEANED,
@@ -399,7 +398,7 @@ export class StorageService {
       }
 
       await this.db.update(files)
-        .set({ status: 'failed', deletedAt: new Date(), updatedAt: new Date() })
+        .set({ status: FILE_STATUS.FAILED, deletedAt: new Date(), updatedAt: new Date() })
         .where(eq(files.id, pendingFile.id));
 
       stalePendingCleaned++;
@@ -435,7 +434,7 @@ export class StorageService {
           await this.options.provider.remove(readyFile.storageKey);
         }
         await this.db.update(files)
-          .set({ status: 'deleted', deletedAt: new Date(), updatedAt: new Date() })
+          .set({ status: FILE_STATUS.DELETED, deletedAt: new Date(), updatedAt: new Date() })
           .where(eq(files.id, readyFile.id));
 
         orphanedFilesCleaned++;
@@ -444,7 +443,7 @@ export class StorageService {
         const head = await this.options.provider.head(readyFile.storageKey);
         if (head === null) {
           await this.db.update(files)
-            .set({ status: 'failed', updatedAt: new Date() })
+            .set({ status: FILE_STATUS.FAILED, updatedAt: new Date() })
             .where(eq(files.id, readyFile.id));
 
           missingObjectsFlagged++;
@@ -477,15 +476,6 @@ export class StorageService {
   }
 }
 
-/**
- * The shelf an upload belongs on when nobody said.
- *
- * Sorting by content type means every endpoint files things correctly without
- * having to remember to — the default is right, rather than everything landing
- * in one heap because a caller left the field out. A caller that knows the
- * PURPOSE of a file, rather than just its type, passes `folder` and wins: a
- * channel logo is an image, but it belongs with the logos.
- */
 export function folderFor(contentType: string): StorageFolder {
   if (contentType.startsWith('image/'))
     return 'images';
@@ -496,14 +486,6 @@ export function folderFor(contentType: string): StorageFolder {
   return 'files';
 }
 
-/**
- * Where an object lives in the bucket: `<tenant>/<folder>/<yyyy>/<mm>/<uuid><ext>`.
- *
- * Tenant first so one operator's objects can be listed, or removed, without
- * touching another's. Folder next so logos are not mixed in with everything else
- * — it comes from `STORAGE_FOLDERS`, decided in the backend, so there is no path
- * a caller can supply and no `..` to escape the tenant prefix with.
- */
 export function buildStorageKey(input: {
   tenantId: string | null;
   originalName: string;
@@ -518,14 +500,6 @@ export function buildStorageKey(input: {
   return `${input.tenantId ?? 'platform'}/${folder}/${yyyymm}/${randomUUID()}${extension}`;
 }
 
-/**
- * The object store this deployment is configured for.
- *
- * It lives beside the service rather than in `plugins/storage.ts` because the
- * API is not the only thing that uploads — seeders do too, and a second copy of
- * this wiring is how a seeder ends up writing to a different bucket than the one
- * the app serves from.
- */
 export function createStorageProvider(): StorageProvider {
   const hasR2 = env.R2_ACCOUNT_ID !== ''
     && env.R2_ACCESS_KEY_ID !== ''
@@ -559,13 +533,6 @@ export function createStorageService(
   });
 }
 
-/**
- * The address a browser or phone can fetch an object at directly.
- *
- * Signed download URLs expire in minutes, so one cannot be written into a row —
- * a channel logo has to still resolve next month. That needs the bucket's public
- * base, and without it there is no durable URL to store at all.
- */
 export function publicUrlFor(storageKey: string): string | null {
   if (env.R2_PUBLIC_BASE_URL === '')
     return null;

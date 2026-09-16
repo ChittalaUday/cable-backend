@@ -16,14 +16,16 @@ import { and, asc, count, eq, exists, ilike, inArray, isNull, notExists, sql } f
 import { channels, packageChannels, packages, serviceProviders, services, subscriptions } from '@/db/schema';
 import { audit } from '@/modules/audit/audit.service';
 import { AUDIT_ENTITIES } from '@/shared/constants/audit';
+import { ENTITY_STATUS } from '@/shared/constants/crm';
+import { owned } from '@/shared/db/owned';
 import { ERROR_CODES, isUniqueViolation } from '@/shared/errors';
-import { badRequest, conflict, inUse, notFound } from '@/shared/errors/domain-error';
-import { offsetOf } from '@/shared/pagination';
+import { badRequest, conflict, inUse, orNotFound } from '@/shared/errors/domain-error';
+import { offsetOf, pageOf } from '@/shared/pagination';
+import { likeTerm } from '@/shared/utils/search';
 import { uniqueSlug } from '@/shared/utils/slug';
 
 type Db = NodePgDatabase<typeof schema>;
 
-/** A package joined to the supplier and service it belongs to. */
 interface PackageRow {
   package: typeof packages.$inferSelect;
   serviceProviderName: string;
@@ -35,14 +37,6 @@ interface PackageRow {
 }
 type Tx = Parameters<Parameters<Db['transaction']>[0]>[0];
 
-/**
- * Packages and the channel lineups they carry
- * (docs/services-providers-packages.md).
- *
- * Everything here is scoped to a **provider**. "All packages for a service" is
- * a filter that joins through the provider — deliberately, so there is one
- * answer to which supplier a package belongs to.
- */
 export class PackagesService {
   constructor(private readonly db: Db) {}
 
@@ -58,12 +52,12 @@ export class PackagesService {
     if (query.status !== undefined)
       filters.push(eq(packages.status, query.status));
     if (query.q !== undefined)
-      filters.push(ilike(packages.name, `%${query.q}%`));
+      filters.push(ilike(packages.name, likeTerm(query.q)));
 
     const where = and(...filters);
 
-    const [rows, [totals]] = await Promise.all([
-      this.db
+    return pageOf(query as PaginationQuery, {
+      rows: this.db
         .select(this.selection())
         .from(packages)
         .innerJoin(serviceProviders, eq(serviceProviders.id, packages.serviceProviderId))
@@ -72,19 +66,13 @@ export class PackagesService {
         .orderBy(asc(packages.name))
         .limit(query.limit)
         .offset(offsetOf(query as PaginationQuery)),
-      this.db
+      totals: this.db
         .select({ total: count() })
         .from(packages)
         .innerJoin(serviceProviders, eq(serviceProviders.id, packages.serviceProviderId))
         .where(where),
-    ]);
-
-    return {
-      items: rows.map(row => this.present(row)),
-      total: totals?.total ?? 0,
-      page: query.page,
-      limit: query.limit,
-    };
+      present: rows => rows.map(row => this.present(row)),
+    });
   }
 
   async get(access: RequestAccess, id: string): Promise<PackageDetailResponse> {
@@ -134,13 +122,6 @@ export class PackagesService {
     }
   }
 
-  /**
-   * `serviceProviderId` is not patchable.
-   *
-   * Re-pointing a package at another supplier silently rewrites what every
-   * existing subscriber is on, and what the MSO is owed for them. Deactivate it
-   * and create the package the other provider actually sells.
-   */
   async update(access: RequestAccess, id: string, patch: UpdatePackageBody): Promise<PackageResponse> {
     const before = this.present(await this.find(access.tenantId, id));
 
@@ -155,7 +136,6 @@ export class PackagesService {
     return after;
   }
 
-  /** Soft delete, and refused outright while anyone is still subscribed. */
   async remove({ tenantId, audit: context }: RequestAccess, id: string): Promise<void> {
     const [exists] = await this.db
       .select({ id: packages.id })
@@ -163,8 +143,6 @@ export class PackagesService {
       .where(and(eq(packages.tenantId, tenantId), eq(packages.id, id), isNull(packages.deletedAt)))
       .limit(1);
 
-    // Deleting what is not there stayed a 204 before this method audited
-    // anything, and there is no change to record either.
     if (exists === undefined)
       return;
 
@@ -184,18 +162,12 @@ export class PackagesService {
 
     await this.db
       .update(packages)
-      .set({ deletedAt: new Date(), status: 'inactive' })
+      .set({ deletedAt: new Date(), status: ENTITY_STATUS.INACTIVE })
       .where(and(eq(packages.tenantId, tenantId), eq(packages.id, id), isNull(packages.deletedAt)));
 
     await audit.deleted(this.db, context, { entityType: AUDIT_ENTITIES.PACKAGE, entityId: id, before });
   }
 
-  /**
-   * Replaces a package's lineup in one call.
-   *
-   * A bouquet is edited as a list in the UI; a diff of add/remove calls is many
-   * round trips and a half-applied state if one of them fails.
-   */
   async setChannels(access: RequestAccess, id: string, input: SetPackageChannelsBody): Promise<PackageDetailResponse> {
     const before = await this.get(access, id);
     const pkg = await this.find(access.tenantId, id);
@@ -214,8 +186,6 @@ export class PackagesService {
           inArray(channels.id, ids),
         ));
 
-      // A lineup may only hold channels the same supplier carries — otherwise a
-      // bouquet quietly promises a channel that provider's feed does not have.
       if (owned.length !== ids.length)
         throw badRequest(ERROR_CODES.VALIDATION_FAILED, 'Every channel must belong to this package’s provider');
     }
@@ -253,11 +223,9 @@ export class PackagesService {
     if (query.resolution !== undefined)
       filters.push(eq(channels.resolution, query.resolution));
     if (query.q !== undefined)
-      filters.push(ilike(channels.name, `%${query.q}%`));
+      filters.push(ilike(channels.name, likeTerm(query.q)));
 
     if (query.packageId !== undefined) {
-      // Correlated on `channels.id`, so this is a semi-join the planner can use
-      // the `package_channels` primary key for.
       const carried = this.db
         .select({ one: sql`1` })
         .from(packageChannels)
@@ -271,19 +239,16 @@ export class PackagesService {
 
     const where = and(...filters);
 
-    const [rows, [totals]] = await Promise.all([
-      this.db
+    return pageOf(query as PaginationQuery, {
+      rows: this.db
         .select()
         .from(channels)
         .where(where)
         .orderBy(asc(channels.channelNumber))
         .limit(query.limit)
         .offset(offsetOf(query as PaginationQuery)),
-      this.db.select({ total: count() }).from(channels).where(where),
-    ]);
-
-    return {
-      items: rows.map(row => ({
+      totals: this.db.select({ total: count() }).from(channels).where(where),
+      present: rows => rows.map(row => ({
         id: row.id,
         serviceProviderId: row.serviceProviderId,
         channelNumber: row.channelNumber,
@@ -298,13 +263,8 @@ export class PackagesService {
         logoUrl: row.logoUrl,
         status: row.status,
       })),
-      total: totals?.total ?? 0,
-      page: query.page,
-      limit: query.limit,
-    };
+    });
   }
-
-  // ── Internals ───────────────────────────────────────────────────────────────
 
   private selection() {
     return {
@@ -313,16 +273,9 @@ export class PackagesService {
       serviceId: services.id,
       serviceName: services.name,
       serviceIcon: services.icon,
-      // The outer table is spelled out rather than interpolated as a drizzle
-      // column: a column in a SELECT list is emitted unqualified, so `"id"`
-      // inside these subqueries would bind to the INNER table's own `id` and
-      // the correlation would silently match nothing.
       channelCount: sql<number>`(
         SELECT count(*)::int FROM crm.package_channels pc WHERE pc.package_id = crm.packages.id
       )`,
-      // One provider can sell the same package name twice for two areas, at two
-      // prices. Without the areas on the row the list is two identical entries.
-      // Empty is the common case and reads as "wherever the provider goes".
       coverageAreas: sql<string[]>`(
         SELECT coalesce(array_agg(lp.path ORDER BY lp.path), '{}')
         FROM crm.service_coverage c
@@ -338,21 +291,12 @@ export class PackagesService {
       .from(packages)
       .innerJoin(serviceProviders, eq(serviceProviders.id, packages.serviceProviderId))
       .innerJoin(services, eq(services.id, serviceProviders.serviceId))
-      .where(and(eq(packages.tenantId, tenantId), eq(packages.id, id), isNull(packages.deletedAt)))
+      .where(owned(packages, tenantId, id))
       .limit(1);
 
-    if (row === undefined)
-      throw notFound('Package');
-
-    return row;
+    return orNotFound(row, 'Package');
   }
 
-  /**
-   * Slugs already spent on this provider's packages.
-   *
-   * Soft-deleted rows count — the unique index does not exclude them, so a
-   * retired `basic-pack` still owns the name.
-   */
   private async takenSlugs(tenantId: string, serviceProviderId: string): Promise<string[]> {
     const rows = await this.db
       .select({ slug: packages.slug })
@@ -366,17 +310,10 @@ export class PackagesService {
     const [row] = await this.db
       .select({ id: serviceProviders.id })
       .from(serviceProviders)
-      .where(and(
-        eq(serviceProviders.tenantId, tenantId),
-        eq(serviceProviders.id, id),
-        isNull(serviceProviders.deletedAt),
-      ))
+      .where(owned(serviceProviders, tenantId, id))
       .limit(1);
 
-    if (row === undefined)
-      throw notFound('Service provider');
-
-    return row;
+    return orNotFound(row, 'Service provider');
   }
 
   private present(row: PackageRow): PackageResponse {

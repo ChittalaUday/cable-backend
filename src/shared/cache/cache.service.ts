@@ -34,8 +34,8 @@ export class CacheService {
     await this.redis.set(await this.keyFor(parts), payload, 'EX', this.config.ttlSeconds);
   }
 
-  async invalidate(resource: string, tenantId: string | null): Promise<void> {
-    await this.redis.incr(this.versionKey(resource, tenantId));
+  async invalidate(tenantId: string | null): Promise<void> {
+    await this.redis.incr(this.versionKey(tenantId));
   }
 
   async flushAll(): Promise<void> {
@@ -44,12 +44,12 @@ export class CacheService {
       await this.redis.del(...keys);
   }
 
-  private versionKey(resource: string, tenantId: string | null): string {
-    return `${this.config.prefix}ver:${tenantId ?? 'global'}:${resource}`;
+  private versionKey(tenantId: string | null): string {
+    return `${this.config.prefix}ver:${tenantId ?? 'global'}`;
   }
 
   private async keyFor(parts: CacheKeyParts): Promise<string> {
-    const version = await this.redis.get(this.versionKey(parts.resource, parts.tenantId)) ?? '0';
+    const version = await this.redis.get(this.versionKey(parts.tenantId)) ?? '0';
     const scope = parts.userId ?? 'tenant';
     return `${this.config.prefix}v${version}:${parts.tenantId ?? 'global'}:${scope}:${parts.url}`;
   }

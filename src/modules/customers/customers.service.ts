@@ -13,65 +13,36 @@ import {
   customerEquipment,
   customers,
   equipment,
+  itemCatalog,
   packages,
   serviceProviders,
   services,
   subscriptions,
   users,
 } from '@/db/schema';
+import { CUSTOMER_STATUS } from '@/shared/constants/crm';
 import { notFound } from '@/shared/errors/domain-error';
 import { listCustomers, locationPaths, reachCondition } from './customers.list';
 import { searchCustomers } from './customers.search';
 
 export type Db = NodePgDatabase<typeof schema>;
 
-/** The latest ledger lines a details page shows. The full history is its own call. */
 const RECENT_TRANSACTIONS = 20;
 
-/**
- * The module's public wire contract. Re-exported here because a cross-module
- * import may only reach a module's service (eslint `no-restricted-imports`), and
- * `/auth/me` embeds this shape in its own response schema.
- */
+export { customerWithinNodes } from './customers.list';
+
 export { CustomerProfileResponse } from './customers.schema';
 
-/**
- * The subscriber side of a signed-in account.
- *
- * A `users` row is an identity; a `crm.customers` row is what that identity buys
- * from one operator. They are separate because staff have the first and not the
- * second, and because the same person can be a customer of two operators — the
- * customer record is per tenant, the login is not.
- */
 export class CustomersService {
   constructor(private readonly db: Db) {}
 
-  /**
-   * A page of customers for staff, scoped to what the caller may see.
-   *
-   * See `customers.list.ts` — data is hydrated in batches regardless of page
-   * size, and keyset paging keeps deep pages fast.
-   */
   async list(access: RequestAccess, query: ListCustomersQuery): Promise<CustomerPage> {
     return query.q === undefined
       ? listCustomers(this.db, access, query)
       : searchCustomers(this.db, access, query);
   }
 
-  /**
-   * The whole customer, in one request.
-   *
-   * A customer id is a handle onto a graph: subscriptions, and through each of
-   * those a provider, a package, a service and a location. A client that walked
-   * that graph over the public endpoints would make six or more calls for one
-   * page, most of them repeating work. Four queries here, run together, resolve
-   * all of it — the joins are indexed and cost the database nothing.
-   */
   async detail(access: RequestAccess, id: string): Promise<CustomerDetail> {
-    // The caller's reach is part of the lookup, not a check after it. The detail
-    // route is directly addressable, so an id from anywhere would otherwise read
-    // a customer in an area this caller was never granted — and a separate check
-    // is a second query and a second chance to forget it.
     const reach = reachCondition(access);
 
     const [customer] = reach === null
@@ -79,8 +50,6 @@ export class CustomersService {
       : await this.db
           .select({
             row: customers,
-            // `auth.users` is the identity of record once there is a login;
-            // `customers.name` is the imported fallback. Same rule as the list.
             displayName: sql<string | null>`coalesce(${users.name}, ${customers.name})`,
             displayPhone: sql<string | null>`coalesce(${users.phone}, ${customers.phone})`,
           })
@@ -94,8 +63,6 @@ export class CustomersService {
           ))
           .limit(1);
 
-    // Out of reach answers 404, not 403: whether a customer exists in someone
-    // else's area is not this caller's business either.
     if (customer === undefined)
       throw notFound('Customer');
 
@@ -108,7 +75,7 @@ export class CustomersService {
     ]);
 
     const paths = await locationPaths(this.db, record.locationId === null ? [] : [record.locationId]);
-    const active = lines.filter(line => line.status === 'active');
+    const active = lines.filter(line => line.status === CUSTOMER_STATUS.ACTIVE);
 
     return {
       id: record.id,
@@ -131,8 +98,6 @@ export class CustomersService {
         subscriptions: lines.length,
         activeSubscriptions: active.length,
         services: [...new Set(active.map(line => line.service.name))].sort(),
-        // Money stays a decimal string on the wire (§8); summed in cents so the
-        // total never picks up a float's rounding error.
         monthlyValue: sumMoney(active.map(line => line.price)),
         outstandingBalance: record.outstandingBalance,
       },
@@ -141,12 +106,6 @@ export class CustomersService {
     };
   }
 
-  /**
-   * Everything a subscriber's own app needs on open, in two queries.
-   *
-   * `null` for anyone who is not a customer of this tenant — staff and admins
-   * are the normal case, and they cost one indexed lookup that finds nothing.
-   */
   async profileFor(tenantId: string, userId: string): Promise<CustomerProfile | null> {
     const [customer] = await this.db
       .select()
@@ -162,7 +121,7 @@ export class CustomersService {
       return null;
 
     const subscribed = await this.subscriptionLines(tenantId, customer.id);
-    const active = subscribed.filter(item => item.status === 'active');
+    const active = subscribed.filter(item => item.status === CUSTOMER_STATUS.ACTIVE);
 
     return {
       id: customer.id,
@@ -177,23 +136,20 @@ export class CustomersService {
       summary: {
         subscriptions: subscribed.length,
         activeSubscriptions: active.length,
-        // What they are actually on, deduplicated — "Cable TV, Broadband" is the
-        // line a home screen renders, and it should not need the full list.
         services: [...new Set(active.map(item => item.service.name))].sort(),
         outstandingBalance: customer.outstandingBalance,
       },
     };
   }
 
-  /** Set-top boxes and remotes on loan, newest assignment first. */
   private async equipmentOf(tenantId: string, customerId: string) {
     const rows = await this.db
       .select({
         id: customerEquipment.id,
         subscriptionId: customerEquipment.subscriptionId,
-        equipmentType: equipment.equipmentType,
-        brand: equipment.brand,
-        model: equipment.model,
+        name: itemCatalog.name,
+        brand: itemCatalog.brand,
+        model: itemCatalog.model,
         serialNumber: equipment.serialNumber,
         status: customerEquipment.status,
         assignedAt: customerEquipment.assignedAt,
@@ -201,6 +157,7 @@ export class CustomersService {
       })
       .from(customerEquipment)
       .innerJoin(equipment, eq(equipment.id, customerEquipment.equipmentId))
+      .leftJoin(itemCatalog, eq(itemCatalog.id, equipment.catalogId))
       .where(and(
         eq(customerEquipment.tenantId, tenantId),
         eq(customerEquipment.customerId, customerId),
@@ -210,15 +167,14 @@ export class CustomersService {
     return rows.map(row => ({
       id: row.id,
       subscriptionId: row.subscriptionId,
-      name: [row.brand, row.model].filter(Boolean).join(' ') || row.equipmentType,
+      name: (row.name !== null && row.name.length > 0) ? row.name : ([row.brand, row.model].filter(Boolean).join(' ') || 'Equipment'),
       serialNumber: row.serialNumber,
       status: row.status,
       assignedAt: row.assignedAt.toISOString(),
-      returnedAt: row.returnedAt?.toISOString() ?? null,
+      returnedAt: row.returnedAt ? row.returnedAt.toISOString() : null,
     }));
   }
 
-  /** The latest ledger lines. The full history is its own call, when there is one. */
   private async ledgerOf(tenantId: string, customerId: string) {
     const rows = await this.db
       .select()
@@ -243,13 +199,6 @@ export class CustomersService {
     }));
   }
 
-  /**
-   * A subscription with its provider, package and service already attached.
-   *
-   * One definition, used by both the subscriber's own profile and the staff
-   * detail page — the shape a client renders is the same either way, and two
-   * copies of this join is how the two views quietly drift apart.
-   */
   private async subscriptionLines(tenantId: string, customerId: string) {
     const lines = await this.db
       .select({
@@ -282,7 +231,6 @@ export class CustomersService {
       startDate: line.subscription.startDate.toISOString(),
       endDate: line.subscription.endDate?.toISOString() ?? null,
       billingCycle: line.subscription.billingCycle,
-      // Money crosses the wire as a string (§8) — `numeric` already is one.
       price: line.subscription.price,
       locationId: line.subscription.locationId,
       installationAddress: line.subscription.installationAddress,
@@ -293,13 +241,6 @@ export class CustomersService {
   }
 }
 
-/**
- * Add decimal strings without going through a float.
- *
- * `0.1 + 0.2` is the reason: money is a string on the wire and `numeric` in the
- * database precisely so it never becomes a double, and summing it in JavaScript
- * would undo that at the last step.
- */
 function sumMoney(values: string[]): string {
   const paise = values.reduce((total, value) => total + Math.round(Number(value) * 100), 0);
 

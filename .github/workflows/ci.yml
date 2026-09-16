@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A second push to the same branch cancels the run still going. Nobody reads the
+# result of a commit that has already been replaced.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    services:
+      # Matches `src/test/global-setup.ts`, which uses postgres:18-alpine via
+      # Testcontainers when no DATABASE_URL_TEST is set. Same major version in
+      # both places, or the suite passes locally on behaviour CI does not have.
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: cable
+          POSTGRES_PASSWORD: cable
+          # The name has to contain "test": `global-setup.ts` drops every
+          # application schema and refuses to run against anything else.
+          POSTGRES_DB: cable_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U cable"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      # The cache tests are real: they read and write Redis rather than a mock,
+      # because the thing being tested is the key namespace.
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # A fresh container per run, and `global-setup.ts` drops and re-migrates
+      # on top of that — so a green run means the code is green, not that the
+      # leftovers happened to line up.
+      DATABASE_URL_TEST: postgres://cable:cable@127.0.0.1:5432/cable_test
+      REDIS_URL: redis://127.0.0.1:6379/2
+      JWT_SECRET: ci-secret-at-least-32-characters-long!!
+      # The suite signs in far more than ten times a minute. The limiter stays
+      # registered so its wiring is still exercised — only the ceiling moves.
+      SIGN_IN_RATE_LIMIT_MAX: 100000
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # `package.json` engines says >=24.
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Three separate steps rather than `pnpm check-all`, so a failure names
+      # itself in the job summary instead of in the middle of one log.
+      - run: pnpm lint
+
+      - run: pnpm type-check
+
+      - run: pnpm test

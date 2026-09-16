@@ -253,6 +253,55 @@
       "when": 1789384955074,
       "tag": "0035_location_path_codes",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1789394877601,
+      "tag": "0036_puzzling_bishop",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1789395215821,
+      "tag": "0037_silent_zeigeist",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1789397950730,
+      "tag": "0038_spooky_purple_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1789403318726,
+      "tag": "0039_inventory_domain",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1789478283807,
+      "tag": "0040_young_mach_iv",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1789479192239,
+      "tag": "0041_complete_loa",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1789479210064,
+      "tag": "0042_dry_celestials",
+      "breakpoints": true
     }
   ]
 }

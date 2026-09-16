@@ -5,6 +5,7 @@ import type { Database } from '@/plugins/database';
 import type { Page } from '@/shared/pagination';
 import { and, count, desc, eq, isNull, sql } from 'drizzle-orm';
 import { notifications } from '@/db/schema';
+import { NOTIFICATION_STATUS } from '@/shared/constants/notify';
 import { notFound } from '@/shared/errors/domain-error';
 import { REDACTED_BODY } from './notifications.types';
 
@@ -37,7 +38,7 @@ export class NotificationService {
       });
 
       const [sent] = await this.db.update(notifications)
-        .set({ status: 'sent', sentAt: new Date(), providerMessageId: result.providerMessageId })
+        .set({ status: NOTIFICATION_STATUS.SENT, sentAt: new Date(), providerMessageId: result.providerMessageId })
         .where(eq(notifications.id, row.id))
         .returning();
 
@@ -46,7 +47,7 @@ export class NotificationService {
     catch (error) {
       await this.db.update(notifications)
         .set({
-          status: 'failed',
+          status: NOTIFICATION_STATUS.FAILED,
           failedAt: new Date(),
           error: error instanceof Error ? error.message : String(error),
         })

@@ -9,15 +9,6 @@ import {
   SetCoverageBody,
 } from '../services.schema';
 
-/**
- * Where each service and provider is sold (docs/services-providers-packages.md §5).
- *
- * A coverage row covers its node and everything below it, and the nearest
- * ancestor wins — so "ACT serves Mandapeta, except Block C" is two rows.
- *
- * Three levels, narrowest first: a package's own rows beat its provider's,
- * which beat the service's. Each is edited as a whole list.
- */
 const routes: FastifyPluginAsyncTypebox = async (app) => {
   const errorRef = { $ref: 'ErrorResponse#' };
   const errors = { 400: errorRef, 401: errorRef, 403: errorRef, 404: errorRef, 409: errorRef };

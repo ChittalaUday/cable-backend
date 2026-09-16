@@ -14,15 +14,6 @@ import { createTestDb } from '@/test/db';
 import { seedAuthData, TEST_PASSWORD, uniqueDeviceId, uniqueEmail } from '@/test/fixtures';
 import { bodyOf } from '@/test/http';
 
-/**
- * Every change lands in `audit.audit_logs`, filed under the right tenant.
- *
- * The caller here is a member of exactly ONE tenant and therefore sends no
- * `x-tenant-id` — the normal case for operator staff, and the case that used to
- * write `tenant_id = null` on every row because the audit context read the raw
- * header instead of the tenant `plugins/tenant.ts` had already resolved.
- */
-
 const { db, close } = createTestDb();
 
 let app: BuiltApp;
@@ -49,8 +40,6 @@ beforeAll(async () => {
   await app.ready();
   data = await seedAuthData(db);
 
-  // `data.active` belongs to two tenants, so it MUST send the header. This test
-  // needs the opposite: one membership, no header.
   const [solo] = await db
     .insert(users)
     .values({ email: uniqueEmail('solo'), name: 'Solo Admin', passwordHash: await hashPassword(TEST_PASSWORD) })
@@ -99,7 +88,6 @@ describe('audit trail', () => {
       entityId: service.id,
       actorType: 'user',
       actorId,
-      // The bug this test exists for: a header that was never sent.
       tenantId: data.tenantA.id,
     });
     expect(onCreate!.newValues).toMatchObject({ name: 'Audited Service', slug });
@@ -116,8 +104,6 @@ describe('audit trail', () => {
     const onUpdate = await logFor(service.id);
     expect(onUpdate).toMatchObject({ action: auditAction(AUDIT_ENTITIES.SERVICE, AUDIT_VERBS.UPDATED), tenantId: data.tenantA.id });
     expect(onUpdate!.changes).toMatchObject({ name: { old: 'Audited Service', new: 'Renamed Service' } });
-    // A per-request field, so it must differ from the create's — proof the audit
-    // context is not being read off the cached, shared access context.
     expect(onUpdate!.requestId).not.toBe(onCreate!.requestId);
 
     const removed = await app.inject({ method: 'DELETE', url: `/api/v1/services/${service.id}`, headers: auth });
@@ -143,7 +129,6 @@ describe('audit trail', () => {
       payload: { serviceId: service.id, name: 'Supplier', slug: `sup-${unique()}` },
     });
 
-    // Refused: the service still has a provider.
     const refused = await app.inject({ method: 'DELETE', url: `/api/v1/services/${service.id}`, headers: auth });
     expect(refused.statusCode).toBe(409);
 
@@ -159,10 +144,6 @@ describe('audit trail', () => {
 describe('auth trail', () => {
   const device = () => ({ 'x-device-id': uniqueDeviceId(), 'x-platform': 'ios' });
 
-  /**
-   * Scoped to one entity on purpose: the whole suite shares a database, so a
-   * bare count of an action is whatever every other test file signed in as too.
-   */
   async function authRows(action: AuditAction, entityId: string) {
     return db
       .select()
@@ -188,8 +169,6 @@ describe('auth trail', () => {
 
     const rows = await authRows(AUDIT_ACTIONS.AUTH_LOGIN_SUCCEEDED, actorId);
     expect(rows).toHaveLength(before + 1);
-    // `anonymous`: the hook builds the context before sign-in has identified
-    // anybody, and the actor is stamped on afterwards.
     expect(rows[0]).toMatchObject({ actorId, entityId: actorId, actorType: 'anonymous' });
     expect(rows[0]!.metadata).toMatchObject({ identifier: actorEmail.toLowerCase() });
   });
@@ -206,11 +185,8 @@ describe('auth trail', () => {
     const [known] = await authRows(AUDIT_ACTIONS.AUTH_LOGIN_FAILED, actorId);
     expect(known).toMatchObject({ actorId, entityId: actorId });
     expect(known!.metadata).toMatchObject({ reason: 'AUTH_CREDENTIALS_INVALID' });
-    // The attempted password must not survive anywhere in the row.
     expect(JSON.stringify(known)).not.toContain('not-the-password');
 
-    // An account that does not exist still leaves a row — otherwise credential
-    // stuffing against unknown names is invisible.
     const unknown = uniqueEmail('ghost').toLowerCase();
     const noSuchUser = await app.inject({
       method: 'POST',
@@ -236,7 +212,6 @@ describe('auth trail', () => {
     const rotated = await app.inject({ method: 'POST', url: '/api/v1/auth/refresh', payload: { refreshToken } });
     expect(rotated.statusCode).toBe(200);
 
-    // Replaying the token that was just rotated away.
     const replay = await app.inject({ method: 'POST', url: '/api/v1/auth/refresh', payload: { refreshToken } });
     expect(replay.statusCode).toBe(401);
 
@@ -246,7 +221,6 @@ describe('auth trail', () => {
       .where(and(eq(auditLogs.action, AUDIT_ACTIONS.AUTH_TOKEN_REUSE_DETECTED), eq(auditLogs.actorId, actorId)))
       .orderBy(desc(auditLogs.createdAt), desc(auditLogs.id));
 
-    // The session id, not 'unknown' — this row is where an incident starts.
     expect(row).toBeDefined();
     expect(row!.entityId).not.toBe('unknown');
     expect(row!.metadata).toHaveProperty('deviceId');
@@ -261,7 +235,6 @@ describe('auth trail', () => {
     });
     const { accessToken } = bodyOf(login);
 
-    // The sign-in response does not name the session; `/auth/me` does.
     const me = await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: { authorization: `Bearer ${accessToken}` } });
     const { sessionId } = bodyOf(me);
 

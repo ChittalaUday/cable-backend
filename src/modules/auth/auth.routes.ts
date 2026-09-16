@@ -17,8 +17,6 @@ import {
 const routes: FastifyPluginAsyncTypebox = async (app) => {
   const errorRef = { $ref: 'ErrorResponse#' };
 
-  // `public` is the opt-out from the global authenticate hook (plugins/tenant.ts):
-  // these four routes are how a caller gets a token in the first place.
   const signInLimit = {
     config: {
       rateLimit: { max: env.SIGN_IN_RATE_LIMIT_MAX, timeWindow: '1 minute' },

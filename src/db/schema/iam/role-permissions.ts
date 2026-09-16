@@ -10,12 +10,6 @@ export const rolePermissions = iam.table('role_permissions', {
   scope: text('scope', { enum: PERMISSION_SCOPES }).notNull(),
 }, table => [
   primaryKey({ columns: [table.roleId, table.permissionKey] }),
-  // Built from the same array the column's enum uses. Spelling the list out
-  // twice is how the constraint ends up allowing a scope the code retired.
-  //
-  // `sql.raw`, not an interpolation: a bound parameter is legal in a query and
-  // not in DDL, so `sql`${scope}`` would emit `IN ($1, $2, ...)` into the
-  // generated migration. The values are compile-time constants from this repo.
   check('role_permissions_known_scope', sql.raw(`"scope" IN (${PERMISSION_SCOPES.map(scope => `'${scope}'`).join(', ')})`)),
 ]);
 

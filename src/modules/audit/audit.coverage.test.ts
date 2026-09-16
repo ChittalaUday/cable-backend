@@ -3,15 +3,6 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from '@/app';
 import { AUDITED_ROUTES, MUTATING_METHODS, UNAUDITED_ROUTES } from './audited-routes';
 
-/**
- * The tripwire that keeps the audit trail complete.
- *
- * A new `POST`/`PUT`/`PATCH`/`DELETE` route fails this test until somebody adds
- * it to `AUDITED_ROUTES` (with the action it writes) or to `UNAUDITED_ROUTES`
- * (with the reason it writes nothing). Both directions are checked, so a
- * deleted route cannot leave a stale line behind either.
- */
-
 let app: BuiltApp;
 let mutating: string[];
 
@@ -29,8 +20,6 @@ afterAll(async () => app.close());
 
 describe('audit coverage', () => {
   it('finds the mutating routes at all', () => {
-    // Guards the guard: a broken route table would make every check below pass
-    // by testing nothing.
     expect(mutating.length).toBeGreaterThan(20);
   });
 

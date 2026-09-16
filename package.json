@@ -22,6 +22,7 @@
     "test:watch": "vitest",
     "test:ci": "vitest run --coverage",
     "check-all": "pnpm run lint && pnpm run type-check && pnpm run test",
+    "clean:comments": "tsx scripts/strip-comments.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx --env-file-if-exists=.env src/db/migrate.ts",
     "db:migrate:test": "tsx --env-file-if-exists=.env.test src/db/migrate.ts",
@@ -30,6 +31,7 @@
     "db:seed:mso": "tsx --env-file-if-exists=.env src/db/seed/seed-mso-data.ts",
     "db:seed:packages": "tsx --env-file-if-exists=.env src/db/seed/seed-packages-channels.ts",
     "db:seed:channel-logos": "tsx --env-file-if-exists=.env src/db/seed/seed-channel-logos.ts",
+    "db:seed:remotes": "tsx --env-file-if-exists=.env src/db/seed/seed-remotes-cli.ts",
     "db:up": "docker compose up -d postgres",
     "prepare": "husky"
   },

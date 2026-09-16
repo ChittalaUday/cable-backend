@@ -90,7 +90,7 @@
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 12 },
       "id": 9,
       "options": { "cellHeight": "sm", "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": false }, "showHeader": true },
-      "targets": [{ "expr": "topk(10, 1000 * sum by (service, instance, method, route) (rate(http_request_duration_seconds_sum{service=~\"${service:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval])) / sum by (service, instance, method, route) (rate(http_request_duration_seconds_count{service=~\"${service:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval])))", "format": "table", "instant": true, "refId": "A" }],
+      "targets": [{ "expr": "topk(10, (1000 * sum by (service, instance, method, route) (increase(http_request_duration_seconds_sum{service=~\"${service:regex}\",instance=~\"${instance:regex}\"}[$__range])) / sum by (service, instance, method, route) (increase(http_request_duration_seconds_count{service=~\"${service:regex}\",instance=~\"${instance:regex}\"}[$__range]))) < Inf)", "format": "table", "instant": true, "refId": "A" }],
       "title": "Slowest endpoints (average)",
       "transformations": [{ "id": "organize", "options": { "excludeByName": { "Time": true, "__name__": true }, "renameByName": { "Value": "Average response time" } } }],
       "type": "table"

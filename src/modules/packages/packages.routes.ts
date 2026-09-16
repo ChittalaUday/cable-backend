@@ -16,13 +16,6 @@ import {
 } from './packages.schema';
 import { PackagesService } from './packages.service';
 
-/**
- * Packages — always a provider's, never a service's
- * (docs/services-providers-packages.md).
- *
- * `?serviceId=` is a convenience filter that joins through the provider, so the
- * URL space never implies a package belongs to a service.
- */
 const routes: FastifyPluginAsyncTypebox = async (app) => {
   app.decorate('packages', new PackagesService(app.db));
 

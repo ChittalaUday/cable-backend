@@ -17,3 +17,7 @@ export const media = pgSchema('media');
 export const analytics = pgSchema('analytics');
 
 export const audit = pgSchema('audit');
+
+export const inventory = pgSchema('inventory');
+
+export const remotesSchema = pgSchema('remotes');

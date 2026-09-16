@@ -26,14 +26,8 @@ export const subscriptions = crm.table('subscriptions', {
   billingCycle: text('billing_cycle', { enum: BILLING_CYCLES }).notNull().default('monthly'),
   price: numeric('price', { precision: 12, scale: 2 }).notNull().default('0'),
 
-  /**
-   * Where the line is installed — the single source of truth for a
-   * subscription's address. Required: a line has to terminate somewhere, and
-   * coverage, routing and area-scoped permissions all read this and nothing else.
-   */
   locationId: uuid('location_id').notNull().references(() => locations.id, { onDelete: 'restrict' }),
 
-  /** Free-text detail a technician needs on top of the node (door, landmark). Never queried. */
   installationAddress: text('installation_address'),
 
   metadata: jsonb('metadata'),

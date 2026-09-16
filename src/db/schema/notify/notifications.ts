@@ -1,11 +1,9 @@
 import { index, jsonb, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { NOTIFICATION_CHANNELS, NOTIFICATION_STATUSES } from '@/shared/constants/notify';
 import { users } from '../auth/users';
 import { files } from '../media/files';
 import { notify } from '../schemas';
 import { tenants } from '../tenancy/tenants';
-
-export const NOTIFICATION_CHANNELS = ['in_app', 'whatsapp', 'sms'] as const;
-export const NOTIFICATION_STATUSES = ['queued', 'sent', 'failed'] as const;
 
 export const notifications = notify.table('notifications', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -22,7 +20,6 @@ export const notifications = notify.table('notifications', {
 
   destination: text('destination'),
 
-  /** An image to render in-app or attach on WhatsApp. */
   fileId: uuid('file_id').references(() => files.id, { onDelete: 'set null' }),
 
   status: text('status', { enum: NOTIFICATION_STATUSES }).notNull().default('queued'),

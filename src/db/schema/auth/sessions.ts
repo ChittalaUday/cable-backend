@@ -1,18 +1,9 @@
 import { sql } from 'drizzle-orm';
 import { index, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { SESSION_REVOKE_REASONS } from '@/shared/constants/auth';
 import { auth } from '../schemas';
 import { devices } from './devices';
 import { users } from './users';
-
-export const SESSION_REVOKE_REASONS = [
-  'logout',
-  'logout_all',
-  'reuse_detected',
-  'admin_revoked',
-  'credentials_changed',
-  'device_blocked',
-  'session_limit',
-] as const;
 
 export const sessions = auth.table('sessions', {
   id: uuid('id').primaryKey().defaultRandom(),

@@ -1,12 +1,12 @@
-import type { SQL } from 'drizzle-orm';
 import type { CustomerListItem, CustomerPage, ListCustomersQuery } from './customers.schema';
 import type { Db } from './customers.service';
 import type { RequestAccess } from '@/modules/iam/access.service';
-import { and, eq, exists, gte, inArray, isNull, lte, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import {
   customerEquipment,
   customers,
   equipment,
+  itemCatalog,
   locationPaths as locationPathsView,
   serviceProviders,
   services,
@@ -15,7 +15,8 @@ import {
 } from '@/db/schema';
 import { ERROR_CODES } from '@/shared/errors';
 import { badRequest } from '@/shared/errors/domain-error';
-import { multiBoxFilter, reachCondition, subtreeFilter } from './customers.list';
+import { escapeLike } from '@/shared/utils/search';
+import { baseFilters } from './customers.list';
 
 export interface CustomerResultRef extends Record<string, unknown> {
   customerId: string;
@@ -45,7 +46,7 @@ const subscriptionSearchText = sql.raw(`(
 const equipmentSearchText = sql.raw(`(
   coalesce(eq.serial_number, '') || ' ' || coalesce(eq.vc_number, '') || ' ' ||
   coalesce(eq.mac_address, '') || ' ' || coalesce(eq.barcode, '') || ' ' ||
-  coalesce(eq.brand, '') || ' ' || coalesce(eq.model, '') || ' ' || eq.equipment_type
+  coalesce(ic.brand, '') || ' ' || coalesce(ic.model, '') || ' ' || coalesce(ic.name, '')
 )`);
 
 function normalizeQuery(value: string): string {
@@ -54,10 +55,6 @@ function normalizeQuery(value: string): string {
     throw badRequest(ERROR_CODES.VALIDATION_FAILED, 'Search query cannot be empty');
 
   return normalized;
-}
-
-function escapeLike(value: string): string {
-  return value.replace(/[\\%_]/g, '\\$&');
 }
 
 function groupByCustomer<T extends { customerId: string }>(rows: T[]): Map<string, T[]> {
@@ -94,43 +91,13 @@ function searchLocations(
 }
 
 function eligibleQuery(db: Db, access: RequestAccess, query: ListCustomersQuery) {
-  const reach = reachCondition(access);
-  if (reach === null)
+  const filters = baseFilters(db, access, query);
+  if (filters === null)
     return null;
-
-  const filters: SQL[] = [
-    eq(customers.tenantId, access.tenantId),
-    isNull(customers.deletedAt),
-    ...reach,
-  ];
-
-  if (query.status !== undefined)
-    filters.push(eq(customers.status, query.status));
-  if (query.locationId !== undefined)
-    filters.push(subtreeFilter(query.locationId));
-  if (query.multiBox)
-    filters.push(multiBoxFilter(access.tenantId));
-
-  const onLine = (condition: SQL) => exists(db.select({ one: sql`1` }).from(subscriptions).where(and(
-    eq(subscriptions.customerId, customers.id),
-    isNull(subscriptions.deletedAt),
-    condition,
-  )));
-  if (query.serviceProviderId !== undefined)
-    filters.push(onLine(eq(subscriptions.serviceProviderId, query.serviceProviderId)));
-  if (query.packageId !== undefined)
-    filters.push(onLine(eq(subscriptions.packageId, query.packageId)));
-  if (query.createdFrom !== undefined)
-    filters.push(gte(customers.createdAt, new Date(query.createdFrom)));
-  if (query.createdTo !== undefined)
-    filters.push(lte(customers.createdAt, new Date(query.createdTo)));
 
   return db.select({ id: customers.id }).from(customers).where(and(...filters));
 }
 
-// One SQL statement is kept together so its UNION branches and score ordering
-// can be reviewed as one query rather than assembled from opaque fragments.
-// eslint-disable-next-line max-lines-per-function
 async function candidates(db: Db, context: SearchContext): Promise<CustomerResultRef[]> {
   const { access, query, normalized } = context;
   const eligible = eligibleQuery(db, access, query);
@@ -296,16 +263,17 @@ async function candidates(db: Db, context: SearchContext): Promise<CustomerResul
              END::real,
              f.field
       FROM eligible e
-      JOIN crm.customer_equipment ce ON ce.customer_id = e.id AND ce.tenant_id = ${access.tenantId}
-      JOIN crm.equipment eq ON eq.id = ce.equipment_id AND eq.tenant_id = ${access.tenantId}
+      JOIN inventory.customer_equipment ce ON ce.customer_id = e.id AND ce.tenant_id = ${access.tenantId}
+      JOIN inventory.equipment eq ON eq.id = ce.equipment_id AND eq.tenant_id = ${access.tenantId}
+      LEFT JOIN inventory.item_catalog ic ON ic.id = eq.catalog_id
       CROSS JOIN LATERAL (VALUES
         ('equipment.serialNumber'::text, eq.serial_number),
         ('equipment.vcNumber'::text, eq.vc_number),
         ('equipment.macAddress'::text, eq.mac_address),
         ('equipment.barcode'::text, eq.barcode),
-        ('equipment.brand'::text, eq.brand),
-        ('equipment.model'::text, eq.model),
-        ('equipment.type'::text, eq.equipment_type)
+        ('equipment.brand'::text, ic.brand),
+        ('equipment.model'::text, ic.model),
+        ('equipment.type'::text, ic.name)
       ) AS f(field, value)
       WHERE f.value IS NOT NULL
         AND (lower(f.value) = ${normalized} OR (${fuzzy}
@@ -340,8 +308,6 @@ async function candidates(db: Db, context: SearchContext): Promise<CustomerResul
   return result.rows;
 }
 
-// Search hydration stays together so the complete list-item contract is visible in one query batch.
-// eslint-disable-next-line max-lines-per-function
 export async function hydrateCustomerItems(
   db: Db,
   access: RequestAccess,
@@ -401,9 +367,9 @@ export async function hydrateCustomerItems(
       customerId: customerEquipment.customerId,
       id: equipment.id,
       subscriptionId: customerEquipment.subscriptionId,
-      type: equipment.equipmentType,
-      brand: equipment.brand,
-      model: equipment.model,
+      type: sql<string>`coalesce(${itemCatalog.name}, 'Equipment')`.as('type'),
+      brand: itemCatalog.brand,
+      model: itemCatalog.model,
       serialNumber: equipment.serialNumber,
       vcNumber: equipment.vcNumber,
       macAddress: equipment.macAddress,
@@ -415,6 +381,7 @@ export async function hydrateCustomerItems(
         eq(equipment.id, customerEquipment.equipmentId),
         eq(equipment.tenantId, access.tenantId),
       ))
+      .leftJoin(itemCatalog, eq(itemCatalog.id, equipment.catalogId))
       .where(and(
         eq(customerEquipment.tenantId, access.tenantId),
         inArray(customerEquipment.customerId, ids),

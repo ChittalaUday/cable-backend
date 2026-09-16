@@ -1,4 +1,5 @@
 import { index, integer, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { DEVICE_PLATFORMS } from '@/shared/constants/auth';
 import { auth } from '../schemas';
 
 export const devices = auth.table('devices', {
@@ -6,13 +7,12 @@ export const devices = auth.table('devices', {
 
   clientDeviceId: text('client_device_id').notNull().unique(),
 
-  platform: text('platform', { enum: ['ios', 'android', 'web'] }).notNull(),
+  platform: text('platform', { enum: DEVICE_PLATFORMS }).notNull(),
   osVersion: text('os_version'),
   model: text('model'),
   appVersion: text('app_version'),
 
   ramMb: integer('ram_mb'),
-  /** Physical pixels as the device reports them, e.g. "1080x2400". */
   screenResolution: text('screen_resolution'),
 
   blockedAt: timestamp('blocked_at', { withTimezone: true }),

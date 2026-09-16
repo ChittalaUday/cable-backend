@@ -125,13 +125,10 @@ describe('location tree', () => {
   });
 
   it('hands back the chain to a node, with the page each step sits on', async () => {
-    // The reveal a search hit needs: without the chain, a match five levels
-    // down is a row with nowhere to put it.
     const area = bodyOf<Node>(await createNode({ schemaId, name: `Reveal ${randomUUID().slice(0, 6)}` }));
     const building = bodyOf<Node>(await createNode({ parentId: area.id, name: 'Tower B' }));
     const block = bodyOf<Node>(await createNode({ parentId: building.id, name: 'Block C' }));
 
-    // Siblings of the block's parent, so `siblingIndex` has something to rank.
     await createNode({ parentId: area.id, name: 'Tower A' });
     await createNode({ parentId: area.id, name: 'Tower C' });
 
@@ -144,10 +141,8 @@ describe('location tree', () => {
     expect(response.statusCode).toBe(200);
     const chain = bodyOf<(Node & { siblingIndex: number })[]>(response);
 
-    // Root first, the node itself last.
     expect(chain.map(step => step.id)).toEqual([area.id, building.id, block.id]);
 
-    // Tower A, Tower B, Tower C — so the one we asked about is second.
     expect(chain[1]?.siblingIndex).toBe(1);
     expect(chain[2]?.siblingIndex).toBe(0);
   });

@@ -1,18 +1,3 @@
-/**
- * Give every channel a logo the app can actually render.
- *
- * Each logo is fetched once from Wikipedia, pushed into OUR object store through
- * the same `StorageService` the API uses, and the channel row is pointed at the
- * resulting public URL. Nothing ends up hotlinking someone else's server: the
- * upstream address is used once, at seed time, and never again.
- *
- *   pnpm db:seed:channel-logos           # only channels with no logo yet
- *   pnpm db:seed:channel-logos --force   # re-fetch every channel
- *
- * Network work is best-effort per channel. One broadcaster Wikipedia has never
- * heard of must not take the other thirty-seven down with it, so every failure
- * is counted and reported at the end rather than thrown.
- */
 import type { Database } from '@/plugins/database';
 import { Buffer } from 'node:buffer';
 import process from 'node:process';
@@ -25,10 +10,8 @@ import * as schema from '@/db/schema';
 import { channels } from '@/db/schema';
 import { createStorageProvider, createStorageService, publicUrlFor } from '@/modules/storage/storage.service';
 
-/** Wikipedia is slow often enough that an unbounded wait would hang the seed. */
 const REQUEST_TIMEOUT_MS = 15_000;
 
-/** Logos are small. Anything this big is a photograph we have matched by mistake. */
 const MAX_LOGO_BYTES = 2 * 1024 * 1024;
 
 const CONTENT_TYPE_EXTENSION: Record<string, string> = {
@@ -39,15 +22,6 @@ const CONTENT_TYPE_EXTENSION: Record<string, string> = {
   'image/gif': '.gif',
 };
 
-/**
- * The Wikipedia article a channel's logo lives on.
- *
- * Searching by channel name alone lands on the wrong article often enough to be
- * useless — "Colors", "MTV" and "99 TV" are all ambiguous — so the mapping is
- * explicit. A channel that is absent here is looked up by name and reported if
- * that misses, which is the honest outcome: better a missing logo than the wrong
- * broadcaster's.
- */
 const WIKIPEDIA_TITLE: Record<string, string> = {
   'etv-telugu': 'ETV (Telugu TV channel)',
   'gemini-tv': 'Gemini TV',
@@ -96,8 +70,6 @@ interface RemoteImage {
 async function getJson(url: string): Promise<unknown> {
   const response = await fetch(url, {
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    // Wikimedia blocks unidentified clients, and asks that tools say who they
-    // are: https://meta.wikimedia.org/wiki/User-Agent_policy
     headers: { 'user-agent': 'cable-backend-seeder/1.0 (channel logo seeding; contact: ops@satyacable.local)' },
   });
 
@@ -107,12 +79,6 @@ async function getJson(url: string): Promise<unknown> {
   return response.json();
 }
 
-/**
- * Shorthand the MSO's lineup export uses, which no encyclopedia indexes.
- *
- * Whole tokens only: `SS 1 HD HINDI` is Star Sports 1, but a channel with "ss"
- * inside a word is not.
- */
 const ABBREVIATION: Record<string, string> = {
   SS: 'Star Sports',
   COL: 'Colors',
@@ -122,18 +88,10 @@ const ABBREVIATION: Record<string, string> = {
   GEO: 'Geographic',
 };
 
-/** Carried on the row to say what a feed is, never part of the channel's name. */
 const QUALITY_TOKENS = new Set(['HD', 'SD', 'UHD', '4K', 'HD+']);
 
-/** Too generic to prove a search result is the right article. */
 const WEAK_TOKENS = new Set(['TV', 'THE', 'CHANNEL', 'INDIA', 'INDIAN', 'NEWS', 'MOVIES', 'HD', 'SD']);
 
-/**
- * The lineup name turned into something worth searching for.
- *
- * The export is upper-case and abbreviated — `COL CNPLX SUPERHITS`, `SS 1 HD
- * HINDI` — which matches nothing as written.
- */
 function searchTermFor(name: string): string {
   const tokens = name
     .toUpperCase()
@@ -145,8 +103,6 @@ function searchTermFor(name: string): string {
     .filter(token => !QUALITY_TOKENS.has(token))
     .map(token => ABBREVIATION[token] ?? token);
 
-  // Everything after the last quality token is usually a language feed
-  // ("SS 1 HD HINDI"), which the article does not carry either way.
   return expanded.join(' ').trim();
 }
 
@@ -158,14 +114,6 @@ function significantTokens(value: string): string[] {
     .filter(token => token.length >= 3 && !WEAK_TOKENS.has(token));
 }
 
-/**
- * Is this search hit actually the channel, or the first thing Wikipedia had?
- *
- * A wrong logo is worse than none — it is wrong in a way nobody notices until a
- * subscriber does — so a hit has to share a real word with the channel name.
- * Names made only of weak or short tokens have nothing to prove, and are let
- * through on the search engine's judgement.
- */
 function plausible(channelName: string, articleTitle: string): boolean {
   const wanted = significantTokens(channelName);
   if (wanted.length === 0)
@@ -175,13 +123,6 @@ function plausible(channelName: string, articleTitle: string): boolean {
   return wanted.some(token => found.has(token));
 }
 
-/**
- * Article titles that might be this channel, best first.
- *
- * Search rather than an exact title lookup: the lineup export is upper-case and
- * inconsistently spelled, and `titles=` is case-sensitive past the first letter,
- * so `STAR GOLD HD` resolves to nothing at all.
- */
 async function searchTitles(term: string): Promise<string[]> {
   const url = new URL('https://en.wikipedia.org/w/api.php');
   url.searchParams.set('action', 'query');
@@ -198,15 +139,6 @@ async function searchTitles(term: string): Promise<string[]> {
     .filter((title): title is string => title !== undefined);
 }
 
-/**
- * The lead image of an article, via the REST summary endpoint.
- *
- * NOT `prop=pageimages`, which is the obvious choice and the wrong one: it skips
- * non-free files, and a broadcaster's logo is almost always uploaded locally
- * under fair use rather than to Commons. `pageimages` reports no image at all
- * for Aaj Tak, Star Gold and most of this lineup, while the summary endpoint
- * returns the logo for every one of them.
- */
 async function articleImage(title: string): Promise<string | null> {
   const url = `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title.replace(/ /g, '_'))}`;
 

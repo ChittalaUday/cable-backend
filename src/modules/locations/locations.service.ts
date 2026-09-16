@@ -16,6 +16,7 @@ import type {
 } from './locations.schema';
 import type * as schema from '@/db/schema';
 import type { AccessContext, RequestAccess } from '@/modules/iam/access.service';
+import type { LocationWritableStatus } from '@/shared/constants/geo';
 import type { Page, PaginationQuery } from '@/shared/pagination';
 import type { PermissionKey, PermissionScope } from '@/shared/security/permissions';
 import { and, asc, count, eq, inArray, isNull, sql } from 'drizzle-orm';
@@ -27,11 +28,13 @@ import {
   locationSchemas,
 } from '@/db/schema';
 import { audit } from '@/modules/audit/audit.service';
-import { grantedNodes, scopeFor } from '@/modules/iam/access.service';
+import { locationScopeFor, requireScope } from '@/modules/iam/access.service';
 import { AUDIT_ACTIONS, AUDIT_ENTITIES } from '@/shared/constants/audit';
+import { LOCATION_SOURCE, LOCATION_STATUS } from '@/shared/constants/geo';
 import { ERROR_CODES, isForeignKeyViolation, isUniqueViolation } from '@/shared/errors';
 import { badRequest, conflict, forbidden, inUse, notFound } from '@/shared/errors/domain-error';
 import { offsetOf } from '@/shared/pagination';
+import { underAnyGrant, withinGrantedSubtree } from '@/shared/security/location-scope';
 import { PERMISSIONS } from '@/shared/security/permissions';
 import { countGenerated, expandLevel, NO_PARENT } from './locations.generate';
 
@@ -40,12 +43,12 @@ type Tx = Parameters<Parameters<Db['transaction']>[0]>[0];
 
 const MAX_GENERATED_NODES = 2000;
 
-function provenance(access: AccessContext, status: 'pending' | 'approved' | undefined) {
+function provenance(access: AccessContext, status: LocationWritableStatus | undefined) {
   const configures = access.permissions.has(PERMISSIONS.LOCATIONS_CONFIGURE);
 
   return {
-    source: configures ? ('admin' as const) : ('user' as const),
-    status: configures ? (status ?? 'approved') : ('pending' as const),
+    source: configures ? LOCATION_SOURCE.ADMIN : LOCATION_SOURCE.USER,
+    status: configures ? (status ?? LOCATION_STATUS.APPROVED) : LOCATION_STATUS.PENDING,
   };
 }
 
@@ -142,7 +145,6 @@ export class LocationsService {
       throw error;
     }
 
-    // A delete of something that was not there is not a change to record.
     if (existing !== undefined)
       await audit.deleted(this.db, context, { entityType: AUDIT_ENTITIES.LOCATION_CATEGORY, entityId: id, before: this.categoryOf(existing) });
   }
@@ -302,7 +304,7 @@ export class LocationsService {
             parentId: parentIds[node.parentIndex] ?? null,
             name: node.name,
             code: node.code,
-            source: 'admin' as const,
+            source: LOCATION_SOURCE.ADMIN,
             createdBy: access.userId,
           })))
           .returning({ id: locations.id, name: locations.name, code: locations.code });
@@ -313,9 +315,6 @@ export class LocationsService {
         parentIds = inserted.map(row => row.id);
       }
 
-      // One summary row, not one per node: a 2000-node generate would otherwise
-      // bury every other change in the tenant's audit trail. Inside the
-      // transaction, so the log cannot survive a rolled-back generate.
       await audit.log(tx, access.audit, {
         action: AUDIT_ACTIONS.LOCATION_GENERATED,
         entityType: AUDIT_ENTITIES.LOCATION_SCHEMA,
@@ -333,13 +332,12 @@ export class LocationsService {
 
   async list(access: RequestAccess, query: ListLocationsQuery): Promise<Page<LocationResponse>> {
     const { tenantId } = access;
-    const scope = this.scopeOf(access, PERMISSIONS.LOCATIONS_VIEW);
+    const scope = requireScope(access, PERMISSIONS.LOCATIONS_VIEW);
     const reach = this.reachCondition(access, scope);
 
     if (reach === null)
       return { items: [], total: 0, page: query.page, limit: query.limit };
 
-    // `and()` drops the undefined ones, so an inactive filter costs no branch.
     const filters: (SQL | undefined)[] = [eq(locations.tenantId, tenantId), ...reach];
 
     if (query.parentId !== undefined) {
@@ -371,8 +369,6 @@ export class LocationsService {
         .select()
         .from(locations)
         .where(where)
-        // `id` breaks ties: without it two locations sharing a name can swap
-        // places between pages, and a rank among siblings means nothing.
         .orderBy(asc(locations.name), asc(locations.id))
         .limit(query.limit)
         .offset(offsetOf(query as PaginationQuery)),
@@ -387,14 +383,6 @@ export class LocationsService {
     };
   }
 
-  /**
-   * Narrows the tree to what one level of the catalogue may be sold in.
-   *
-   * `crm.coverage_allows` is the same rule the coverage write and the wizard
-   * use, so a picker cannot offer a place the write would then reject. A level
-   * that has configured nothing allows everywhere, so this only ever removes
-   * what has been switched off above.
-   */
   private coverageFilter(tenantId: string, query: ListLocationsQuery): SQL | undefined {
     if (query.coverageServiceId === undefined)
       return undefined;
@@ -404,13 +392,6 @@ export class LocationsService {
     )`;
   }
 
-  /**
-   * The chain from the root down to one node, for revealing it in a tree.
-   *
-   * A search hit is useless as a bare row — an operator needs to see where it
-   * sits. Each step carries `siblingIndex` so the caller can jump straight to
-   * the page of that level the node is on, rather than walking pages.
-   */
   async ancestorsOf(access: RequestAccess, id: string): Promise<AncestorResponse[]> {
     const node = await this.findNode(access.tenantId, id);
     await this.assertReaches(access, { key: PERMISSIONS.LOCATIONS_VIEW, nodeId: node.id, createdBy: node.createdBy });
@@ -435,9 +416,6 @@ export class LocationsService {
 
     const [presented, ranks] = await Promise.all([
       this.present(ordered),
-      // A correlated count per step, not a window over the whole table: the
-      // chain is at most the depth of the tree, and
-      // `locations_tenant_parent_idx` covers the sibling scan.
       this.db.execute<{ id: string; siblingIndex: number }>(sql`
         SELECT l.id,
                (SELECT count(*)::int
@@ -558,14 +536,6 @@ export class LocationsService {
     await audit.deleted(this.db, access.audit, { entityType: AUDIT_ENTITIES.LOCATION, entityId: id, before: before! });
   }
 
-  /**
-   * Confirms every id is a location of this tenant, for another module that
-   * needs to point at the tree (AGENTS.md §3).
-   *
-   * `crm.service_coverage` has a foreign key to `geo.locations`, but a foreign
-   * key cannot see tenants: without this, one tenant could aim coverage at
-   * another tenant's building.
-   */
   async assertOwned({ tenantId }: RequestAccess, ids: readonly string[]): Promise<void> {
     if (ids.length === 0)
       return;
@@ -666,7 +636,7 @@ export class LocationsService {
 
   private async assertMayCreateUnder(access: RequestAccess, parent: { id: string; createdBy: string | null } | null): Promise<void> {
     if (parent === null) {
-      if (this.scopeOf(access, PERMISSIONS.LOCATIONS_CREATE) !== 'ALL')
+      if (requireScope(access, PERMISSIONS.LOCATIONS_CREATE) !== 'ALL')
         throw forbidden(ERROR_CODES.PERM_SCOPE_DENIED, 'Creating a root location needs an unrestricted grant');
 
       return;
@@ -796,39 +766,24 @@ export class LocationsService {
     });
   }
 
-  private scopeOf(access: RequestAccess, key: PermissionKey): PermissionScope {
-    const scope = scopeFor(access, key);
-
-    if (scope === null)
-      throw forbidden(ERROR_CODES.PERM_DENIED, `Missing permission: ${key}`);
-
-    return scope;
-  }
-
   private reachCondition(access: RequestAccess, scope: PermissionScope) {
-    if (scope === 'ALL')
-      return [];
-
     if (scope === 'OWN')
       return [eq(locations.createdBy, access.userId)];
 
-    const granted = grantedNodes(access, scope);
+    const reach = locationScopeFor(access, PERMISSIONS.LOCATIONS_VIEW);
 
-    if (granted.length === 0)
+    if (reach.kind === 'ALL_TENANT_LOCATIONS')
+      return [];
+
+    if (reach.nodeIds.length === 0)
       return null;
 
-    return [sql`EXISTS (
-      SELECT 1 FROM unnest(${sql.param(granted)}::uuid[]) AS g(id), geo.location_descendants(g.id) AS d
-      WHERE d.id = ${locations.id}
-    )`];
+    return [withinGrantedSubtree(sql`${locations.id}`, reach.nodeIds)];
   }
 
   private async assertReaches(access: RequestAccess, target: { key: PermissionKey; nodeId: string; createdBy: string | null }): Promise<void> {
     const { key, nodeId, createdBy } = target;
-    const scope = this.scopeOf(access, key);
-
-    if (scope === 'ALL')
-      return;
+    const scope = requireScope(access, key);
 
     if (scope === 'OWN') {
       if (createdBy !== access.userId)
@@ -836,18 +791,16 @@ export class LocationsService {
       return;
     }
 
-    const granted = grantedNodes(access, scope);
+    const reach = locationScopeFor(access, key);
 
-    if (granted.length === 0)
-      throw forbidden(ERROR_CODES.PERM_SCOPE_DENIED, 'This location is outside your grant');
+    if (reach.kind === 'ALL_TENANT_LOCATIONS')
+      return;
 
-    const result = await this.db.execute(sql`
-      SELECT 1 FROM geo.location_ancestors(${nodeId}) AS a
-      WHERE a.id = ANY(${sql.param(granted)}::uuid[])
-      LIMIT 1
-    `);
+    const result = await this.db.execute<{ reaches: boolean }>(
+      sql`SELECT ${underAnyGrant(nodeId, reach.nodeIds)} AS reaches`,
+    );
 
-    if (result.rows.length === 0)
+    if (result.rows[0]?.reaches !== true)
       throw forbidden(ERROR_CODES.PERM_SCOPE_DENIED, 'This location is outside your grant');
   }
 }

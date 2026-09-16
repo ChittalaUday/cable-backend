@@ -8,13 +8,6 @@ import { createTestDb } from '@/test/db';
 import { seedAuthData, TEST_PASSWORD, uniqueDeviceId } from '@/test/fixtures';
 import { bodyOf } from '@/test/http';
 
-/**
- * Packages end to end (docs/services-providers-packages.md).
- *
- * The rules that matter: a package belongs to a supplier, a lineup may only
- * hold that supplier's channels, and money survives the round trip as a string.
- */
-
 const { db, close } = createTestDb();
 
 let app: BuiltApp;
@@ -52,7 +45,6 @@ beforeAll(async () => {
     icon: 'tv',
   });
 
-  // Two MSOs of one service: the case the whole redesign exists for.
   providerA = (await post<{ id: string }>('/api/v1/service-providers', {
     serviceId: service.id,
     name: 'ACT Digital',
@@ -100,7 +92,6 @@ describe('packages', () => {
     });
 
     expect(pkg.serviceProviderId).toBe(providerA);
-    // Money crosses the wire as a string and comes back unrounded (§8).
     expect(pkg.price).toBe('349.00');
   });
 
@@ -111,11 +102,6 @@ describe('packages', () => {
     await post('/api/v1/packages', { serviceProviderId: providerB, name: 'Base', slug });
   });
 
-  /**
-   * The same package, sold twice under one provider for two different areas —
-   * "Gold Tier" in the old town at one price, "Gold Tier" in the new blocks at
-   * another. The coverage rows tell them apart, so the name must not have to.
-   */
   it('lets one provider sell the same package name twice', async () => {
     const name = `Gold Tier ${unique()}`;
 
@@ -124,11 +110,8 @@ describe('packages', () => {
 
     expect(second.id).not.toBe(first.id);
     expect(second.name).toBe(name);
-    // The slug is derived and disambiguated, so nothing the form collects clashes.
     expect(second.slug).not.toBe(first.slug);
 
-    // Two identical rows in a list is the cost of allowing this, so the areas
-    // each one is sold in come back on the package itself.
     expect(first.coverageAreas).toEqual([]);
   });
 
@@ -177,7 +160,6 @@ describe('packages', () => {
     expect(crossed.statusCode).toBe(400);
     expect(bodyOf(crossed).code).toBe('VALIDATION_FAILED');
 
-    // The failed call changed nothing.
     const read = bodyOf<Pkg>(await app.inject({ method: 'GET', url: `/api/v1/packages/${pkg.id}`, headers: auth }));
     expect(read.channels?.length).toBe(2);
   });
@@ -250,7 +232,6 @@ describe('packages', () => {
       await app.inject({ method: 'GET', url: `/api/v1/channels?${query}`, headers: auth }),
     );
 
-    // "Selected", paginated by the API rather than filtered on the device.
     const inside = await list(`serviceProviderId=${provider}&packageId=${pkg.id}&inPackage=true`);
     expect(inside.total).toBe(2);
     expect(inside.items.map(c => c.id).sort()).toEqual([...carried].sort());
@@ -259,7 +240,6 @@ describe('packages', () => {
     expect(outside.total).toBe(1);
     expect(outside.items[0]?.id).toBe(spare);
 
-    // 4K is its own resolution, not "anything that is not HD".
     const fourK = await list(`serviceProviderId=${provider}&resolution=4K`);
     expect(fourK.total).toBe(1);
     expect(fourK.items[0]?.id).toBe(spare);

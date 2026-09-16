@@ -7,14 +7,6 @@ import { createTestDb } from '@/test/db';
 import { seedAuthData, TEST_PASSWORD, uniqueDeviceId } from '@/test/fixtures';
 import { bodyOf } from '@/test/http';
 
-/**
- * The catalogue end to end (docs/services-providers-packages.md).
- *
- * The rules worth testing here are the ones only the database can enforce: a
- * slug unique per service, one default provider, and a service that refuses to
- * retire while a supplier still delivers it.
- */
-
 const { db, close } = createTestDb();
 
 let app: BuiltApp;
@@ -89,8 +81,6 @@ describe('service catalogue', () => {
   });
 
   it('counts them on the list too, not only on the detail', async () => {
-    // The screen that shows "N providers" reads the list, so a count that is
-    // only right on the detail endpoint reads as zero everywhere it is shown.
     const service = await createService();
     await createProvider(service.id);
     await createProvider(service.id, { name: 'Hathway', slug: `hathway-${unique()}` });
@@ -105,8 +95,6 @@ describe('service catalogue', () => {
   });
 
   it('counts each provider’s packages on the service detail', async () => {
-    // The other single-table select with a correlated subquery — same trap,
-    // and it reads as "this provider has nothing to sell".
     const service = await createService();
     const provider = bodyOf<Provider>(await createProvider(service.id));
 
@@ -160,8 +148,6 @@ describe('service catalogue', () => {
     const iptv = await createService({ slug: `iptv-${unique()}`, icon: 'satellite', name: 'IPTV' });
 
     expect((await createProvider(broadband.id, { name: 'Airtel', slug })).statusCode).toBe(201);
-    // Airtel supplying two services is two rows that share a name — the call
-    // made in the design doc, asserted here so it cannot drift back.
     expect((await createProvider(iptv.id, { name: 'Airtel', slug })).statusCode).toBe(201);
   });
 
@@ -183,8 +169,6 @@ describe('service catalogue', () => {
   it('refuses the catalogue to a role that does not hold the key', async () => {
     const service = await createService();
 
-    // The same person is admin of tenant A and a customer of tenant B (§4.1),
-    // so switching the header switches what they may do.
     const response = await app.inject({
       method: 'GET',
       url: `/api/v1/services/${service.id}`,
@@ -196,13 +180,10 @@ describe('service catalogue', () => {
   });
 
   it('derives a slug from the name when the form does not send one', async () => {
-    // The app's forms only collect a display name (§7): the API names the row.
     const name = `Tata Play ${unique()}`;
     const service = await createService({ name, slug: undefined });
     expect(service.slug).toBe(name.toLowerCase().replace(/ /g, '-'));
 
-    // A second provider with the same name steps around the taken slug rather
-    // than 409-ing at someone who never typed a slug.
     const first = await createProvider(service.id, { name: 'ACT Digital', slug: undefined });
     const second = await createProvider(service.id, { name: 'ACT Digital', slug: undefined });
 

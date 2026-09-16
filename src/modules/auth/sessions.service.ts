@@ -85,11 +85,6 @@ export class SessionsService {
     return { session, refreshToken };
   }
 
-  /**
-   * `onReuse` is called with the session a replayed token belonged to, before
-   * it is revoked — the caller cannot work that out afterwards, and "a refresh
-   * failed for an unknown session" is not a useful thing to find in an audit.
-   */
   async rotate(refreshToken: string, onReuse?: (session: Session) => Promise<void>): Promise<IssuedSession> {
     const hash = hashRefreshToken(refreshToken);
 

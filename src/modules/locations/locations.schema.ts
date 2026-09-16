@@ -1,6 +1,8 @@
 import type { Static } from 'typebox';
 import { Type } from 'typebox';
+import { LOCATION_SOURCES, LOCATION_STATUSES, LOCATION_WRITABLE_STATUSES } from '@/shared/constants/geo';
 import { PaginationQuerySchema } from '@/shared/pagination';
+import { StringEnum } from '@/shared/types/typebox';
 
 const Uuid = Type.String({ format: 'uuid' });
 const Name = Type.String({ minLength: 1, maxLength: 120 });
@@ -92,8 +94,8 @@ export const LocationResponse = Type.Object({
   parentId: Type.Union([Uuid, Type.Null()]),
   name: Name,
   code: Type.Union([Type.String(), Type.Null()]),
-  source: Type.Union([Type.Literal('system'), Type.Literal('admin'), Type.Literal('user'), Type.Literal('import')]),
-  status: Type.Union([Type.Literal('pending'), Type.Literal('approved'), Type.Literal('rejected')]),
+  source: StringEnum(LOCATION_SOURCES),
+  status: StringEnum(LOCATION_STATUSES),
   isActive: Type.Boolean(),
   latitude: Type.Union([Type.String(), Type.Null()]),
   longitude: Type.Union([Type.String(), Type.Null()]),
@@ -102,19 +104,11 @@ export const LocationResponse = Type.Object({
   depth: Type.Integer(),
   path: Type.String(),
   pathIds: Type.Array(Uuid),
-  /** Direct children only — what a list row means by "5 sub-locations". */
   childCount: Type.Integer(),
   createdAt: Type.String({ format: 'date-time' }),
   updatedAt: Type.String({ format: 'date-time' }),
 });
 
-/**
- * One step of the chain from the root down to a node, for revealing it.
- *
- * `siblingIndex` is what makes a deep node reachable: levels are paged, so
- * knowing a node's rank among its siblings tells the caller which page of that
- * level it sits on, instead of walking pages until it turns up.
- */
 export const AncestorResponse = Type.Intersect([
   LocationResponse,
   Type.Object({
@@ -129,18 +123,9 @@ export const ListLocationsQuery = Type.Intersect([
     ancestorId: Type.Optional(Uuid),
     schemaId: Type.Optional(Uuid),
     categoryId: Type.Optional(Uuid),
-    status: Type.Optional(Type.Union([Type.Literal('pending'), Type.Literal('approved'), Type.Literal('rejected')])),
+    status: Type.Optional(StringEnum(LOCATION_STATUSES)),
     isActive: Type.Optional(Type.Boolean()),
     q: Type.Optional(Type.String({ minLength: 1, maxLength: 120 })),
-    /**
-     * Only the nodes this part of the catalogue may be sold in.
-     *
-     * `coverageServiceId` alone answers for the service; adding
-     * `coverageProviderId` narrows it to that provider — which is bounded by
-     * the service, so a provider picker gets the service's reach for free. A
-     * level nobody has configured allows everywhere, so this only ever removes
-     * the places that have been switched off above.
-     */
     coverageServiceId: Type.Optional(Uuid),
     coverageProviderId: Type.Optional(Uuid),
   }),
@@ -152,7 +137,7 @@ export const CreateLocationBody = Type.Object({
   parentId: Type.Optional(Type.Union([Uuid, Type.Null()])),
   name: Name,
   code: Type.Optional(Type.String({ maxLength: 60 })),
-  status: Type.Optional(Type.Union([Type.Literal('pending'), Type.Literal('approved')])),
+  status: Type.Optional(StringEnum(LOCATION_WRITABLE_STATUSES)),
   latitude: Type.Optional(Type.Union([Type.Number({ minimum: -90, maximum: 90 }), Type.Null()])),
   longitude: Type.Optional(Type.Union([Type.Number({ minimum: -180, maximum: 180 }), Type.Null()])),
   metadata: Type.Optional(Type.Union([Config, Type.Null()])),
@@ -162,7 +147,7 @@ export const CreateLocationBody = Type.Object({
 export const UpdateLocationBody = Type.Partial(Type.Object({
   name: Name,
   code: Type.Union([Type.String({ maxLength: 60 }), Type.Null()]),
-  status: Type.Union([Type.Literal('pending'), Type.Literal('approved'), Type.Literal('rejected')]),
+  status: StringEnum(LOCATION_STATUSES),
   isActive: Type.Boolean(),
   latitude: Type.Union([Type.Number({ minimum: -90, maximum: 90 }), Type.Null()]),
   longitude: Type.Union([Type.Number({ minimum: -180, maximum: 180 }), Type.Null()]),

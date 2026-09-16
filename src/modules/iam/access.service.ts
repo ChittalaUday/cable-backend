@@ -1,9 +1,14 @@
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import type * as schema from '@/db/schema';
 import type { AuditContext } from '@/modules/audit/audit.types';
+import type { LocationScope } from '@/shared/security/location-scope';
 import type { PermissionKey, PermissionScope } from '@/shared/security/permissions';
 import { and, eq } from 'drizzle-orm';
-import { membershipLocations, rolePermissions, tenantMemberships } from '@/db/schema';
+import { membershipLocations, rolePermissions, teamLocations, teamMemberLocations, tenantMemberships } from '@/db/schema';
+import { MEMBERSHIP_STATUS } from '@/shared/constants/tenancy';
+import { ERROR_CODES } from '@/shared/errors';
+import { forbidden } from '@/shared/errors/domain-error';
+import { PERMISSIONS } from '@/shared/security/permissions';
 import { widerScope } from '@/shared/security/scope';
 
 export interface AccessContext {
@@ -11,22 +16,17 @@ export interface AccessContext {
   tenantId: string;
   membershipId: string;
   roleId: string;
+  teamId: string | null;
+  isTeamLeader: boolean;
   permissions: ReadonlyMap<PermissionKey, PermissionScope>;
   locationIds: readonly string[];
 }
 
-/**
- * What a service method actually receives: the cached access context plus the
- * audit context of the one request that is calling it.
- *
- * `audit` is deliberately NOT part of `AccessContext` — that object is cached
- * per user+tenant for a minute, so a request id or IP stored on it would be
- * replayed onto everyone else's audit rows. `plugins/rbac.ts` spreads a fresh
- * copy per request instead.
- */
 export type RequestAccess = AccessContext & { audit: AuditContext };
 
 type Db = NodePgDatabase<typeof schema>;
+
+const LEADER_KEYS = [PERMISSIONS.STAFF_VIEW, PERMISSIONS.STAFF_UPDATE] as const;
 
 interface CacheEntry { expiresAt: number; context: AccessContext }
 
@@ -57,15 +57,21 @@ export class AccessService {
 
   private async load(userId: string, tenantId: string): Promise<AccessContext | null> {
     const [membership] = await this.db
-      .select({ id: tenantMemberships.id, roleId: tenantMemberships.roleId, status: tenantMemberships.status })
+      .select({
+        id: tenantMemberships.id,
+        roleId: tenantMemberships.roleId,
+        status: tenantMemberships.status,
+        teamId: tenantMemberships.teamId,
+        isTeamLeader: tenantMemberships.isTeamLeader,
+      })
       .from(tenantMemberships)
       .where(and(eq(tenantMemberships.userId, userId), eq(tenantMemberships.tenantId, tenantId)))
       .limit(1);
 
-    if (membership === undefined || membership.status !== 'active')
+    if (membership === undefined || membership.status !== MEMBERSHIP_STATUS.ACTIVE)
       return null;
 
-    const [grants, locationGrants] = await Promise.all([
+    const [grants, ownNodes, teamNodes, narrowedNodes] = await Promise.all([
       this.db
         .select({ key: rolePermissions.permissionKey, scope: rolePermissions.scope })
         .from(rolePermissions)
@@ -74,6 +80,18 @@ export class AccessService {
         .select({ id: membershipLocations.locationId })
         .from(membershipLocations)
         .where(eq(membershipLocations.membershipId, membership.id)),
+      membership.teamId === null
+        ? []
+        : this.db
+            .select({ id: teamLocations.locationId })
+            .from(teamLocations)
+            .where(eq(teamLocations.teamId, membership.teamId)),
+      membership.teamId === null
+        ? []
+        : this.db
+            .select({ id: teamMemberLocations.locationId })
+            .from(teamMemberLocations)
+            .where(eq(teamMemberLocations.membershipId, membership.id)),
     ]);
 
     const permissions = new Map<PermissionKey, PermissionScope>();
@@ -83,13 +101,22 @@ export class AccessService {
       permissions.set(key, existing === undefined ? grant.scope : widerScope(existing, grant.scope));
     }
 
+    if (membership.isTeamLeader && membership.teamId !== null) {
+      for (const key of LEADER_KEYS) {
+        const existing = permissions.get(key);
+        permissions.set(key, existing === undefined ? 'TEAM' : widerScope(existing, 'TEAM'));
+      }
+    }
+
     return {
       userId,
       tenantId,
       membershipId: membership.id,
       roleId: membership.roleId,
+      teamId: membership.teamId,
+      isTeamLeader: membership.isTeamLeader,
       permissions,
-      locationIds: locationGrants.map(l => l.id),
+      locationIds: [...new Set([...ownNodes, ...(narrowedNodes.length > 0 ? narrowedNodes : teamNodes)].map(l => l.id))],
     };
   }
 }
@@ -98,12 +125,24 @@ export function scopeFor(context: AccessContext, key: PermissionKey): Permission
   return context.permissions.get(key) ?? null;
 }
 
-/**
- * The subtree roots a caller may reach, for the one scope that points at the
- * location tree. Resolved against `geo.location_ancestors`, so a grant on a
- * coarse node covers everything under it — which is why there is no separate
- * "area" grant: how coarse a node is, is the tenant's configuration.
- */
+export function requireScope(context: AccessContext, key: PermissionKey): PermissionScope {
+  const scope = scopeFor(context, key);
+
+  if (scope === null)
+    throw forbidden(ERROR_CODES.PERM_DENIED, `Missing permission: ${key}`);
+
+  return scope;
+}
+
+export function locationScopeFor(context: AccessContext, key: PermissionKey): LocationScope {
+  const scope = requireScope(context, key);
+
+  if (scope === 'ALL')
+    return { kind: 'ALL_TENANT_LOCATIONS' };
+
+  return { kind: 'NODES', nodeIds: scope === 'LOCATION' ? context.locationIds : [] };
+}
+
 export function grantedNodes(context: AccessContext, scope: PermissionScope): readonly string[] {
   return scope === 'LOCATION' ? context.locationIds : [];
 }

@@ -334,7 +334,6 @@ export async function seedPackagesAndChannels({
 
   console.log(`Found ${parsedChannels.length} unique channels and ${parsedPackages.length} unique packages in CSV.`);
 
-  // ─── 1. Seed / Update Channels (No Duplicates) ─────────────────────────────
   console.log('🔄 Checking existing channels in database...');
   const existingDbChannels = await db
     .select()
@@ -437,7 +436,6 @@ export async function seedPackagesAndChannels({
 
   console.log(`✅ Channels: ${updatedChannelsCount} updated, ${insertedChannelsCount} inserted (Total: ${channelMap.size})`);
 
-  // ─── 2. Seed / Update Packages (No Duplicates) ─────────────────────────────
   console.log('🔄 Checking existing packages in database...');
   const existingDbPackages = await db
     .select()
@@ -528,7 +526,6 @@ export async function seedPackagesAndChannels({
 
   console.log(`✅ Packages: ${updatedPackagesCount} updated, ${insertedPackagesCount} inserted (Total: ${packageMap.size})`);
 
-  // ─── 3. Seed Package Channels (No Duplicates) ──────────────────────────────
   console.log('🔄 Seeding package-channel mappings...');
   const seenPairKeys = new Set<string>();
   const packageChannelRows: Array<{ packageId: string; channelId: string; isMandatory: boolean }> = [];
@@ -567,7 +564,6 @@ export async function seedPackagesAndChannels({
 
   console.log(`✅ Seeded ${mappedCount} unique package-channel links without duplicates.`);
 
-  // ─── 4. Synchronize Subscriptions with Real Packages ─────────────────────────
   console.log('🔄 Synchronizing customer subscriptions with real packages...');
   const csvPkgSlugs = new Set(parsedPackages.map(p => p.slug));
   const currentDbPackages = await db
@@ -588,7 +584,6 @@ export async function seedPackagesAndChannels({
     }
     const parts = rawString.split(',').map(s => s.trim()).filter(s => s.length > 0);
 
-    // Look for Base Packages
     for (const part of parts) {
       const p = pkgsByName.get(part.toLowerCase()) ?? pkgsBySlug.get(slugify(part));
       if (p !== undefined && p.packageType === 'base') {
@@ -596,14 +591,12 @@ export async function seedPackagesAndChannels({
       }
     }
 
-    // Look for BST or Bronze alias
     for (const part of parts) {
       if (/bst|bronze/i.test(part)) {
         return defaultBasePkg;
       }
     }
 
-    // Look for Ultimate or Smart HD
     for (const part of parts) {
       if (/ultimate/i.test(part)) {
         const p = pkgsBySlug.get('act-ultimate-pre-viz');
@@ -619,7 +612,6 @@ export async function seedPackagesAndChannels({
       }
     }
 
-    // Look for any bouquet / alacarte mentioned
     for (const part of parts) {
       const p = pkgsByName.get(part.toLowerCase()) ?? pkgsBySlug.get(slugify(part));
       if (p !== undefined) {
@@ -651,7 +643,6 @@ export async function seedPackagesAndChannels({
   }
   console.log(`✅ Synchronized ${updatedSubsCount} subscriptions to point to verified packages.`);
 
-  // ─── 5. Delete Old / Obsolete Data not present in CSV ────────────────────────
   console.log('🧹 Cleaning up old obsolete mock packages and channels...');
   const csvChSlugs = new Set(parsedChannels.map(c => c.slug));
 

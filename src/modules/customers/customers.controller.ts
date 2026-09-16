@@ -1,8 +1,6 @@
 import type { IdParams, ListCustomersQuery } from './customers.schema';
 import type { Req } from '@/shared/types/request';
 
-/** The only layer that touches `request`/`reply` (AGENTS.md §3). */
-
 export async function list(request: Req<{ querystring: typeof ListCustomersQuery }>) {
   return request.server.customers.list(request.access, request.query);
 }

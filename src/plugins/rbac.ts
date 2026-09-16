@@ -24,9 +24,7 @@ export default fp(async (app) => {
   app.decorateRequest('access');
 
   app.decorate('requirePermission', (key: PermissionKey): preHandlerAsyncHookHandler => {
-    return async (request: FastifyRequest) => {
-      // A tenant-scoped route with no tenant resolved: the caller belongs to
-      // several tenants and did not say which (§4.4).
+    const guard: preHandlerAsyncHookHandler = async (request: FastifyRequest) => {
       if (request.tenantId === undefined) {
         throw badRequest(
           ERROR_CODES.TENANT_HEADER_MISSING,
@@ -42,9 +40,9 @@ export default fp(async (app) => {
       if (!context.permissions.has(key))
         throw forbidden(ERROR_CODES.PERM_DENIED, `Missing permission: ${key}`);
 
-      // A fresh object per request: `context` is the shared cached one, so the
-      // audit context goes on the copy, never on the cache.
       request.access = { ...context, audit: request.auditContext };
     };
+
+    return Object.assign(guard, { permission: key });
   });
 }, { name: 'rbac', dependencies: ['database', 'auth', 'tenant', 'audit-context'] });

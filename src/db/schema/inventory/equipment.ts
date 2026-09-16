@@ -1,33 +1,40 @@
+import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
-import { boolean, index, jsonb, numeric, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { boolean, index, integer, jsonb, numeric, text, timestamp, uuid } from 'drizzle-orm/pg-core';
 import {
-  EQUIPMENT_INVENTORY_STATUSES,
   EQUIPMENT_OWNERSHIPS,
-  EQUIPMENT_TYPES,
-} from '@/shared/constants/crm';
-import { crm } from '../schemas';
+  INVENTORY_STATUSES,
+} from '@/shared/constants/inventory';
+import { users } from '../auth/users';
+import { locations } from '../geo/locations';
+import { inventory } from '../schemas';
 import { tenants } from '../tenancy/tenants';
+import { itemCatalog } from './item-catalog';
 
-export const equipment = crm.table('equipment', {
+export const equipment = inventory.table('equipment', {
   id: uuid('id').primaryKey().defaultRandom(),
   tenantId: uuid('tenant_id').notNull().references(() => tenants.id, { onDelete: 'cascade' }),
+  catalogId: uuid('catalog_id').references(() => itemCatalog.id, { onDelete: 'set null' }),
 
-  equipmentType: text('equipment_type', { enum: EQUIPMENT_TYPES }).notNull().default('stb'),
+  parentEquipmentId: uuid('parent_equipment_id').references((): AnyPgColumn => equipment.id, { onDelete: 'set null' }),
 
-  brand: text('brand'),
-  model: text('model'),
+  locationId: uuid('location_id').references(() => locations.id, { onDelete: 'set null' }),
+  staffId: uuid('staff_id').references(() => users.id, { onDelete: 'set null' }),
 
   serialNumber: text('serial_number'),
   vcNumber: text('vc_number'),
   macAddress: text('mac_address'),
   barcode: text('barcode'),
 
+  quantity: integer('quantity').notNull().default(1),
+
   ownershipType: text('ownership_type', { enum: EQUIPMENT_OWNERSHIPS }).notNull().default('tenant_provided'),
   depositAmount: numeric('deposit_amount', { precision: 12, scale: 2 }).notNull().default('0'),
+  costPrice: numeric('cost_price', { precision: 12, scale: 2 }).notNull().default('0'),
 
   isReturnable: boolean('is_returnable').notNull().default(true),
 
-  inventoryStatus: text('inventory_status', { enum: EQUIPMENT_INVENTORY_STATUSES }).notNull().default('available'),
+  inventoryStatus: text('inventory_status', { enum: INVENTORY_STATUSES }).notNull().default('available'),
 
   metadata: jsonb('metadata'),
 
@@ -38,11 +45,13 @@ export const equipment = crm.table('equipment', {
   index('equipment_tenant_vc_idx').on(table.tenantId, table.vcNumber),
   index('equipment_tenant_mac_idx').on(table.tenantId, table.macAddress),
   index('equipment_tenant_inv_status_idx').on(table.tenantId, table.inventoryStatus),
-  index('equipment_tenant_type_idx').on(table.tenantId, table.equipmentType),
+  index('equipment_tenant_location_idx').on(table.tenantId, table.locationId),
+  index('equipment_tenant_staff_idx').on(table.tenantId, table.staffId),
+  index('equipment_tenant_parent_idx').on(table.tenantId, table.parentEquipmentId),
+  index('equipment_tenant_catalog_idx').on(table.tenantId, table.catalogId),
   index('equipment_search_trgm_idx').using('gin', sql`(
     coalesce(${table.serialNumber}, '') || ' ' || coalesce(${table.vcNumber}, '') || ' ' ||
-    coalesce(${table.macAddress}, '') || ' ' || coalesce(${table.barcode}, '') || ' ' ||
-    coalesce(${table.brand}, '') || ' ' || coalesce(${table.model}, '') || ' ' || ${table.equipmentType}
+    coalesce(${table.macAddress}, '') || ' ' || coalesce(${table.barcode}, '')
   ) gin_trgm_ops`),
 ]);
 

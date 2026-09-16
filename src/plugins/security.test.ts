@@ -12,19 +12,16 @@ describe('security plugin', () => {
 
     expect(response.statusCode).toBe(200);
 
-    // Helmet headers
     expect(response.headers['x-content-type-options']).toBe('nosniff');
     expect(response.headers['x-frame-options']).toBe('DENY');
     expect(response.headers['cross-origin-resource-policy']).toBe('cross-origin');
     expect(response.headers['referrer-policy']).toBe('strict-origin-when-cross-origin');
     expect(response.headers['strict-transport-security']).toContain('max-age=31536000');
 
-    // Permissions policy
     expect(response.headers['permissions-policy']).toBe(
       'camera=(), microphone=(), geolocation=(), payment=(), usb=(), vr=()',
     );
 
-    // Rate limit headers (draft spec)
     expect(response.headers['ratelimit-limit']).toBeDefined();
     expect(response.headers['ratelimit-remaining']).toBeDefined();
     expect(response.headers['ratelimit-reset']).toBeDefined();

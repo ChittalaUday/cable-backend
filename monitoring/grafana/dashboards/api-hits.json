@@ -1,0 +1,88 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "graphTooltip": 1,
+  "links": [],
+  "panels": [
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "blue" }, "unit": "short", "decimals": 0 }, "overrides": [] },
+      "gridPos": { "h": 5, "w": 24, "x": 0, "y": 0 },
+      "id": 1,
+      "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto", "wideLayout": true },
+      "targets": [{ "expr": "round(sum(increase(http_request_duration_seconds_count{service=~\"${service:regex}\",instance=~\"${instance:regex}\",route=~\"${route:regex}\"}[$__range])))", "instant": true, "refId": "A" }],
+      "title": "Total API hits",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "blue" }, "unit": "short", "decimals": 0 }, "overrides": [{ "matcher": { "id": "byRegexp", "options": "/^(avg|p95|p99)$/" }, "properties": [{ "id": "unit", "value": "ms" }, { "id": "decimals", "value": 1 }, { "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } }] }] },
+      "gridPos": { "h": 5, "w": 8, "x": 0, "y": 5 },
+      "id": 2,
+      "maxPerRow": 3,
+      "repeat": "route",
+      "repeatDirection": "h",
+      "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "orientation": "horizontal", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "value_and_name", "wideLayout": true },
+      "targets": [
+        { "expr": "round(sum by (method) (increase(http_request_duration_seconds_count{service=~\"${service:regex}\",instance=~\"${instance:regex}\",route=\"$route\"}[$__range])))", "instant": true, "legendFormat": "{{method}}", "refId": "A" },
+        { "expr": "(1000 * sum(increase(http_request_duration_seconds_sum{service=~\"${service:regex}\",instance=~\"${instance:regex}\",route=\"$route\"}[$__range])) / sum(increase(http_request_duration_seconds_count{service=~\"${service:regex}\",instance=~\"${instance:regex}\",route=\"$route\"}[$__range]))) < Inf", "instant": true, "legendFormat": "avg", "refId": "B" },
+        { "expr": "1000 * histogram_quantile(0.95, sum by (le) (increase(http_request_duration_seconds_bucket{service=~\"${service:regex}\",instance=~\"${instance:regex}\",route=\"$route\"}[$__range])))", "instant": true, "legendFormat": "p95", "refId": "C" },
+        { "expr": "1000 * histogram_quantile(0.99, sum by (le) (increase(http_request_duration_seconds_bucket{service=~\"${service:regex}\",instance=~\"${instance:regex}\",route=\"$route\"}[$__range])))", "instant": true, "legendFormat": "p99", "refId": "D" }
+      ],
+      "title": "$route",
+      "type": "stat"
+    }
+  ],
+  "refresh": "15s",
+  "schemaVersion": 41,
+  "tags": ["fastify", "prometheus", "api"],
+  "templating": {
+    "list": [
+      {
+        "allValue": ".+",
+        "current": { "selected": true, "text": ["All"], "value": ["$__all"] },
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "definition": "label_values(http_request_duration_seconds_count, service)",
+        "includeAll": true,
+        "label": "Backend",
+        "multi": true,
+        "name": "service",
+        "query": { "query": "label_values(http_request_duration_seconds_count, service)", "refId": "PrometheusVariableQueryEditor-VariableQuery" },
+        "refresh": 1,
+        "type": "query"
+      },
+      {
+        "allValue": ".+",
+        "current": { "selected": true, "text": ["All"], "value": ["$__all"] },
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "definition": "label_values(http_request_duration_seconds_count{service=~\"${service:regex}\"}, instance)",
+        "includeAll": true,
+        "label": "Instance",
+        "multi": true,
+        "name": "instance",
+        "query": { "query": "label_values(http_request_duration_seconds_count{service=~\"${service:regex}\"}, instance)", "refId": "PrometheusVariableQueryEditor-VariableQuery" },
+        "refresh": 1,
+        "type": "query"
+      },
+      {
+        "allValue": ".+",
+        "current": { "selected": true, "text": ["All"], "value": ["$__all"] },
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "definition": "label_values(http_request_duration_seconds_count{service=~\"${service:regex}\",instance=~\"${instance:regex}\"}, route)",
+        "includeAll": true,
+        "label": "Route",
+        "multi": true,
+        "name": "route",
+        "query": { "query": "label_values(http_request_duration_seconds_count{service=~\"${service:regex}\",instance=~\"${instance:regex}\"}, route)", "refId": "PrometheusVariableQueryEditor-VariableQuery" },
+        "refresh": 2,
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": { "from": "now-24h", "to": "now" },
+  "timezone": "browser",
+  "title": "API Hit Counts",
+  "uid": "api-hit-counts",
+  "version": 1
+}

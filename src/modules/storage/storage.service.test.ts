@@ -58,8 +58,6 @@ describe('buildStorageKey', () => {
   });
 
   it('sorts by content type when the caller says nothing', () => {
-    // The default has to be right on its own: an endpoint that forgets the
-    // folder should still file its upload somewhere sensible, not in a heap.
     expect(folderFor('image/png')).toBe('images');
     expect(folderFor('application/pdf')).toBe('documents');
     expect(folderFor('text/csv')).toBe('documents');
@@ -67,7 +65,6 @@ describe('buildStorageKey', () => {
   });
 
   it('lets a caller that knows the purpose beat the content type', () => {
-    // A channel logo is an image, and belongs with the logos.
     const key = buildStorageKey({ tenantId: 'tenant-1', originalName: 'etv-logo.png', contentType: 'image/png', folder: 'logos' });
 
     expect(key.startsWith('tenant-1/logos/')).toBe(true);

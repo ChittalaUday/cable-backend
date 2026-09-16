@@ -16,7 +16,6 @@ export const serviceProviders = crm.table('service_providers', {
   metadata: jsonb('metadata'),
   status: text('status', { enum: ENTITY_STATUSES }).notNull().default('active'),
 
-  /** The provider a wizard preselects when a location has more than one. */
   isDefault: boolean('is_default').notNull().default(false),
 
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

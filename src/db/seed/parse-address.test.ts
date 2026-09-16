@@ -1,10 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { parseAddress } from './parse-address';
 
-/**
- * Every string here is copied verbatim out of the MSO report — the point of the
- * parser is the mess, so inventing tidier inputs would test nothing.
- */
 describe('parseAddress', () => {
   it('reads the glued form the report mostly uses', () => {
     expect(parseAddress('A31sf1')).toEqual({ kind: 'door', group: 'A', apartment: 'A31', floor: 'SF', door: 1 });
@@ -46,20 +42,17 @@ describe('parseAddress', () => {
   });
 
   it('recognises the outlying villages, however they are spelled', () => {
-    expect(parseAddress('Kapileswarapuram')).toEqual({ kind: 'village', name: 'Kapileswarapuram' });
-    expect(parseAddress('KAPILESWARAPURAM')).toEqual({ kind: 'village', name: 'Kapileswarapuram' });
-    expect(parseAddress('Macharamattalu')).toEqual({ kind: 'village', name: 'Macharamattalu' });
-    expect(parseAddress('5-136S/O PANASARAMANNAMAIN ROADMACHARAMATALLU')).toEqual({ kind: 'village', name: 'Macharamattalu' });
+    expect(parseAddress('Kapileswaram')).toEqual({ kind: 'village', name: 'Kapileswaram' });
+    expect(parseAddress('Kapileswarapuram')).toEqual({ kind: 'village', name: 'Kapileswaram' });
+    expect(parseAddress('KAPILESWARAPURAM')).toEqual({ kind: 'village', name: 'Kapileswaram' });
+    expect(parseAddress('kppuram')).toEqual({ kind: 'village', name: 'Kapileswaram' });
     expect(parseAddress('Nandhibomma angara')).toEqual({ kind: 'village', name: 'Angara' });
   });
 
   it('prefers the village over a bare Z1, which is a catch-all and not a flat', () => {
-    // `Z1` on its own is where the office parks anyone outside the complex, so
-    // when a row carries both, the village is the only real information in it.
-    expect(parseAddress('Z1   macharamattali Machramattalu')).toEqual({ kind: 'village', name: 'Macharamattalu' });
-    expect(parseAddress('z1 kppuram')).toEqual({ kind: 'village', name: 'Kapileswarapuram' });
+    expect(parseAddress('z1 kppuram')).toEqual({ kind: 'village', name: 'Kapileswaram' });
+    expect(parseAddress('z1 kapileswaram')).toEqual({ kind: 'village', name: 'Kapileswaram' });
 
-    // A Z row with a floor and door is a real flat, and still parses as one.
     expect(parseAddress('Z1 tf5')).toMatchObject({ kind: 'door', apartment: 'Z1', floor: 'TF', door: 5 });
   });
 

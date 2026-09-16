@@ -14,6 +14,7 @@ import {
   PERMISSIONS,
 } from '@/shared/security/permissions';
 import { seedLocations } from './seed-locations';
+import { seedRemotes } from './seed-remotes';
 
 const EVERYTHING = ALL_PERMISSION_KEYS.map(key => [key, 'ALL'] as [PermissionKey, PermissionScope]);
 
@@ -24,9 +25,6 @@ const GRANTS: Record<SystemRoleId, Array<[PermissionKey, PermissionScope]>> = {
     [PERMISSIONS.CUSTOMERS_VIEW, 'LOCATION'],
     [PERMISSIONS.CUSTOMERS_CREATE, 'LOCATION'],
     [PERMISSIONS.CUSTOMERS_UPDATE, 'LOCATION'],
-    // The tree itself at AREA: staff see the subtrees their membership grants,
-    // and a node they add lands as `pending` for review (§8.6). Not
-    // LOCATIONS_CONFIGURE — defining levels is admin work.
     [PERMISSIONS.LOCATIONS_VIEW, 'LOCATION'],
     [PERMISSIONS.LOCATIONS_CREATE, 'LOCATION'],
     [PERMISSIONS.CONNECTIONS_VIEW, 'LOCATION'],
@@ -38,11 +36,13 @@ const GRANTS: Record<SystemRoleId, Array<[PermissionKey, PermissionScope]>> = {
     [PERMISSIONS.TICKETS_CREATE, 'LOCATION'],
     [PERMISSIONS.TICKETS_UPDATE, 'ASSIGNED'],
     [PERMISSIONS.TICKETS_RESOLVE, 'ASSIGNED'],
-    [PERMISSIONS.INVENTORY_VIEW, 'ASSIGNED'],
+    [PERMISSIONS.INVENTORY_VIEW, 'LOCATION'],
     [PERMISSIONS.INVENTORY_UPDATE, 'ASSIGNED'],
     [PERMISSIONS.PACKAGES_VIEW, 'ALL'],
     [PERMISSIONS.SERVICES_VIEW, 'ALL'],
     [PERMISSIONS.REPORTS_VIEW, 'LOCATION'],
+    [PERMISSIONS.REMOTES_VIEW, 'ALL'],
+    [PERMISSIONS.REMOTES_MANAGE, 'ALL'],
   ],
 
   [SYSTEM_ROLES.CUSTOMER]: [
@@ -53,11 +53,10 @@ const GRANTS: Record<SystemRoleId, Array<[PermissionKey, PermissionScope]>> = {
     [PERMISSIONS.TICKETS_CREATE, 'OWN'],
     [PERMISSIONS.PACKAGES_VIEW, 'ALL'],
     [PERMISSIONS.SERVICES_VIEW, 'ALL'],
-    // Deliberately no locations.*: a subscriber reads their own address off
-    // their own record, not by browsing the operator's tree.
     [PERMISSIONS.DEVICES_VIEW, 'OWN'],
     [PERMISSIONS.SESSIONS_VIEW, 'OWN'],
     [PERMISSIONS.SESSIONS_REVOKE, 'OWN'],
+    [PERMISSIONS.REMOTES_VIEW, 'ALL'],
   ],
 };
 
@@ -192,6 +191,9 @@ try {
   if (sscnTenantId !== undefined) {
     await seedLocations(db, sscnTenantId);
   }
+
+  const remoteCount = await seedRemotes(db);
+  console.log(`✅ Seeded ${remoteCount} IR remotes into the shared library`);
 }
 catch (error) {
   console.error('❌ Seed failed:', error);

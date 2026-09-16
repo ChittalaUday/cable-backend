@@ -8,12 +8,6 @@ import { serviceProviders } from './service-providers';
 export const channels = crm.table('channels', {
   id: uuid('id').primaryKey().defaultRandom(),
   tenantId: uuid('tenant_id').notNull().references(() => tenants.id, { onDelete: 'cascade' }),
-  /**
-   * The supplier whose lineup this channel is on.
-   *
-   * On the service, `unique(service_id, channel_number)` was a false conflict:
-   * two MSOs of the same service both number a channel 101, and both are right.
-   */
   serviceProviderId: uuid('service_provider_id').notNull().references(() => serviceProviders.id, { onDelete: 'cascade' }),
 
   channelNumber: integer('channel_number').notNull(),

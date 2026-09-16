@@ -21,16 +21,6 @@ import { createTestDb } from '@/test/db';
 import { seedAuthData, TEST_PASSWORD, uniqueDeviceId, uniqueEmail, uniquePhone } from '@/test/fixtures';
 import { bodyOf } from '@/test/http';
 
-/**
- * The staff customer endpoints.
- *
- * Two things are being pinned here. The shape — a row carries its breadcrumb and
- * its rollup, and the detail carries the whole graph — because that is the
- * contract that lets a client stop making a request per row. And the reach,
- * because `customers.view` is granted at three different scopes and the one that
- * matters is the one that must NOT return everything.
- */
-
 const { db, close } = createTestDb();
 
 let app: BuiltApp;
@@ -197,9 +187,6 @@ beforeAll(async () => {
     .where(eq(subscriptions.customerId, northCustomerId));
   const [box] = await db.insert(equipment).values({
     tenantId: data.tenantA.id,
-    equipmentType: 'stb',
-    brand: 'Cisco',
-    model: 'Explorer',
     serialNumber: northSerialNumber,
     vcNumber: northVcNumber,
     macAddress: `AA:BB:${searchSuffix.slice(0, 2)}:11:22:33`,
@@ -221,12 +208,10 @@ beforeAll(async () => {
     packageId: pkg.id,
   });
 
-  // Field staff: `customers.view` at LOCATION, granted the north area only.
   const field = await makeUser('field', SYSTEM_ROLES.STAFF);
   await db.insert(membershipLocations).values({ membershipId: field.membershipId, locationId: northAreaId });
   fieldAuth = await signIn(field.email);
 
-  // A subscriber: `customers.view` at OWN.
   const subscriber = await makeUser('subscriber', SYSTEM_ROLES.CUSTOMER);
   subscriberCustomerId = await makeCustomer({
     name: 'Chodavarapu Vani',
@@ -280,10 +265,6 @@ describe('the customer list', () => {
     const page = await list(adminAuth, '?limit=100');
     const row = page.items.find(item => item.id === northCustomerId)!;
 
-    // The three things a row shows that do not live on the customer: where they
-    // are, how many lines they hold, and what those lines are. Without these the
-    // client fetches the location, the subscriptions, each subscription's
-    // provider and each provider's service — per row.
     expect(row.locationPath).toContain('North');
     expect(row).toMatchObject({
       name: 'Achanta Ramu',
@@ -314,8 +295,6 @@ describe('the customer list', () => {
 
     const second = await list(adminAuth, `?limit=1&cursor=${encodeURIComponent(first.nextCursor!)}`);
 
-    // A different row, and no second count — the total cannot usefully change
-    // while one operator scrolls, and it costs an aggregate over every match.
     expect(second.items[0]!.id).not.toBe(first.items[0]!.id);
     expect(second.total).toBeNull();
   });
@@ -453,15 +432,12 @@ describe('what each scope may reach', () => {
   });
 
   it('refuses a customer outside the area even when the id is known', async () => {
-    // The list filters, but the detail route is directly addressable — this is
-    // the check that stops an id from anywhere reading someone else's area.
     const response = await app.inject({
       method: 'GET',
       url: `/api/v1/customers/${southCustomerId}`,
       headers: fieldAuth,
     });
 
-    // 404 rather than 403: whether that customer exists is not their business.
     expect(response.statusCode).toBe(404);
   });
 
@@ -486,8 +462,6 @@ describe('the customer detail', () => {
     expect(detail.locationPath).toContain('North');
     expect(detail.subscriptions).toHaveLength(1);
 
-    // The joins a client would otherwise make itself, one request each:
-    // package → provider → service, and the line's own location.
     expect(detail.subscriptions[0]).toMatchObject({
       status: 'active',
       price: '349.00',
@@ -500,7 +474,6 @@ describe('the customer detail', () => {
       subscriptions: 1,
       activeSubscriptions: 1,
       services: ['Cable TV'],
-      // Summed through integer paise, so it is not 349.00000000000006.
       monthlyValue: '349.00',
     });
   });
@@ -529,7 +502,6 @@ describe('the customer detail', () => {
   it('filters customers with 2 or more subscriptions or boxes of the same service using multiBox=true', async () => {
     const write = { ...adminAuth, 'content-type': 'application/json' };
 
-    // 1. Create a second service (Broadband)
     const bbService = bodyOf<{ id: string }>(await app.inject({
       method: 'POST',
       url: '/api/v1/services',
@@ -549,7 +521,6 @@ describe('the customer detail', () => {
       payload: { serviceProviderId: bbProvider.id, name: 'Fiber 100', slug: `f100-${unique()}`, price: '699.00' },
     }));
 
-    // Customer A: 2 subscriptions of the SAME service (Cable TV)
     const multiSubCustId = await makeCustomer({
       name: `Alpha Sub ${unique()}`,
       phone: uniquePhone(),
@@ -557,7 +528,6 @@ describe('the customer detail', () => {
       providerId: cableProviderId,
       packageId: cablePkgId,
     });
-    // Add second subscription under the same provider & service
     await db.insert(subscriptions).values({
       tenantId: data.tenantA.id,
       customerId: multiSubCustId,
@@ -569,7 +539,6 @@ describe('the customer detail', () => {
       locationId: northAreaId,
     });
 
-    // Customer B: 1 subscription but 2 active STBs of the SAME service
     const multiBoxCustId = await makeCustomer({
       name: `Beta Box ${unique()}`,
       phone: uniquePhone(),
@@ -580,13 +549,11 @@ describe('the customer detail', () => {
     const [subB] = await db.select().from(subscriptions).where(eq(subscriptions.customerId, multiBoxCustId));
     const [box1] = await db.insert(equipment).values({
       tenantId: data.tenantA.id,
-      equipmentType: 'stb',
       serialNumber: `STB-B1-${unique()}`,
       inventoryStatus: 'allocated',
     }).returning();
     const [box2] = await db.insert(equipment).values({
       tenantId: data.tenantA.id,
-      equipmentType: 'stb',
       serialNumber: `STB-B2-${unique()}`,
       inventoryStatus: 'allocated',
     }).returning();
@@ -596,7 +563,6 @@ describe('the customer detail', () => {
       { tenantId: data.tenantA.id, equipmentId: box2!.id, customerId: multiBoxCustId, subscriptionId: subB!.id },
     ]);
 
-    // Customer C: 2 subscriptions of DIFFERENT services (Cable TV + Broadband)
     const diffServiceCustId = await makeCustomer({
       name: `Diff Services ${unique()}`,
       phone: uniquePhone(),
@@ -615,16 +581,14 @@ describe('the customer detail', () => {
       locationId: northAreaId,
     });
 
-    // Query with multiBox=true
     const multiBoxPage = await list(adminAuth, '?multiBox=true');
     const returnedIds = multiBoxPage.items.map(item => item.id);
 
     expect(returnedIds).toContain(multiSubCustId);
     expect(returnedIds).toContain(multiBoxCustId);
     expect(returnedIds).not.toContain(diffServiceCustId);
-    expect(returnedIds).not.toContain(southCustomerId); // single sub, no extra boxes
+    expect(returnedIds).not.toContain(southCustomerId);
 
-    // Search mode with multiBox=true
     const searchPage = await list(adminAuth, '?multiBox=true&q=Alpha');
     expect(searchPage.items.map(item => item.id)).toContain(multiSubCustId);
     expect(searchPage.items.map(item => item.id)).not.toContain(multiBoxCustId);

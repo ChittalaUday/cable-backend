@@ -28,3 +28,21 @@ export interface Page<T> {
 export function offsetOf({ page, limit }: PaginationQuery): number {
   return (page - 1) * limit;
 }
+
+export async function pageOf<Row, Item>(
+  query: PaginationQuery,
+  source: {
+    rows: PromiseLike<Row[]>;
+    totals: PromiseLike<{ total: number }[]>;
+    present: (rows: Row[]) => Item[] | Promise<Item[]>;
+  },
+): Promise<Page<Item>> {
+  const [rows, [counted]] = await Promise.all([source.rows, source.totals]);
+
+  return {
+    items: await source.present(rows),
+    total: counted?.total ?? 0,
+    page: query.page,
+    limit: query.limit,
+  };
+}

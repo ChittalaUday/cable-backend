@@ -18,7 +18,7 @@ cp .env.example .env          # then set JWT_SECRET: openssl rand -base64 48
 pnpm db:up                    # PostgreSQL 18 in Docker
 pnpm db:migrate
 pnpm db:seed                  # roles, tenants, admin logins, the location hierarchy
-pnpm dev                      # http://localhost:5050 — docs at /docs
+pnpm dev                      # http://localhost:5050 — docs at /docs, customer-app subset at /docs/customer.json
 ```
 
 ## Seeding
@@ -125,7 +125,7 @@ same checks without starting the server.
 | DB TLS | disable | disable | **require / verify-full** |
 | 5xx body | message + stack | message + stack | code + requestId only |
 | CORS | any | any | explicit allowlist |
-| `/docs` | yes | yes | no |
+| `/docs`, `/docs/customer.json` | yes | yes | no |
 
 Production refuses to boot without TLS, a CORS allowlist and a 48-char
 `JWT_SECRET`. See AGENTS.md §2.1.

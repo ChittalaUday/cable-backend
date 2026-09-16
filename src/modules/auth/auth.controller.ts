@@ -86,9 +86,6 @@ export async function me(request: FastifyRequest, reply: FastifyReply) {
   const user = await request.server.auth.userById(request.session.sub);
   const memberships = await request.server.auth.membershipsFor(request.session.sub);
 
-  // Only when the active tenant is unambiguous: a customer record belongs to one
-  // operator, so with two memberships and no `X-Tenant-Id` there is no single
-  // right answer, and guessing one would render the wrong account's balance.
   const customer = request.tenantId === undefined
     ? null
     : await request.server.customers.profileFor(request.tenantId, request.session.sub);

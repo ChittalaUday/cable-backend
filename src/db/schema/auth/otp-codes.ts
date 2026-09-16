@@ -1,8 +1,7 @@
 import { sql } from 'drizzle-orm';
 import { index, integer, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
+import { OTP_PURPOSES } from '@/shared/constants/auth';
 import { auth } from '../schemas';
-
-export const OTP_PURPOSES = ['login', 'verify_phone'] as const;
 
 export const otpCodes = auth.table('otp_codes', {
   id: uuid('id').primaryKey().defaultRandom(),

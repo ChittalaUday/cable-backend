@@ -1,6 +1,7 @@
 import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { boolean, check, index, jsonb, numeric, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
+import { LOCATION_SOURCES, LOCATION_STATUSES } from '@/shared/constants/geo';
 import { users } from '../auth/users';
 import { geo } from '../schemas';
 import { tenants } from '../tenancy/tenants';
@@ -19,9 +20,9 @@ export const locations = geo.table('locations', {
   name: text('name').notNull(),
   code: text('code'),
 
-  source: text('source', { enum: ['system', 'admin', 'user', 'import'] }).notNull().default('admin'),
+  source: text('source', { enum: LOCATION_SOURCES }).notNull().default('admin'),
 
-  status: text('status', { enum: ['pending', 'approved', 'rejected'] }).notNull().default('approved'),
+  status: text('status', { enum: LOCATION_STATUSES }).notNull().default('approved'),
 
   isActive: boolean('is_active').notNull().default(true),
 

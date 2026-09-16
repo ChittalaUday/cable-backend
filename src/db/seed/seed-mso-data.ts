@@ -8,10 +8,13 @@ import pg from 'pg';
 import { env } from '@/config/env';
 import {
   accountTransactions,
+  bundleItems,
   channels,
   customerEquipment,
   customers,
   equipment,
+  itemCatalog,
+  itemTypes,
   locationCategories,
   locations,
   packageChannels,
@@ -187,20 +190,6 @@ function cleanPhone(rawPhone: string): string | null {
   return null;
 }
 
-/**
- * The TIDCO tree, built from the addresses in the report rather than invented.
- *
- * Returns a lookup that answers "where does this address live" with the
- * deepest node the address actually supports — a door for the 89% that parse
- * in full, the apartment or the village for the rest, and the complex itself
- * for a row that says nothing but `TIDCO`. Never null: `location_id` is
- * required on a subscription, so the fallback chain has to bottom out at the
- * town.
- *
- * Only the nodes the data mentions are created. Group A has 62 apartments in
- * the file, not a round 80, and generating the missing ones would put flats in
- * the tree that nobody has ever billed.
- */
 async function buildLocationTree(tenantId: string, addresses: readonly string[]) {
   const cats = await db
     .select({ id: locationCategories.id, slug: locationCategories.slug })
@@ -220,8 +209,6 @@ async function buildLocationTree(tenantId: string, addresses: readonly string[])
 
   const schemaId = town.schemaId;
 
-  // Cached by parent+name, so 764 addresses cost one upsert per distinct node
-  // rather than one per row.
   const cache = new Map<string, string>();
 
   async function node(input: { parentId: string; category: string; name: string; code?: string }): Promise<string> {
@@ -258,8 +245,6 @@ async function buildLocationTree(tenantId: string, addresses: readonly string[])
 
   const buildingId = await node({ parentId: town.id, category: 'building', name: TIDCO_BUILDING, code: 'TIDCO' });
 
-  // The villages already exist as street-address areas; a row that names one
-  // resolves to that area rather than to anything under the complex.
   const villageRows = await db
     .select({ id: locations.id, name: locations.name })
     .from(locations)
@@ -302,7 +287,6 @@ async function buildLocationTree(tenantId: string, addresses: readonly string[])
       continue;
     }
 
-    // `TIDCO`, `Mandapeta`, `Devi center` — inside the book, but no more than that.
     resolved.set(raw, buildingId);
     stats.building++;
   }
@@ -392,11 +376,6 @@ async function run() {
   const broadbandServiceId = serviceMap.get('broadband')!;
   const iptvServiceId = serviceMap.get('iptv')!;
 
-  // ─── Service providers ──────────────────────────────────────────────────────
-  // The supplier behind each service. This is where the brand lives now: the
-  // service is "Cable TV", ACT Digital is one MSO that delivers it, and a second
-  // MSO is another row here rather than a duplicate service
-  // (docs/services-providers-packages.md).
   const providersToSeed = [
     {
       tenantId: tenant.id,
@@ -850,12 +829,165 @@ async function run() {
   for (const s of existingSubs)
     subByAccount.set(s.acc, { id: s.id, customerId: s.customerId });
 
-  // Rebuilt from scratch every run rather than topped up. Every asset below is
-  // derived from the report, so a re-run has to be able to change their shape —
-  // a guard that skipped lines already holding kit would pin the database to
-  // whatever the first import happened to produce. `customer_equipment`
-  // cascades off `equipment`, so the assignments go with them.
   await db.delete(equipment).where(sql`${equipment.tenantId} = ${tenant.id}`);
+
+  const typeDefs = [
+    { code: 'stb', name: 'Set Top Box', icon: 'tv-01', isSerialized: true, isReturnable: true },
+    { code: 'remote', name: 'Remote Control', icon: 'remote-controller-01', isSerialized: false, isReturnable: true },
+    { code: 'power_adapter', name: 'Power Adapter', icon: 'plug-socket', isSerialized: false, isReturnable: true },
+    { code: 'user_manual', name: 'User Manual & Packaging', icon: 'book-02', isSerialized: false, isReturnable: false },
+    { code: 'fiber_node', name: 'Fiber to Coax Mini Node', icon: 'cpu', isSerialized: true, isReturnable: true },
+    { code: 'patch_cable', name: 'Fiber Patch Cord', icon: 'cable-01', isSerialized: false, isReturnable: false },
+  ];
+
+  const typeMap = new Map<string, string>();
+  for (const t of typeDefs) {
+    const [row] = await db
+      .insert(itemTypes)
+      .values({
+        tenantId: tenant.id,
+        code: t.code,
+        name: t.name,
+        icon: t.icon,
+        isSerialized: t.isSerialized,
+        isReturnable: t.isReturnable,
+      })
+      .onConflictDoUpdate({
+        target: [itemTypes.tenantId, itemTypes.code],
+        set: { name: t.name, icon: t.icon, isSerialized: t.isSerialized, isReturnable: t.isReturnable },
+      })
+      .returning();
+    typeMap.set(t.code, row!.id);
+  }
+
+  const catalogDefs = [
+    {
+      code: 'ACT-STB-HD',
+      name: 'ACT HD Set Top Box',
+      brand: 'ACT',
+      model: 'HD-100',
+      icon: 'tv-01',
+      trackingType: 'serialized' as const,
+      isBundle: false,
+      itemTypeId: typeMap.get('stb')!,
+      defaultOwnership: 'tenant_provided' as const,
+      defaultDepositAmount: '1000.00',
+    },
+    {
+      code: 'ACT-REMOTE-01',
+      name: 'ACT Smart Remote',
+      brand: 'ACT',
+      model: 'RC-20',
+      icon: 'remote-controller-01',
+      trackingType: 'quantity' as const,
+      isBundle: false,
+      itemTypeId: typeMap.get('remote')!,
+      defaultOwnership: 'tenant_provided' as const,
+      defaultSalePrice: '250.00',
+    },
+    {
+      code: 'ACT-PWR-12V',
+      name: '12V 1.5A Power Adapter',
+      brand: 'ACT',
+      model: 'PWR-12V-1.5A',
+      icon: 'plug-socket',
+      trackingType: 'quantity' as const,
+      isBundle: false,
+      itemTypeId: typeMap.get('power_adapter')!,
+      defaultOwnership: 'tenant_provided' as const,
+      defaultSalePrice: '300.00',
+    },
+    {
+      code: 'ACT-MAN-01',
+      name: 'ACT User Manual & Pack',
+      brand: 'ACT',
+      model: 'v1.0',
+      icon: 'book-02',
+      trackingType: 'quantity' as const,
+      isBundle: false,
+      itemTypeId: typeMap.get('user_manual')!,
+      defaultOwnership: 'tenant_provided' as const,
+      defaultSalePrice: '0.00',
+      isReturnable: false,
+    },
+    {
+      code: 'ACT-KIT-HD',
+      name: 'ACT HD Installation Kit',
+      brand: 'ACT',
+      model: 'KIT-100',
+      icon: 'package',
+      trackingType: 'serialized' as const,
+      isBundle: true,
+      defaultOwnership: 'tenant_provided' as const,
+      defaultDepositAmount: '1000.00',
+    },
+    {
+      code: 'OPT-NODE-01',
+      name: 'Optical Mini Receiver (Fiber to Coax)',
+      brand: 'OptiLink',
+      model: 'OL-MINI-RF',
+      icon: 'cpu',
+      trackingType: 'serialized' as const,
+      isBundle: false,
+      itemTypeId: typeMap.get('fiber_node')!,
+      defaultOwnership: 'tenant_provided' as const,
+      defaultDepositAmount: '500.00',
+    },
+    {
+      code: 'FIN-PATCH-3M',
+      name: 'SC-APC Fiber Patch Cord 3m',
+      brand: 'Finolex',
+      model: 'SC-3M',
+      icon: 'cable-01',
+      trackingType: 'quantity' as const,
+      isBundle: false,
+      itemTypeId: typeMap.get('patch_cable')!,
+      defaultOwnership: 'customer_owned' as const,
+      defaultSalePrice: '150.00',
+      isReturnable: false,
+    },
+  ];
+
+  const catMap = new Map<string, string>();
+  for (const c of catalogDefs) {
+    const [row] = await db
+      .insert(itemCatalog)
+      .values({
+        tenantId: tenant.id,
+        ...c,
+      })
+      .onConflictDoUpdate({
+        target: [itemCatalog.tenantId, itemCatalog.code],
+        set: { ...c },
+      })
+      .returning();
+    catMap.set(c.code, row!.id);
+  }
+
+  const kitId = catMap.get('ACT-KIT-HD')!;
+  const bundleComponents = [
+    { componentId: catMap.get('ACT-STB-HD')!, quantity: 1, isOptional: false, sortOrder: 1 },
+    { componentId: catMap.get('ACT-REMOTE-01')!, quantity: 1, isOptional: false, sortOrder: 2 },
+    { componentId: catMap.get('ACT-PWR-12V')!, quantity: 1, isOptional: false, sortOrder: 3 },
+    { componentId: catMap.get('ACT-MAN-01')!, quantity: 1, isOptional: false, sortOrder: 4 },
+  ];
+
+  for (const bc of bundleComponents) {
+    await db
+      .insert(bundleItems)
+      .values({
+        tenantId: tenant.id,
+        bundleCatalogId: kitId,
+        componentCatalogId: bc.componentId,
+        quantity: bc.quantity,
+        isOptional: bc.isOptional,
+        sortOrder: bc.sortOrder,
+      })
+      .onConflictDoUpdate({
+        target: [bundleItems.tenantId, bundleItems.bundleCatalogId, bundleItems.componentCatalogId],
+        set: { quantity: bc.quantity, isOptional: bc.isOptional, sortOrder: bc.sortOrder },
+      });
+  }
 
   let insertedCustomers = 0;
   let insertedSubs = 0;
@@ -892,9 +1024,6 @@ async function run() {
       customerId = existingSub.customerId;
       subscriptionId = existingSub.id;
 
-      // Deliberately still `userId: null`. These are subscriber records, not
-      // logins — accounts get created through the real signup flow, so that
-      // an imported row never becomes a credential nobody issued.
       await db
         .update(customers)
         .set({
@@ -967,42 +1096,31 @@ async function run() {
 
     const assetStatus = custRow.status === 'active' ? 'active' as const : 'returned' as const;
 
-    // Three per connection. The box is the only one the report identifies: its
-    // serial number and its viewing card number both belong to it, which is why
-    // the card is not a fourth asset of its own — a VC number is a property of
-    // the STB it is paired to, not a separate thing the operator can move.
-    //
-    // The remote and the adapter ship with every box but appear in no file, so
-    // they are marked as assumed rather than passed off as scanned hardware.
-    const kit = [
-      custRow.serialNumber.length > 0 && {
-        equipmentType: 'stb' as const,
-        serialNumber: custRow.serialNumber,
-        vcNumber: custRow.vcNumber.length > 0 ? custRow.vcNumber : null,
-      },
-      { equipmentType: 'remote' as const, metadata: { assumed: true } },
-      { equipmentType: 'power_adapter' as const, metadata: { assumed: true } },
-    ].filter(item => item !== false);
-
-    for (const asset of kit) {
-      const [created] = await db
+    if (custRow.serialNumber.length > 0) {
+      const [kitAsset] = await db
         .insert(equipment)
         .values({
           tenantId: tenant.id,
+          catalogId: catMap.get('ACT-KIT-HD')!,
+          serialNumber: custRow.serialNumber,
+          vcNumber: custRow.vcNumber.length > 0 ? custRow.vcNumber : null,
+          locationId,
           isReturnable: true,
           ownershipType: 'tenant_provided',
-          inventoryStatus: 'allocated',
+          depositAmount: '1000.00',
+          inventoryStatus: custRow.status === 'active' ? 'allocated' : 'available',
           createdAt: createdAtDate,
-          ...asset,
         })
         .returning();
 
       await db.insert(customerEquipment).values({
         tenantId: tenant.id,
-        equipmentId: created!.id,
+        equipmentId: kitAsset!.id,
         customerId,
         subscriptionId,
         status: assetStatus,
+        ownershipType: 'tenant_provided',
+        depositAmount: '1000.00',
         assignedAt: createdAtDate,
       });
       insertedEquipment++;

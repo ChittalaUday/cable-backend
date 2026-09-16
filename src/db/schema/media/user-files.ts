@@ -1,11 +1,9 @@
 import { index, jsonb, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { FILE_KINDS, FILE_VISIBILITIES } from '@/shared/constants/media';
 import { users } from '../auth/users';
 import { media } from '../schemas';
 import { tenants } from '../tenancy/tenants';
 import { files } from './files';
-
-export const FILE_KINDS = ['upload', 'generated'] as const;
-export const FILE_VISIBILITIES = ['private', 'public'] as const;
 
 export const userFiles = media.table('user_files', {
   id: uuid('id').primaryKey().defaultRandom(),

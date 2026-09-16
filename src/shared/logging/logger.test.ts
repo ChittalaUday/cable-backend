@@ -35,7 +35,6 @@ describe('local log storage', () => {
     const directory = await mkdtemp(path.join(tmpdir(), 'cable-logs-'));
     const now = () => new Date('2026-09-13T12:00:00Z');
 
-    // Run 1: first start of the day
     const dest1 = createRotatingLogDestination({
       directory,
       maxFileBytes: 50,
@@ -44,7 +43,6 @@ describe('local log storage', () => {
     });
     dest1.write('first session log line\n');
 
-    // Run 2: server restarted on same day, writes more log
     const dest2 = createRotatingLogDestination({
       directory,
       maxFileBytes: 50,
@@ -60,7 +58,6 @@ describe('local log storage', () => {
       'first session log line\nsecond session log line\n',
     );
 
-    // Run 3: log line exceeds maxFileBytes (50 bytes)
     dest2.write('third log line that pushes total bytes over the 50 byte limit\n');
 
     files = readdirSync(dayDir).sort();

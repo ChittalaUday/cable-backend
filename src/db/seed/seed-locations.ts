@@ -2,34 +2,23 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import type * as schema from '@/db/schema';
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import {
+  customers,
+  equipment,
+  locationAliases,
   locationCategories,
   locations,
   locationSchemaLevels,
   locationSchemas,
+  subscriptions,
 } from '@/db/schema';
 
 type Db = NodePgDatabase<typeof schema>;
-
-/**
- * The two shapes the operator actually sells into.
- *
- * **TIDCO Apartments** is the bulk of the book — one complex in Mandapeta,
- * addressed all the way down to a door, so the hierarchy has to reach that far:
- * `Mandapeta → TIDCO Apartments → Group A → A31 → Second Floor → 1`. The tree
- * itself is not seeded here; `seed-mso-data` builds it from the addresses in
- * the MSO report, because inventing block and door numbers that do not match
- * the customer file is how the two drift apart.
- *
- * **Street Address** covers the outlying villages, where an address is a
- * village and a street and nothing finer.
- */
 
 export const TIDCO_SCHEMA_SLUG = 'tidco-apartments';
 export const STREET_SCHEMA_SLUG = 'street-address';
 export const TIDCO_TOWN = 'Mandapeta';
 export const TIDCO_BUILDING = 'TIDCO Apartments';
 
-/** The chain `seed-mso-data` walks down; the order is the schema. */
 export const TIDCO_LEVELS = ['area', 'building', 'group', 'apartment', 'floor', 'door'] as const;
 
 const CATEGORIES = [
@@ -42,21 +31,9 @@ const CATEGORIES = [
   { name: 'Door', slug: 'door' },
 ];
 
-/**
- * Villages the MSO report mentions, plus the towns the operator already
- * listed. Mandapeta is deliberately absent: it is the root of the TIDCO
- * hierarchy below, and a node belongs to exactly one schema.
- */
 const STREET_AREAS: Record<string, string[]> = {
-  Alamuru: ['Canal Road', 'Raja Street', 'Ramalayam Street'],
-  Jonnada: ['National Highway Road', 'Old Post Office Street'],
-  Dwarapudi: ['Cloth Market Street', 'Station Road', 'Cinema Hall Street'],
-  Kapileswarapuram: ['Main Road', 'Brahmam Gari Veedhi', 'Challa Vari Veedhi'],
-  Macharamattalu: ['Main Road'],
   Angara: ['Main Road'],
-  Yandagandi: ['Main Road'],
-  Kanjulapeta: ['Main Road'],
-  Kutukulur: ['Main Road'],
+  Kapileswaram: ['Main Road', 'Brahmam Gari Veedhi', 'Challa Vari Veedhi'],
 };
 
 export async function seedLocations(db: Db, tenantId: string): Promise<void> {
@@ -83,9 +60,6 @@ export async function seedLocations(db: Db, tenantId: string): Promise<void> {
       })
       .returning({ id: locationSchemas.id });
 
-    // Replaced rather than upserted: the levels are unique on both depth and
-    // category, so re-running with a changed chain would collide on every row
-    // that moved and silently leave the old shape in place.
     await db.delete(locationSchemaLevels).where(eq(locationSchemaLevels.schemaId, row!.id));
     await db.insert(locationSchemaLevels).values(input.levels.map((slug, depth) => ({
       schemaId: row!.id,
@@ -128,8 +102,6 @@ export async function seedLocations(db: Db, tenantId: string): Promise<void> {
       ));
 
     if (existing !== undefined) {
-      // A node that predates this schema — Mandapeta used to be a street area —
-      // is moved rather than recreated, so nothing pointing at it has to change.
       await db
         .update(locations)
         .set({ schemaId: data.schemaId, categoryId: data.categoryId, code: data.code ?? null, updatedAt: new Date() })
@@ -164,6 +136,16 @@ export async function seedLocations(db: Db, tenantId: string): Promise<void> {
       code: areaName.slice(0, 3).toUpperCase(),
     });
 
+    if (areaName === 'Kapileswaram') {
+      await db
+        .insert(locationAliases)
+        .values([
+          { tenantId, locationId: areaId, alias: 'Kapileswarapuram', source: 'admin' },
+          { tenantId, locationId: areaId, alias: 'K.P. Puram', source: 'admin' },
+        ])
+        .onConflictDoNothing();
+    }
+
     for (const streetName of streets) {
       await upsertNode({
         schemaId: streetSchemaId,
@@ -174,8 +156,6 @@ export async function seedLocations(db: Db, tenantId: string): Promise<void> {
     }
   }
 
-  // Mandapeta and the complex itself; everything below them comes from the
-  // customer file, so `seed-mso-data` picks up from here.
   const mandapetaId = await upsertNode({
     schemaId: tidcoSchemaId,
     categoryId: categoryMap.get('area')!,
@@ -184,7 +164,7 @@ export async function seedLocations(db: Db, tenantId: string): Promise<void> {
     code: 'MDP',
   });
 
-  await upsertNode({
+  const buildingId = await upsertNode({
     schemaId: tidcoSchemaId,
     categoryId: categoryMap.get('building')!,
     parentId: mandapetaId,
@@ -192,42 +172,83 @@ export async function seedLocations(db: Db, tenantId: string): Promise<void> {
     code: 'TIDCO',
   });
 
-  // Mandapeta's four synthetic streets and the old `gated-apartment` sample
-  // tree described a hierarchy nothing in the customer file matches. They go,
-  // unless something already points at them — an FK error here means real data
-  // is attached and the node has to be re-pointed by hand rather than dropped.
-  await dropStaleNodes(db, tenantId, mandapetaId);
+  await dropStaleNodes({ db, tenantId, mandapetaId, buildingId });
 
   console.log(`✅ Seeded location categories, two schemas, ${Object.keys(STREET_AREAS).length} village areas, and the Mandapeta / TIDCO Apartments root`);
 }
 
-/**
- * The synthetic tree the first pass of this seed invented, removed leaf-first.
- *
- * Only nodes under the old `gated-apartment` schema and the streets that used
- * to hang off Mandapeta; anything a subscription still references raises a
- * foreign key error instead of being deleted out from under it.
- */
-async function dropStaleNodes(db: Db, tenantId: string, mandapetaId: string): Promise<void> {
-  // One DELETE for the whole set: `locations.parent_id` is NO ACTION, which
-  // Postgres checks at end of statement, so parents and children can go together.
-  const stale = await db.execute<{ id: string }>(sql`
-    SELECT l.id
+async function dropStaleNodes(input: {
+  db: Db;
+  tenantId: string;
+  mandapetaId: string;
+  buildingId: string;
+}): Promise<void> {
+  const { db, tenantId, mandapetaId, buildingId } = input;
+  const [kapileswaram] = await db
+    .select({ id: locations.id })
+    .from(locations)
+    .where(and(eq(locations.tenantId, tenantId), isNull(locations.parentId), eq(locations.name, 'Kapileswaram')))
+    .limit(1);
+
+  const stale = await db.execute<{ id: string; root_name: string }>(sql`
+    SELECT l.id, s.slug as root_name
     FROM geo.locations l
     JOIN geo.location_schemas s ON s.id = l.schema_id
     WHERE l.tenant_id = ${tenantId} AND s.slug = 'gated-apartment'
     UNION
-    SELECT l.id
+    SELECT l.id, 'Mandapeta' as root_name
     FROM geo.locations l
     JOIN geo.location_categories c ON c.id = l.category_id
     WHERE l.tenant_id = ${tenantId} AND l.parent_id = ${mandapetaId} AND c.slug = 'street'
+    UNION
+    SELECT d.id, root.name as root_name
+    FROM geo.locations root
+    JOIN geo.location_descendants(root.id) d ON true
+    WHERE root.tenant_id = ${tenantId}
+      AND root.parent_id IS NULL
+      AND root.name NOT IN ('Mandapeta', 'Angara', 'Kapileswaram', 'Central Warehouse', 'KPHB Branch')
   `);
 
-  const ids = stale.rows.map(row => row.id);
-  if (ids.length === 0)
+  const rows = stale.rows;
+  if (rows.length === 0)
     return;
 
+  const ids = rows.map(r => r.id);
+  const kapileswarapuramIds = rows.filter(r => r.root_name === 'Kapileswarapuram').map(r => r.id);
+  const otherStaleIds = rows.filter(r => r.root_name !== 'Kapileswarapuram').map(r => r.id);
+
+  if (kapileswarapuramIds.length > 0 && kapileswaram) {
+    await db
+      .update(subscriptions)
+      .set({ locationId: kapileswaram.id })
+      .where(and(eq(subscriptions.tenantId, tenantId), inArray(subscriptions.locationId, kapileswarapuramIds)));
+    await db
+      .update(customers)
+      .set({ locationId: kapileswaram.id })
+      .where(and(eq(customers.tenantId, tenantId), inArray(customers.locationId, kapileswarapuramIds)));
+    await db
+      .update(equipment)
+      .set({ locationId: kapileswaram.id })
+      .where(and(eq(equipment.tenantId, tenantId), inArray(equipment.locationId, kapileswarapuramIds)));
+  }
+
+  if (otherStaleIds.length > 0) {
+    await db
+      .update(subscriptions)
+      .set({ locationId: buildingId })
+      .where(and(eq(subscriptions.tenantId, tenantId), inArray(subscriptions.locationId, otherStaleIds)));
+    await db
+      .update(customers)
+      .set({ locationId: buildingId })
+      .where(and(eq(customers.tenantId, tenantId), inArray(customers.locationId, otherStaleIds)));
+    await db
+      .update(equipment)
+      .set({ locationId: buildingId })
+      .where(and(eq(equipment.tenantId, tenantId), inArray(equipment.locationId, otherStaleIds)));
+  }
+
+  await db.delete(locationAliases).where(and(eq(locationAliases.tenantId, tenantId), inArray(locationAliases.locationId, ids)));
   await db.delete(locations).where(inArray(locations.id, ids));
   await db.delete(locationSchemas).where(and(eq(locationSchemas.tenantId, tenantId), eq(locationSchemas.slug, 'gated-apartment')));
-  console.log(`🧹 Removed ${ids.length} stale synthetic location nodes`);
+  console.log(`🧹 Removed ${ids.length} stale synthetic/unconfigured location nodes`);
 }

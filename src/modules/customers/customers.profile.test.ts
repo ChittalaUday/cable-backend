@@ -12,14 +12,6 @@ import { createTestDb } from '@/test/db';
 import { seedAuthData, TEST_PASSWORD, uniqueDeviceId, uniqueEmail, uniquePhone } from '@/test/fixtures';
 import { bodyOf } from '@/test/http';
 
-/**
- * `/auth/me` answers with the subscriber record behind the login.
- *
- * A `users` row is an identity and a `crm.customers` row is what it buys, so
- * "who am I" and "what am I on" used to be two different questions a client
- * could not ask in one call.
- */
-
 const { db, close } = createTestDb();
 
 let app: BuiltApp;
@@ -52,7 +44,6 @@ async function makeUser(prefix: string): Promise<{ id: string; email: string }> 
     .values({ email: uniqueEmail(prefix), phone: uniquePhone(), name: prefix, passwordHash: await hashPassword(TEST_PASSWORD) })
     .returning();
 
-  // One membership each, so neither needs to send X-Tenant-Id.
   await db.insert(tenantMemberships).values({
     userId: row!.id,
     tenantId: data.tenantA.id,
@@ -96,8 +87,6 @@ beforeAll(async () => {
     payload: { serviceProviderId: provider.id, name: 'Gold', slug: `gold-${unique()}`, price: '349.00', billingCycle: 'monthly' },
   }));
 
-  // `subscriptions.location_id` is required, so the fixture needs a real node:
-  // one category, a one-level hierarchy, one area.
   const category = bodyOf<{ id: string }>(await app.inject({
     method: 'POST',
     url: '/api/v1/location-categories',
@@ -164,7 +153,6 @@ describe('/auth/me for a subscriber', () => {
     expect(customer.address).toBe('4-21, Main Road, Mandapeta 533308');
     expect(customer.locationId).not.toBeNull();
 
-    // The join a client would otherwise have to do itself: package → provider → service.
     expect(customer.subscriptions).toHaveLength(1);
     expect(customer.subscriptions[0]).toMatchObject({
       status: 'active',
@@ -175,7 +163,6 @@ describe('/auth/me for a subscriber', () => {
       package: { name: 'Gold' },
     });
 
-    // Money is a string all the way out (§8).
     expect(typeof customer.subscriptions[0]!.price).toBe('string');
   });
 
@@ -198,8 +185,6 @@ describe('/auth/me for a subscriber', () => {
   });
 
   it('is null when the caller has not said which tenant they are acting in', async () => {
-    // `data.active` belongs to two tenants, so no tenant resolves without the
-    // header — and a customer record belongs to exactly one operator.
     const twoTenants = await signIn(data.active.email);
     const response = await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: twoTenants });
 

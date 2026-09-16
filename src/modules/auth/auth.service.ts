@@ -7,7 +7,8 @@ import type { AuditAction } from '@/shared/constants/audit';
 import type { AccessTokenClaims, TokenSigner } from '@/shared/security/tokens';
 import { randomUUID } from 'node:crypto';
 import { and, desc, eq, isNull, or, sql } from 'drizzle-orm';
-import { otpCodes, tenantMemberships, tenants, users } from '@/db/schema';
+import { SYSTEM_ROLES } from '@/config/constants';
+import { customers, otpCodes, tenantMemberships, tenants, users } from '@/db/schema';
 import { audit } from '@/modules/audit/audit.service';
 import { normalisePhone, to10DigitPhone } from '@/modules/messaging/messaging.service';
 import { AUDIT_ACTIONS, AUDIT_ENTITIES } from '@/shared/constants/audit';
@@ -16,7 +17,6 @@ import { badRequest, DomainError, forbidden, unauthorized } from '@/shared/error
 import { generateOtp, hashOtp, otpMatches } from '@/shared/security/otp';
 import { hashPassword, verifyPassword } from '@/shared/security/password';
 
-/** The error code a caller was refused with, for the audit row. */
 function reasonOf(error: unknown): string {
   return error instanceof DomainError ? error.code : 'UNKNOWN';
 }
@@ -44,11 +44,6 @@ export interface AuthTokens {
 
 export interface PublicMembership {
   tenantId: string;
-  /**
-   * Carried so a client with several memberships can ASK which one to act in.
-   * The id alone is a UUID — unusable in a picker, and the tenant name is not
-   * available from any other endpoint.
-   */
   tenantName: string;
   roleId: string;
 }
@@ -61,7 +56,6 @@ export interface PublicUser {
   photoUrl: string | null;
 }
 
-/** The claim shape — ids only, so the token does not grow with tenant names. */
 function toClaimMemberships(memberships: PublicMembership[]): AccessTokenClaims['memberships'] {
   return memberships.map(m => ({ t: m.tenantId, r: m.roleId }));
 }
@@ -114,13 +108,6 @@ export class AuthService {
     return toPublicUser(user);
   }
 
-  /**
-   * The tenants this user may act in, named.
-   *
-   * Read from the database rather than the token: the token carries ids only,
-   * and a client that belongs to several tenants has to show a human a list
-   * before it can send `X-Tenant-Id`.
-   */
   async membershipsFor(userId: string): Promise<PublicMembership[]> {
     return this.db.select({
       tenantId: tenantMemberships.tenantId,
@@ -171,8 +158,6 @@ export class AuthService {
       text: `${code} is your Satya Cable verification code. It expires in ${Math.round(this.deps.config.otpTtlSeconds / 60)} minutes.`,
     });
 
-    // The code itself is never in the row — `sanitizeAuditValue` redacts keys
-    // that look like one, and nothing here hands it a key that does.
     await this.record(context, { action: AUDIT_ACTIONS.AUTH_OTP_REQUESTED, actorId: null, entityId: identifier, metadata: { channel } });
 
     return { channel };
@@ -225,9 +210,6 @@ export class AuthService {
       asPhone === null ? eq(users.email, identifier) : or(eq(users.email, identifier), eq(users.phone, asPhone)),
     ).limit(1);
 
-    // A failed sign-in is the event a security review actually looks for, so it
-    // is recorded against the identifier that was tried — the account it names
-    // need not exist.
     const failed = async (error: unknown): Promise<never> => {
       await this.record(context, {
         action: AUDIT_ACTIONS.AUTH_LOGIN_FAILED,
@@ -261,18 +243,12 @@ export class AuthService {
     return session;
   }
 
-  /**
-   * Replaying a rotated token revokes the session (AGENTS.md §4.6) — the one
-   * refresh failure worth waking someone for, so the reason code goes in the row.
-   */
   async refresh(refreshToken: string, context: AuditContext): Promise<AuthTokens> {
     let userId: string | null = null;
     let sessionId: string | null = null;
 
     try {
       const { session, refreshToken: next } = await this.sessions.rotate(refreshToken, async (replayed) => {
-        // Every other session on this account is about to be distrusted too, so
-        // this row is the one a reviewer traces the incident from.
         sessionId = replayed.id;
         userId = replayed.userId;
         await this.record(context, {
@@ -323,10 +299,6 @@ export class AuthService {
     return revoked;
   }
 
-  /**
-   * Sign-in happens on public routes, so `context.actorId` is still null when
-   * the hook builds it — the actor is whoever this call just identified.
-   */
   private async record(
     context: AuditContext,
     event: { action: AuditAction; actorId: string | null; entityId: string; metadata?: Record<string, unknown> },
@@ -342,11 +314,11 @@ export class AuthService {
   private async startSession(user: User, device: DeviceInfo): Promise<SessionResult> {
     this.assertUsable(user);
 
+    await this.linkSubscriberMemberships(user);
+
     const deviceRow = await this.sessions.upsertDevice(device);
     const { session, refreshToken } = await this.sessions.issue(user.id, deviceRow.id);
 
-    // One query serves both the token claims and the response: the names cost
-    // nothing extra here, and the token still carries only ids.
     const memberships = await this.membershipsFor(user.id);
     const { token, expiresIn } = await this.deps.tokens.sign({
       sub: user.id,
@@ -360,8 +332,6 @@ export class AuthService {
       refreshToken,
       expiresIn,
       user: toPublicUser(user),
-      // Already loaded to sign the token — returning them saves the client a
-      // round trip to `/auth/me` just to learn what to render.
       memberships,
     };
   }
@@ -419,6 +389,33 @@ export class AuthService {
         `Wait ${Math.ceil(cooldown - waited)} seconds before requesting another code`,
       );
     }
+  }
+
+  private async linkSubscriberMemberships(user: User): Promise<void> {
+    if (user.phone === null)
+      return;
+
+    await this.db
+      .update(customers)
+      .set({ userId: user.id, updatedAt: new Date() })
+      .where(and(
+        eq(customers.phone, user.phone),
+        isNull(customers.userId),
+        isNull(customers.deletedAt),
+      ));
+
+    const owned = await this.db
+      .selectDistinct({ tenantId: customers.tenantId })
+      .from(customers)
+      .where(and(eq(customers.userId, user.id), isNull(customers.deletedAt)));
+
+    if (owned.length === 0)
+      return;
+
+    await this.db
+      .insert(tenantMemberships)
+      .values(owned.map(row => ({ userId: user.id, tenantId: row.tenantId, roleId: SYSTEM_ROLES.CUSTOMER })))
+      .onConflictDoNothing({ target: [tenantMemberships.userId, tenantMemberships.tenantId] });
   }
 
   private async findOrCreateByPhone(phone: string): Promise<User> {

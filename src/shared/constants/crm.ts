@@ -29,64 +29,6 @@ export type BillingCycle = (typeof BILLING_CYCLES)[number];
 export const SUBSCRIPTION_STATUSES = ['active', 'inactive', 'suspended', 'cancelled'] as const;
 export type SubscriptionStatus = (typeof SUBSCRIPTION_STATUSES)[number];
 
-export const EQUIPMENT_TYPES = [
-  'stb',
-  'smart_card',
-  'ont',
-  'router',
-  'remote',
-  'power_adapter',
-  'fiber_node',
-  'patch_cable',
-  'other',
-] as const;
-export type EquipmentType = (typeof EQUIPMENT_TYPES)[number];
-
-export const BOX_EQUIPMENT_TYPES = [
-  'stb',
-  'ont',
-  'router',
-] as const;
-export type BoxEquipmentType = (typeof BOX_EQUIPMENT_TYPES)[number];
-
-export const TERMINAL_EQUIPMENT_TYPES = BOX_EQUIPMENT_TYPES;
-export type TerminalEquipmentType = BoxEquipmentType;
-
-export const EQUIPMENT_STATUSES = [
-  'active',
-  'standby',
-  'faulty',
-  'returned',
-  'lost_unreturned',
-  'written_off',
-] as const;
-export type EquipmentStatus = (typeof EQUIPMENT_STATUSES)[number];
-
-export const EQUIPMENT_INVENTORY_STATUSES = [
-  'available',
-  'allocated',
-  'faulty',
-  'retired',
-  'lost',
-] as const;
-export type EquipmentInventoryStatus = (typeof EQUIPMENT_INVENTORY_STATUSES)[number];
-
-export const EQUIPMENT_OWNERSHIPS = [
-  'tenant_provided',
-  'customer_owned',
-  'rental',
-  'deposit',
-] as const;
-export type EquipmentOwnership = (typeof EQUIPMENT_OWNERSHIPS)[number];
-
-export const EQUIPMENT_RETURN_CONDITIONS = [
-  'working',
-  'damaged',
-  'missing_accessories',
-  'faulty',
-] as const;
-export type EquipmentReturnCondition = (typeof EQUIPMENT_RETURN_CONDITIONS)[number];
-
 export const TRANSACTION_TYPES = [
   'deduction',
   'deposit',
@@ -95,3 +37,39 @@ export const TRANSACTION_TYPES = [
   'other',
 ] as const;
 export type TransactionType = (typeof TRANSACTION_TYPES)[number];
+
+export const CUSTOMER_LOCATION_SOURCES = ['customer', 'subscription'] as const;
+export type CustomerLocationSource = (typeof CUSTOMER_LOCATION_SOURCES)[number];
+
+export const ENTITY_STATUS = {
+  ACTIVE: 'active',
+  INACTIVE: 'inactive',
+} as const satisfies Record<string, EntityStatus>;
+
+export const CUSTOMER_STATUS = {
+  ACTIVE: 'active',
+  INACTIVE: 'inactive',
+  PENDING: 'pending',
+} as const satisfies Record<string, CustomerStatus>;
+
+export const SUBSCRIPTION_STATUS = {
+  ACTIVE: 'active',
+  INACTIVE: 'inactive',
+  SUSPENDED: 'suspended',
+  CANCELLED: 'cancelled',
+} as const satisfies Record<string, SubscriptionStatus>;
+
+export const PACKAGE_TYPE = {
+  BASE: 'base',
+  BOUQUET: 'bouquet',
+  ADDON: 'addon',
+  ALA_CARTE: 'ala_carte',
+  COMBO: 'combo',
+} as const satisfies Record<string, PackageType>;
+
+export const BILLING_CYCLE = {
+  MONTHLY: 'monthly',
+  QUARTERLY: 'quarterly',
+  SEMI_ANNUAL: 'semi_annual',
+  ANNUAL: 'annual',
+} as const satisfies Record<string, BillingCycle>;

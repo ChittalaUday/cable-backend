@@ -7,14 +7,6 @@ import { serviceProviders } from './service-providers';
 export const packages = crm.table('packages', {
   id: uuid('id').primaryKey().defaultRandom(),
   tenantId: uuid('tenant_id').notNull().references(() => tenants.id, { onDelete: 'cascade' }),
-  /**
-   * The SUPPLIER whose package this is — never the service.
-   *
-   * A price, an MSO share and a billing cycle are things a supplier sets. The
-   * service is reachable through the provider; a `service_id` copy here would
-   * be a second truth that goes stale the first time one is re-pointed
-   * (docs/services-providers-packages.md §3).
-   */
   serviceProviderId: uuid('service_provider_id').notNull().references(() => serviceProviders.id, { onDelete: 'cascade' }),
 
   name: text('name').notNull(),

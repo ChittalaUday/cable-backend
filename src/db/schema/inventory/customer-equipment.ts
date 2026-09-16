@@ -1,23 +1,28 @@
 import { index, numeric, text, timestamp, uuid } from 'drizzle-orm/pg-core';
 import {
+  CUSTOMER_EQUIPMENT_STATUSES,
+  EQUIPMENT_OWNERSHIPS,
   EQUIPMENT_RETURN_CONDITIONS,
-  EQUIPMENT_STATUSES,
-} from '@/shared/constants/crm';
+} from '@/shared/constants/inventory';
 import { users } from '../auth/users';
-import { crm } from '../schemas';
+import { customers } from '../crm/customers';
+import { subscriptions } from '../crm/subscriptions';
+import { inventory } from '../schemas';
 import { tenants } from '../tenancy/tenants';
-import { customers } from './customers';
 import { equipment } from './equipment';
-import { subscriptions } from './subscriptions';
 
-export const customerEquipment = crm.table('customer_equipment', {
+export const customerEquipment = inventory.table('customer_equipment', {
   id: uuid('id').primaryKey().defaultRandom(),
   tenantId: uuid('tenant_id').notNull().references(() => tenants.id, { onDelete: 'cascade' }),
   equipmentId: uuid('equipment_id').notNull().references(() => equipment.id, { onDelete: 'cascade' }),
   customerId: uuid('customer_id').notNull().references(() => customers.id, { onDelete: 'cascade' }),
   subscriptionId: uuid('subscription_id').notNull().references(() => subscriptions.id, { onDelete: 'cascade' }),
 
-  status: text('status', { enum: EQUIPMENT_STATUSES }).notNull().default('active'),
+  status: text('status', { enum: CUSTOMER_EQUIPMENT_STATUSES }).notNull().default('active'),
+  ownershipType: text('ownership_type', { enum: EQUIPMENT_OWNERSHIPS }).notNull().default('tenant_provided'),
+
+  chargedAmount: numeric('charged_amount', { precision: 12, scale: 2 }).notNull().default('0'),
+  depositAmount: numeric('deposit_amount', { precision: 12, scale: 2 }).notNull().default('0'),
 
   assignedAt: timestamp('assigned_at', { withTimezone: true }).notNull().defaultNow(),
   assignedBy: uuid('assigned_by').references(() => users.id, { onDelete: 'set null' }),

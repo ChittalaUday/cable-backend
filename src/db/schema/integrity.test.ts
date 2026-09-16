@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { afterAll, describe, expect, it } from 'vitest';
-import { channels, customers, files, otpCodes, packages, roles, serviceProviders, services, teams, tenantMemberships, tenants, users } from '@/db/schema';
+import { accountTransactions, channels, customers, files, otpCodes, packages, roles, serviceProviders, services, teams, tenantMemberships, tenants, users } from '@/db/schema';
 import { createTestDb, inRollback } from '@/test/db';
 
 const { db, close } = createTestDb();
@@ -29,11 +29,6 @@ describe('database integrity', () => {
     });
   });
 
-  /**
-   * A team is one operator's crew and can never be shared. The guard is a
-   * composite foreign key on `(tenant_id, team_id)`, not a `WHERE tenant_id = ?`
-   * in the service — this is the test that says so.
-   */
   describe('teams belong to exactly one tenant', () => {
     const code = () => `T${randomUUID().replaceAll('-', '').slice(0, 4).toUpperCase()}`;
 
@@ -66,7 +61,6 @@ describe('database integrity', () => {
           .returning();
         expect(joined?.teamId).toBe(team!.id);
 
-        // `team_id` is nullable and the FK is MATCH SIMPLE, so "on no team" stays legal.
         const [unassigned] = await tx.insert(tenantMemberships)
           .values({ userId: onNone!.id, tenantId: tenant!.id, roleId: 'staff', teamId: null })
           .returning();
@@ -82,7 +76,6 @@ describe('database integrity', () => {
         await tx.insert(teams).values({ tenantId: a!.id, name: 'Collections', slug: 'collections' });
         await tx.insert(teams).values({ tenantId: b!.id, name: 'Collections', slug: 'collections' });
 
-        // ...but not one tenant twice.
         await expect(tx.insert(teams).values({ tenantId: a!.id, name: 'Dupe', slug: 'collections' }))
           .rejects
           .toThrow();
@@ -96,9 +89,35 @@ describe('database integrity', () => {
         const [user] = await tx.insert(users).values({ phone: `9${randomUUID().replaceAll(/\D/g, '').slice(0, 9)}` }).returning();
         await tx.insert(tenantMemberships).values({ userId: user!.id, tenantId: tenant!.id, roleId: 'staff', teamId: team!.id });
 
-        // Hard delete is refused — empty the team first. Soft delete is the normal path.
         await expect(tx.delete(teams).where(eq(teams.id, team!.id))).rejects.toThrow();
       });
+    });
+  });
+
+  it('attributes collections only to a member of the same tenant', async () => {
+    await inRollback(db, async (tx) => {
+      const code = () => `A${randomUUID().replaceAll('-', '').slice(0, 4).toUpperCase()}`;
+      const [tenantA] = await tx.insert(tenants).values({ code: code(), name: 'Collector A' }).returning();
+      const [tenantB] = await tx.insert(tenants).values({ code: code(), name: 'Collector B' }).returning();
+      const [service] = await tx.insert(services).values({ tenantId: tenantA!.id, name: 'Cable', slug: 'cable' }).returning();
+      const [collectorA] = await tx.insert(users).values({ phone: `9${randomUUID().replaceAll(/\D/g, '').slice(0, 9)}` }).returning();
+      const [collectorB] = await tx.insert(users).values({ phone: `8${randomUUID().replaceAll(/\D/g, '').slice(0, 9)}` }).returning();
+      await tx.insert(tenantMemberships).values({ userId: collectorA!.id, tenantId: tenantA!.id, roleId: 'staff' });
+      await tx.insert(tenantMemberships).values({ userId: collectorB!.id, tenantId: tenantB!.id, roleId: 'staff' });
+
+      const collection = {
+        tenantId: tenantA!.id,
+        serviceId: service!.id,
+        serviceAccountNumber: 'ACC-1',
+        transactionNo: randomUUID(),
+        transactionDate: new Date(),
+        transactionType: 'deposit' as const,
+        credit: '500.00',
+      };
+
+      await expect(tx.insert(accountTransactions).values({ ...collection, collectedBy: collectorA!.id })).resolves.toBeDefined();
+      await expect(tx.insert(accountTransactions).values({ ...collection, transactionNo: randomUUID(), collectedBy: null })).resolves.toBeDefined();
+      await expect(tx.insert(accountTransactions).values({ ...collection, transactionNo: randomUUID(), collectedBy: collectorB!.id })).rejects.toThrow();
     });
   });
 
@@ -138,8 +157,6 @@ describe('database integrity', () => {
 
       await tx.insert(channels).values(channel(act.id));
 
-      // Two MSOs both numbering something 101 is normal; on `service_id` it was
-      // a false conflict (docs/services-providers-packages.md §3).
       await expect(tx.insert(channels).values(channel(hathway.id))).resolves.toBeDefined();
       await expect(tx.insert(channels).values(channel(act.id))).rejects.toThrow();
     });

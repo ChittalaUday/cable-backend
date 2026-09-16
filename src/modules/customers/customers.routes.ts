@@ -8,14 +8,6 @@ import {
   ListCustomersQuery,
 } from './customers.schema';
 
-/**
- * The staff view of customers: a cheap list, and one call that draws a page.
- *
- * Both are `customers.view`, so the SCOPE on the grant decides what comes back
- * rather than a second endpoint per role — an admin's `ALL` returns the tenant,
- * a field operator's `LOCATION` returns their areas, and a subscriber's `OWN`
- * returns themselves. One route, three answers, no way to forget one of them.
- */
 const routes: FastifyPluginAsyncTypebox = async (app) => {
   const errorRef = { $ref: 'ErrorResponse#' };
   const errors = { 400: errorRef, 401: errorRef, 403: errorRef, 404: errorRef };

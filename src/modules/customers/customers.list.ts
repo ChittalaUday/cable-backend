@@ -5,11 +5,12 @@ import type { RequestAccess } from '@/modules/iam/access.service';
 import { Buffer } from 'node:buffer';
 import { and, count, desc, eq, exists, gte, ilike, isNull, lt, lte, or, sql } from 'drizzle-orm';
 import { customers, subscriptions, users } from '@/db/schema';
-import { grantedNodes, scopeFor } from '@/modules/iam/access.service';
-import { BOX_EQUIPMENT_TYPES } from '@/shared/constants/crm';
+import { locationScopeFor, requireScope } from '@/modules/iam/access.service';
 import { ERROR_CODES } from '@/shared/errors';
-import { badRequest, forbidden } from '@/shared/errors/domain-error';
+import { badRequest } from '@/shared/errors/domain-error';
+import { withinGrantedSubtree } from '@/shared/security/location-scope';
 import { PERMISSIONS } from '@/shared/security/permissions';
+import { likeTerm } from '@/shared/utils/search';
 import { hydrateCustomerItems } from './customers.search';
 
 interface PathRow extends Record<string, unknown> {
@@ -17,24 +18,9 @@ interface PathRow extends Record<string, unknown> {
   path: string;
 }
 
-/**
- * The name and phone a staff screen shows.
- *
- * `auth.users` is the identity of record, so once a subscriber has a login it
- * wins. `crm.customers.name` is the fallback for the imported back catalogue,
- * which has no account yet — see the note on that column. Resolving it here,
- * once, is what stops half the app showing the import's spelling and the other
- * half the account's.
- */
 const displayName = sql<string | null>`coalesce(${users.name}, ${customers.name})`;
 const displayPhone = sql<string | null>`coalesce(${users.phone}, ${customers.phone})`;
 
-/**
- * Where the next page resumes: the last row's sort key, opaque to the client.
- *
- * It encodes exactly the `(created_at, id)` the ordering uses, so resuming is an
- * index seek rather than a count-and-skip.
- */
 function encodeCursor(createdAt: Date, id: string): string {
   return Buffer.from(`${createdAt.toISOString()}|${id}`).toString('base64url');
 }
@@ -49,44 +35,38 @@ function decodeCursor(cursor: string): { createdAt: Date; id: string } {
   return { createdAt, id };
 }
 
-/**
- * The subtree filter for a caller whose grant is an area rather than the tenant.
- *
- * A customer is IN an area if their own node is, or if any line they hold is
- * installed there — `subscriptions.locationId` is the address of record, and a
- * customer whose account node is unset would otherwise be invisible to the very
- * staff who serve them.
- *
- * `null` means the caller holds the permission but has been granted no area at
- * all, which is not the same as "everything": it is an empty list.
- */
+export function customerWithinNodes(
+  nodeIds: readonly string[],
+  columns: { id: SQL; locationId: SQL },
+): SQL {
+  const within = (column: SQL) => withinGrantedSubtree(column, nodeIds);
+
+  return sql`(${within(columns.locationId)} OR EXISTS (
+    SELECT 1 FROM crm.subscriptions s
+    WHERE s.customer_id = ${columns.id}
+      AND s.deleted_at IS NULL
+      AND ${within(sql`s.location_id`)}
+  ))`;
+}
+
 export function reachCondition(access: RequestAccess): SQL[] | null {
-  const scope = scopeFor(access, PERMISSIONS.CUSTOMERS_VIEW);
-
-  if (scope === null)
-    throw forbidden(ERROR_CODES.PERM_DENIED, `Missing permission: ${PERMISSIONS.CUSTOMERS_VIEW}`);
-
-  if (scope === 'ALL')
-    return [];
+  const scope = requireScope(access, PERMISSIONS.CUSTOMERS_VIEW);
 
   if (scope === 'OWN')
     return [eq(customers.userId, access.userId)];
 
-  const granted = grantedNodes(access, scope);
-  if (granted.length === 0)
+  const reach = locationScopeFor(access, PERMISSIONS.CUSTOMERS_VIEW);
+
+  if (reach.kind === 'ALL_TENANT_LOCATIONS')
+    return [];
+
+  if (reach.nodeIds.length === 0)
     return null;
 
-  const within = (column: SQL) => sql`EXISTS (
-    SELECT 1 FROM unnest(${sql.param(granted)}::uuid[]) AS g(id), geo.location_descendants(g.id) AS d
-    WHERE d.id = ${column}
-  )`;
-
-  return [sql`(${within(sql`${customers.locationId}`)} OR EXISTS (
-    SELECT 1 FROM crm.subscriptions s
-    WHERE s.customer_id = ${customers.id}
-      AND s.deleted_at IS NULL
-      AND ${within(sql`s.location_id`)}
-  ))`];
+  return [customerWithinNodes(reach.nodeIds, {
+    id: sql`${customers.id}`,
+    locationId: sql`${customers.locationId}`,
+  })];
 }
 
 export function subtreeFilter(locationId: string): SQL {
@@ -113,25 +93,25 @@ export function multiBoxFilter(tenantId: string): SQL {
     )
     OR EXISTS (
       SELECT 1
-      FROM crm.customer_equipment ce
-      JOIN crm.equipment eq ON eq.id = ce.equipment_id
+      FROM inventory.customer_equipment ce
+      JOIN inventory.equipment eq ON eq.id = ce.equipment_id
       JOIN crm.subscriptions s ON s.id = ce.subscription_id
       JOIN crm.service_providers sp ON sp.id = s.service_provider_id
       WHERE ce.customer_id = ${customers.id}
         AND ce.tenant_id = ${tenantId}
         AND ce.status = 'active'
         AND s.deleted_at IS NULL
-        AND eq.equipment_type = ANY(${sql.param([...BOX_EQUIPMENT_TYPES])})
+        AND eq.parent_equipment_id IS NULL
       GROUP BY sp.service_id
       HAVING count(*) >= 2
     )
   )`;
 }
 
-/** Which customers the caller asked for, within what they are allowed to see. */
-function filtersFor(db: Db, access: RequestAccess, query: ListCustomersQuery): SQL[] {
-  // Non-null: the caller returns early when the reach is empty.
-  const reach = reachCondition(access)!;
+export function baseFilters(db: Db, access: RequestAccess, query: ListCustomersQuery): SQL[] | null {
+  const reach = reachCondition(access);
+  if (reach === null)
+    return null;
 
   const filters: SQL[] = [
     eq(customers.tenantId, access.tenantId),
@@ -148,23 +128,6 @@ function filtersFor(db: Db, access: RequestAccess, query: ListCustomersQuery): S
   if (query.multiBox)
     filters.push(multiBoxFilter(access.tenantId));
 
-  if (query.q !== undefined) {
-    const term = `%${query.q}%`;
-    // Both sides of the identity: the account's name once there is one, the
-    // import's until then. All five columns carry a trigram index, so a leading
-    // wildcard is still an index scan rather than a sequential one.
-    filters.push(or(
-      ilike(customers.name, term),
-      ilike(customers.phone, term),
-      ilike(customers.customerCode, term),
-      ilike(users.name, term),
-      ilike(users.phone, term),
-    )!);
-  }
-
-  // These two filter on the LINE, not the customer, so they are an EXISTS rather
-  // than a join — a customer on three of the provider's packages must still come
-  // back as one row, not three.
   const onLine = (condition: SQL) => exists(db.select({ one: sql`1` }).from(subscriptions).where(and(
     eq(subscriptions.customerId, customers.id),
     isNull(subscriptions.deletedAt),
@@ -183,11 +146,25 @@ function filtersFor(db: Db, access: RequestAccess, query: ListCustomersQuery): S
   if (query.createdTo !== undefined)
     filters.push(lte(customers.createdAt, new Date(query.createdTo)));
 
+  return filters;
+}
+
+function filtersFor(db: Db, access: RequestAccess, query: ListCustomersQuery): SQL[] {
+  const filters = baseFilters(db, access, query)!;
+
+  if (query.q !== undefined) {
+    const term = likeTerm(query.q);
+    filters.push(or(
+      ilike(customers.name, term),
+      ilike(customers.phone, term),
+      ilike(customers.customerCode, term),
+      ilike(users.name, term),
+      ilike(users.phone, term),
+    )!);
+  }
+
   if (query.cursor !== undefined) {
     const { createdAt, id } = decodeCursor(query.cursor);
-    // Row-wise comparison, matching `ORDER BY created_at DESC, id DESC` exactly.
-    // Two customers can share a timestamp to the microsecond after an import, so
-    // the id is what makes the boundary total and the page stable.
     filters.push(or(
       lt(customers.createdAt, createdAt),
       and(eq(customers.createdAt, createdAt), lt(customers.id, id)),
@@ -197,13 +174,6 @@ function filtersFor(db: Db, access: RequestAccess, query: ListCustomersQuery): S
   return filters;
 }
 
-/**
- * A page of customers, with every searchable value already resolved.
- *
- * The page is selected first, then accounts, locations and equipment are
- * hydrated in batches for all customer ids rather than queried once per row.
- * The count runs only on the first page.
- */
 export async function listCustomers(
   db: Db,
   access: RequestAccess,
@@ -230,7 +200,6 @@ export async function listCustomers(
       .leftJoin(users, eq(users.id, customers.userId))
       .where(where)
       .orderBy(desc(customers.createdAt), desc(customers.id))
-      // One more than asked for, so "is there another page" costs no extra query.
       .limit(query.limit + 1),
     firstPage
       ? db.select({ total: count() })
@@ -261,12 +230,6 @@ export async function listCustomers(
   };
 }
 
-/**
- * Breadcrumbs for a set of nodes in one round trip.
- *
- * The same `location_ancestors` walk the locations module uses, run for every id
- * on the page at once rather than once per row.
- */
 export async function locationPaths(db: Db, locationIds: string[]): Promise<Map<string, string>> {
   if (locationIds.length === 0)
     return new Map();

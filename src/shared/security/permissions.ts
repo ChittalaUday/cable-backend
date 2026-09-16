@@ -67,6 +67,12 @@ export const PERMISSIONS = {
 
   INVENTORY_VIEW: 'inventory.view',
   INVENTORY_UPDATE: 'inventory.update',
+  INVENTORY_MANAGE_CATALOG: 'inventory.manage_catalog',
+  INVENTORY_ISSUE: 'inventory.issue',
+  INVENTORY_APPROVE: 'inventory.approve',
+
+  REMOTES_VIEW: 'remotes.view',
+  REMOTES_MANAGE: 'remotes.manage',
 
   REPORTS_VIEW: 'reports.view',
   REPORTS_EXPORT: 'reports.export',

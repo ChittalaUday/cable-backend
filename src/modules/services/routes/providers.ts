@@ -10,12 +10,6 @@ import {
   UpdateProviderBody,
 } from '../services.schema';
 
-/**
- * Who actually delivers a service (docs/services-providers-packages.md).
- *
- * Packages, channels and coverage all hang off a provider, so this is the row
- * everything else in the catalogue points at.
- */
 const routes: FastifyPluginAsyncTypebox = async (app) => {
   const errorRef = { $ref: 'ErrorResponse#' };
   const errors = { 400: errorRef, 401: errorRef, 403: errorRef, 404: errorRef, 409: errorRef };

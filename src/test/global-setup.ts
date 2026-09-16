@@ -7,6 +7,38 @@ import pg from 'pg';
 
 let container: Awaited<ReturnType<PostgreSqlContainer['start']>> | undefined;
 
+const OWNED_SCHEMAS = [
+  'tenancy',
+  'auth',
+  'iam',
+  'crm',
+  'geo',
+  'notify',
+  'media',
+  'analytics',
+  'audit',
+  'inventory',
+  'remotes',
+  'drizzle',
+] as const;
+
+function assertTestDatabase(url: string): string {
+  const name = new URL(url).pathname.replace(/^\//, '');
+
+  if (!/test/i.test(name)) {
+    throw new Error(
+      `Refusing to reset "${name}": DATABASE_URL_TEST must name a database with "test" in it. `
+      + 'This step drops every application schema.',
+    );
+  }
+
+  return name;
+}
+
+async function resetSchemas(pool: pg.Pool): Promise<void> {
+  await pool.query(`DROP SCHEMA IF EXISTS ${OWNED_SCHEMAS.map(name => `"${name}"`).join(', ')} CASCADE`);
+}
+
 export async function setup(): Promise<void> {
   if (process.env.DATABASE_URL_TEST == null || process.env.DATABASE_URL_TEST === '') {
     try {
@@ -25,8 +57,11 @@ export async function setup(): Promise<void> {
     }
   }
 
+  assertTestDatabase(process.env.DATABASE_URL_TEST);
+
   const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL_TEST, max: 1 });
   try {
+    await resetSchemas(pool);
     await migrate(drizzle(pool), { migrationsFolder: path.join(import.meta.dirname, '..', 'db', 'migrations') });
   }
   finally {

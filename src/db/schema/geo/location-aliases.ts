@@ -1,4 +1,5 @@
 import { index, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
+import { LOCATION_ALIAS_SOURCES } from '@/shared/constants/geo';
 import { geo } from '../schemas';
 import { tenants } from '../tenancy/tenants';
 import { locations } from './locations';
@@ -9,7 +10,7 @@ export const locationAliases = geo.table('location_aliases', {
   locationId: uuid('location_id').notNull().references(() => locations.id, { onDelete: 'cascade' }),
 
   alias: text('alias').notNull(),
-  source: text('source', { enum: ['admin', 'import'] }).notNull().default('admin'),
+  source: text('source', { enum: LOCATION_ALIAS_SOURCES }).notNull().default('admin'),
 
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, table => [

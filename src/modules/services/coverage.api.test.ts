@@ -9,30 +9,17 @@ import { seedAuthData, TEST_PASSWORD, uniqueDeviceId } from '@/test/fixtures';
 import { bodyOf } from '@/test/http';
 import { CoverageService } from './coverage.service';
 
-/**
- * Coverage and availability end to end
- * (docs/services-providers-packages.md §5).
- *
- * The rule under test is the one the whole design turns on: a row covers its
- * node and everything below it, and within a level the nearest ancestor wins —
- * so a hole can be punched in a covered town without enumerating the streets
- * around it. Across levels a parent bounds its children, which is why a service
- * switched off somewhere cannot be handed back by a provider row.
- */
-
 const { db, close } = createTestDb();
 
 let app: BuiltApp;
 let data: SeededAuthData;
 let auth: Record<string, string>;
 
-/** Mandapeta → Sri Sai Apartments → Block A → A101, and Block C beside it. */
 let area: string;
 let building: string;
 let blockA: string;
 let flat: string;
 let blockC: string;
-/** A second town, so "sells only where it says" has somewhere to not sell. */
 let otherTown: string;
 
 let cableService: string;
@@ -85,7 +72,6 @@ beforeAll(async () => {
   });
   auth = { 'authorization': `Bearer ${bodyOf(login).accessToken}`, 'x-tenant-id': data.tenantA.id };
 
-  // A location tree to sell into.
   const categories: Record<string, string> = {};
   for (const name of ['Area', 'Building', 'Block', 'Door']) {
     categories[name] = (await post<{ id: string }>('/api/v1/location-categories', {
@@ -145,19 +131,16 @@ describe('coverage', () => {
     const available = await availableAt(flat);
     const service = available.services.find(s => s.id === cableService);
 
-    // No coverage rows yet: an operator who has configured nothing still sells.
     expect(service?.providers.map(p => p.id).sort()).toEqual([act, hathway].sort());
   });
 
   it('covers everything below the node it names', async () => {
-    // ACT serves the town; Hathway serves nothing but the one building.
     expect((await setCoverage(`/api/v1/service-providers/${act}/coverage`, [{ locationId: area }])).statusCode).toBe(200);
     expect((await setCoverage(`/api/v1/service-providers/${hathway}/coverage`, [{ locationId: building }])).statusCode).toBe(200);
 
     const atFlat = await availableAt(flat);
     const providers = atFlat.services.find(s => s.id === cableService)?.providers ?? [];
 
-    // Four levels below the row ACT was given, and it still reaches.
     expect(providers.map(p => p.id).sort()).toEqual([act, hathway].sort());
     expect(providers.find(p => p.id === act)?.packages.map(p => p.id)).toEqual([actPackage]);
   });
@@ -172,7 +155,6 @@ describe('coverage', () => {
     const inBlockC = await availableAt(blockC);
 
     expect(inBlockA.services.find(s => s.id === cableService)?.providers.map(p => p.id)).toContain(act);
-    // Nearest ancestor wins: Block C's own row beats the town-wide one.
     expect(inBlockC.services.find(s => s.id === cableService)?.providers.map(p => p.id)).not.toContain(act);
   });
 
@@ -197,7 +179,6 @@ describe('coverage', () => {
   });
 
   it('falls back to the service-wide row when the provider has none', async () => {
-    // Hathway keeps its building row; the service says "not in Block C at all".
     await setCoverage(`/api/v1/services/${cableService}/coverage`, [
       { locationId: area },
       { locationId: blockC, isAvailable: false },
@@ -205,9 +186,6 @@ describe('coverage', () => {
     await setCoverage(`/api/v1/service-providers/${hathway}/coverage`, []);
 
     const inBlockC = await availableAt(blockC);
-    // With ACT excluded by its own row and Hathway by the service-wide one,
-    // the service drops out of the response entirely — there is nothing to sell
-    // here, which is exactly what the wizard should show.
     expect(inBlockC.services.find(s => s.id === cableService)?.providers.map(p => p.id) ?? []).not.toContain(hathway);
 
     const inBlockA = await availableAt(blockA);
@@ -215,9 +193,6 @@ describe('coverage', () => {
   });
 
   it('answers the question a subscription has to ask before it is written', async () => {
-    // The enforcement primitive for `POST /subscriptions` (§6 of the doc):
-    // a package is only sellable where its provider reaches. Called directly,
-    // because the subscriptions module that will use it does not exist yet.
     const coverage = new CoverageService(db, new LocationsService(db));
     const access = { tenantId: data.tenantA.id, userId: data.active.id } as Parameters<typeof coverage.availabilityAt>[0];
 
@@ -229,13 +204,10 @@ describe('coverage', () => {
     expect(await coverage.isPackageAvailableAt(access, { packageId: actPackage, locationId: flat })).toBe(true);
     expect(await coverage.isPackageAvailableAt(access, { packageId: actPackage, locationId: blockC })).toBe(false);
 
-    // A package id that is not this tenant's is not "available" either.
     expect(await coverage.isPackageAvailableAt(access, { packageId: randomUUID(), locationId: flat })).toBe(false);
   });
 
   it('lets one package opt out of a place its provider still serves', async () => {
-    // The narrowest level: ACT reaches the whole area, but the premium tier is
-    // not sold in Block C. Stating it needs one row, not a row per other block.
     const premium = (await post<{ id: string }>('/api/v1/packages', {
       serviceProviderId: act,
       name: 'ACT Premium 4K',
@@ -243,8 +215,6 @@ describe('coverage', () => {
       price: '899.00',
     })).id;
 
-    // The service-wide hole an earlier test left on Block C would bound ACT out
-    // of it before the package level is reached; this test is about the package.
     await setCoverage(`/api/v1/services/${cableService}/coverage`, [{ locationId: area }]);
     await setCoverage(`/api/v1/service-providers/${act}/coverage`, [{ locationId: area }]);
     const written = await setCoverage(`/api/v1/packages/${premium}/coverage`, [
@@ -253,7 +223,6 @@ describe('coverage', () => {
     expect(written.statusCode).toBe(200);
     expect(bodyOf<{ packageId: string }[]>(written)[0]?.packageId).toBe(premium);
 
-    // In Block C the provider is still sellable — just not that package.
     const inBlockC = await availableAt(blockC);
     const actInBlockC = inBlockC.services
       .find(s => s.id === cableService)
@@ -264,7 +233,6 @@ describe('coverage', () => {
     expect(actInBlockC?.packages.map(pkg => pkg.id)).toContain(actPackage);
     expect(actInBlockC?.packages.map(pkg => pkg.id)).not.toContain(premium);
 
-    // Everywhere else under the area it is on sale as normal.
     const inFlat = await availableAt(flat);
     const actInFlat = inFlat.services
       .find(s => s.id === cableService)
@@ -272,13 +240,11 @@ describe('coverage', () => {
       .find(p => p.id === act);
     expect(actInFlat?.packages.map(pkg => pkg.id)).toContain(premium);
 
-    // And the subscription check agrees with the list.
     const coverage = new CoverageService(db, new LocationsService(db));
     const access = { tenantId: data.tenantA.id, userId: data.active.id } as Parameters<typeof coverage.availabilityAt>[0];
     expect(await coverage.isPackageAvailableAt(access, { packageId: premium, locationId: blockC })).toBe(false);
     expect(await coverage.isPackageAvailableAt(access, { packageId: premium, locationId: flat })).toBe(true);
 
-    // Clearing the package's own rows hands it back to the provider's reach.
     await setCoverage(`/api/v1/packages/${premium}/coverage`, []);
     expect(await coverage.isPackageAvailableAt(access, { packageId: premium, locationId: blockC })).toBe(true);
   });
@@ -292,7 +258,6 @@ describe('coverage', () => {
     })).id;
 
     await setCoverage(`/api/v1/packages/${tier}/coverage`, [{ locationId: blockC, isAvailable: false }]);
-    // Replacing the provider's list must not take the package's rows with it.
     await setCoverage(`/api/v1/service-providers/${act}/coverage`, [{ locationId: area }]);
 
     const still = await app.inject({
@@ -303,7 +268,6 @@ describe('coverage', () => {
 
     expect(bodyOf<unknown[]>(still)).toHaveLength(1);
 
-    // And the provider's own list never shows the package-level rows.
     const providerRows = await app.inject({
       method: 'GET',
       url: `/api/v1/service-providers/${act}/coverage`,
@@ -313,8 +277,6 @@ describe('coverage', () => {
     expect(bodyOf<{ packageId: string | null }[]>(providerRows).every(row => row.packageId === null)).toBe(true);
   });
   it('sells only where it says, once it has said anywhere', async () => {
-    // The rule duplicates hang off: naming a place has to exclude the others,
-    // or "ACT serves Mandapeta" quietly serves the next town too.
     await setCoverage(`/api/v1/services/${cableService}/coverage`, []);
     await setCoverage(`/api/v1/service-providers/${act}/coverage`, [{ locationId: area }]);
 
@@ -326,8 +288,6 @@ describe('coverage', () => {
   });
 
   it('treats a list of only carve-outs as "everywhere except"', async () => {
-    // Hathway pulls out of one block and says nothing else — that must not read
-    // as an allowlist of nowhere.
     await setCoverage(`/api/v1/services/${cableService}/coverage`, []);
     await setCoverage(`/api/v1/service-providers/${hathway}/coverage`, [
       { locationId: blockC, isAvailable: false },
@@ -340,14 +300,8 @@ describe('coverage', () => {
     expect(inBlockC.services.find(s => s.id === cableService)?.providers.map(p => p.id) ?? []).not.toContain(hathway);
   });
 
-  /**
-   * A parent bounds its children (§5). These are the tests that would pass
-   * either way under the old "narrowest level wins" rule and do not now.
-   */
   describe('a parent bounds its children', () => {
     it('takes every provider down with the service', async () => {
-      // The service is sold in the town but not in Block C. ACT says it serves
-      // the whole town — under the old rule its row won and it sold in Block C.
       await setCoverage(`/api/v1/services/${cableService}/coverage`, [
         { locationId: area },
         { locationId: blockC, isAvailable: false },
@@ -359,7 +313,6 @@ describe('coverage', () => {
         .not
         .toContain(act);
 
-      // And the subscription check agrees, so a sale cannot slip past the list.
       const coverage = new CoverageService(db, new LocationsService(db));
       const access = { tenantId: data.tenantA.id, userId: data.active.id } as Parameters<typeof coverage.availabilityAt>[0];
       expect(await coverage.isPackageAvailableAt(access, { packageId: actPackage, locationId: blockC })).toBe(false);
@@ -380,7 +333,6 @@ describe('coverage', () => {
       expect(response.statusCode).toBe(400);
       expect(bodyOf(response).message).toContain('Block C');
 
-      // Nothing was written — the whole list is rejected, not half of it.
       const rows = await app.inject({
         method: 'GET',
         url: `/api/v1/service-providers/${act}/coverage`,
@@ -390,8 +342,6 @@ describe('coverage', () => {
     });
 
     it('still takes a carve-out at a place the parent does not serve', async () => {
-      // "Not sold here" where the parent does not sell either is redundant, not
-      // wrong — and worth keeping while a parent is temporarily narrowed.
       const response = await setCoverage(`/api/v1/service-providers/${hathway}/coverage`, [
         { locationId: blockC, isAvailable: false },
       ]);
@@ -416,8 +366,6 @@ describe('coverage', () => {
   });
 
   it('tells two same-named packages for two areas apart', async () => {
-    // The reason duplicates are allowed at all: one provider, one name, two
-    // areas, two prices. The list would be two identical rows without this.
     await setCoverage(`/api/v1/services/${cableService}/coverage`, []);
     await setCoverage(`/api/v1/service-providers/${act}/coverage`, []);
 
@@ -448,7 +396,6 @@ describe('coverage', () => {
     expect(both.find(p => p.id === oldTown)?.coverageAreas.join()).toContain('Block A');
     expect(both.find(p => p.id === newBlocks)?.coverageAreas.join()).toContain('Block C');
 
-    // And each is only sellable in its own area, which is the point.
     const inBlockA = await availableAt(blockA);
     const sold = inBlockA.services.find(s => s.id === cableService)
       ?.providers
@@ -460,11 +407,6 @@ describe('coverage', () => {
     expect(sold).not.toContain(newBlocks);
   });
 
-  /**
-   * The picker's side of the same rule: a coverage screen must not offer a
-   * place the level above has switched off, or the operator picks it and gets
-   * the 400 above.
-   */
   describe('the location list narrowed to what a level may sell', () => {
     async function names(params: string): Promise<string[]> {
       const response = await app.inject({
@@ -493,8 +435,6 @@ describe('coverage', () => {
         { locationId: area },
         { locationId: blockC, isAvailable: false },
       ]);
-      // ACT is in Block A only — so a package picker under ACT sees one block,
-      // and Block C stays gone because the service excluded it.
       await setCoverage(`/api/v1/service-providers/${act}/coverage`, [{ locationId: blockA }]);
 
       expect(await names(`coverageServiceId=${cableService}&coverageProviderId=${act}`)).toEqual(['Block A']);

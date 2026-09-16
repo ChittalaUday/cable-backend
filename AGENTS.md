@@ -83,7 +83,7 @@ Search is `pg_trgm` in Postgres, not a search cluster.
 | Multi-tenancy | `tenant_id` everywhere; Postgres RLS later as a backstop | §4.5 |
 | Logging | **Pino** (built into Fastify) | — |
 | Docs | OpenAPI + Swagger UI | Generated from route schemas, never hand-written |
-| API testing & collection | **Postman v2.1** + **Newman** | Maintained in `postman/` with local and staging environments (§6.4) |
+| API testing & collection | **Postman v2.1** + **Newman** | Maintained in `postman/` with local and staging environments (§6.5) |
 | Money | Postgres `NUMERIC` + **decimal.js** | §8 |
 | Search | **Postgres + `pg_trgm`** | No search cluster |
 | Testing | **Vitest** + Fastify `inject()` + **Testcontainers** | §10 |
@@ -133,7 +133,7 @@ they will in production while the tier stays diagnosable.
 | Database TLS | `disable` | `disable` (private network) | **`require` or `verify-full`** |
 | 5xx response body | real message + stack + cause | real message + stack + cause | `"Internal server error"`, code + requestId only |
 | CORS | any origin | any origin | explicit allowlist, enforced at boot |
-| `/docs` | served | served | not served |
+| `/docs`, `/docs/customer.json` | served | served | not served |
 | Log format | pino-pretty | JSON | JSON |
 | Messaging | log provider unless enabled | real provider | real provider |
 
@@ -262,7 +262,7 @@ src/
 │   ├── tenant.ts                 # GLOBAL onRequest: authenticate + resolve `request.tenantId`
 │   ├── rbac.ts                   # `app.requirePermission(key)` + the resolved `request.access`
 │   ├── security.ts               # helmet, cors, rate-limit
-│   ├── swagger.ts                # OpenAPI + /docs
+│   ├── swagger.ts                # OpenAPI + /docs, and /docs/customer.json
 │   ├── error-handler.ts          # setErrorHandler / setNotFoundHandler
 │   ├── redis.ts                  # deferred (§1)
 │   └── storage.ts                # deferred (§1)
@@ -294,7 +294,7 @@ src/
 │   ├── notification.job.ts
 │   └── report.job.ts
 │
-└── postman/                      # Postman v2.1 collection and environments (§6.4)
+└── postman/                      # Postman v2.1 collection and environments (§6.5)
     ├── cable-backend.postman_collection.json
     ├── cable-backend.local.postman_environment.json
     └── cable-backend.staging.postman_environment.json
@@ -511,6 +511,41 @@ tells that apart from a bug.
   disconnected WhatsApp session is the likeliest production failure here, and
   it needs a QR scan rather than a retry — so it must be visible.
 
+### 4.3.2 How a subscriber gets a membership
+
+An operator imports their customers long before any of them installs anything,
+so a `crm.customers` row normally exists with `user_id` null and **no
+membership behind it**. A membership is what `request.tenantId` is resolved
+from (§4.4), so without one a subscriber signs in, holds a valid token, and
+every protected route answers `TENANT_HEADER_MISSING`.
+
+`AuthService.startSession` closes that gap, for OTP and password sign-in alike:
+
+1. Claim every `crm.customers` row whose `phone` matches this user's and whose
+   `user_id` is null.
+2. Insert a `customer` membership for each tenant the user now has a customer
+   record in, `ON CONFLICT DO NOTHING`.
+
+Four things about it are deliberate:
+
+- **It runs before the token is signed**, because the claims carry the
+  memberships. Linking afterwards leaves the caller holding a token that names
+  no tenant until their next sign-in.
+- **It runs on every sign-in, not only on account creation.** The operator may
+  import the customer row after the person has already tried the app once, and
+  a first-sign-in-only link would strand them until they reinstalled.
+- **`ON CONFLICT DO NOTHING` is load-bearing.** Staff who also buy from their
+  own operator keep their staff membership — `customer` would be a downgrade,
+  and `customers.view` at `LOCATION` already reaches their own row.
+- **It is not a transaction.** Both writes are independently idempotent, so a
+  failure between them heals on the next sign-in rather than needing one.
+
+A phone that matches no customer record gets a user with **no** memberships —
+`/auth/me` returns an empty list and the app says to contact the operator.
+There is no self-signup: a subscriber is someone the operator already has.
+
+Pinned by `modules/auth/subscriber-onboarding.test.ts`.
+
 ### 4.4 Choosing the active tenant
 
 A multi-tenant user must tell the backend which tenant a request is for.
@@ -557,12 +592,26 @@ No exceptions.**
   were resolved for, so the two cannot drift apart in an argument list.
 - This API has no cross-tenant role or tenant-scope bypass. Platform
   administration is a separate flow outside this identity and authorization model.
-- Postgres Row-Level Security is enabled on tenant-scoped tables as a
-  **backstop**, not as the primary mechanism. Application code must be correct
-  on its own.
+- **Postgres Row-Level Security is NOT enabled.** No policy exists on any
+  table, and no migration creates one — this paragraph used to claim RLS was on
+  as a backstop, and it was never true. The application is the only thing
+  enforcing tenant isolation, so a service that forgets `tenant_id` has nothing
+  underneath it. Enabling RLS is a real piece of work (a `SET LOCAL
+  app.tenant_id` per request, and care with a pooled connection), not a
+  checkbox; until somebody does it, write every query as if there is no net,
+  because there is not.
 
 Filtering happens in SQL, in this service. A client is never trusted to scope
 data it was handed, and never receives rows it must filter itself.
+
+**Foreign keys cannot see tenants.** A column referencing `geo.locations`,
+`crm.subscriptions` or `auth.users` accepts any row in those tables, including
+another operator's. Any id that arrives in a request body and is written to such
+a column must be checked against the caller's tenant first — through the owning
+module's service (`locations.assertOwned`), not with a `WHERE tenant_id` written
+again locally. The inventory write paths shipped without those checks and could
+be made to issue another operator's equipment; `inventory.tenant-isolation.test.ts`
+is what stops that coming back.
 
 ### 4.6 Sessions, devices and revocation
 
@@ -744,6 +793,27 @@ suggestion.
 OWN(1) < ASSIGNED(2) < TEAM(3) < LOCATION(4) < ALL(5)
 ```
 
+**The ranking orders how WIDE a grant is. It does not mean the lower scopes are
+smaller versions of the same question.** They are different questions, answered
+against different columns:
+
+| Scope | The question | Answered against |
+|---|---|---|
+| `ALL` | Everything in this tenant. | `tenant_id` alone |
+| `LOCATION` | Rows under the areas I was granted. | `geo.location_descendants`, over `membership_locations` ∪ `team_locations` |
+| `TEAM` | Rows belonging to my crew. | `tenant_memberships.team_id` |
+| `ASSIGNED` | Rows assigned to me. | the row's `assigned_to` |
+| `OWN` | Rows that are mine. | the row's `created_by` / `user_id` |
+
+This matters because `TEAM`, `ASSIGNED` and `OWN` name **no location nodes at
+all**. Resolving one of them to the holder's `locationIds` would not narrow a
+crew grant, it would widen it into an area grant — and it would look like a
+tidy-up while doing it. `locationScopeFor` therefore returns an empty node set
+for those three, which reaches nothing; a service that grants one of them is
+expected to answer it itself, the way `staffReach` answers `TEAM` with
+`team_id`. **An unsupported scope resolves to the empty set or raises — never to
+something broader.**
+
 **Two-stage check, on every protected route:**
 
 1. **Route guard** (`preHandler`) — does the user hold this permission key at
@@ -754,6 +824,11 @@ OWN(1) < ASSIGNED(2) < TEAM(3) < LOCATION(4) < ALL(5)
 2. **Resource check** (in the **service**) — does the granted scope reach *this
    specific record*? Compares the grant against the row's
    `createdBy` / `assignedTo` / `teamId` / `locationId`.
+
+**Every non-`public` route carries a permission**, and
+`plugins/route-guard.test.ts` fails the build if one does not — either the route
+gets a guard, or somebody writes down in that file why it needs none. A
+forgotten guard fails silently, by working, so it cannot be left to review.
 
 **Stage 1 without stage 2 is a security bug.** A `staff` user with
 `customers.update` at scope `LOCATION` passes the route guard for *every*
@@ -773,6 +848,43 @@ server state — it is never shipped to a client to be enforced there.
 | `AccessService` | `modules/iam/access.service.ts` | Loads the membership, its role's grants, and its area/location grants; compiles them into an `AccessContext` and caches it. |
 | `app.requirePermission(key)` | `plugins/rbac.ts` | preHandler, **stage 1**. Resolves the context, rejects `PERM_DENIED` if the key is absent, and puts the context on `request.access`. |
 | the service | `modules/*/x.service.ts` | **Stage 2**. Takes `request.access` and decides whether the granted scope reaches this record. |
+
+#### The shared pieces — `shared/security/location-scope.ts` and `modules/iam/access.service.ts`
+
+Stage 2 is written once and imported, not retyped per module. Five modules each
+had their own copy of the same subtree SQL before this existed, and one of them
+had quietly drifted.
+
+| Helper | Lives in | Does |
+|---|---|---|
+| `requireScope(access, key)` | `modules/iam/access.service.ts` | The scope held for a key, or `403 PERM_DENIED`. Never returns `null` for a caller to misread as "unrestricted". |
+| `locationScopeFor(access, key)` | same | `{ kind: 'ALL_TENANT_LOCATIONS' }` or `{ kind: 'NODES', nodeIds }`. `LOCATION` yields the granted nodes; every other non-`ALL` scope yields `[]`. |
+| `withinGrantedSubtree(column, nodeIds)` | `shared/security/location-scope.ts` | `EXISTS (… location_descendants …)` — filtering many rows by a grant. |
+| `underAnyGrant(nodeId, nodeIds)` | same | `EXISTS (… location_ancestors …)` — checking one known node. Cheaper than walking down; the two agree by construction, and a test says so. |
+
+Both fragments return `false` for an empty node list, not an empty `IN ()`.
+**No grants means no rows.** A helper that quietly widened on an input it did not
+expect would undo the entire model, so none of them do.
+
+```ts
+where(and(
+  eq(customers.tenantId, ctx.tenantId), // always
+  withinGrantedSubtree(sql`${customers.locationId}`, nodeIds), // when scoped
+));
+```
+
+A rule about a specific resource stays with that resource and is exported from
+its service, not copied: `customerWithinNodes` lives in the customers module and
+the staff dashboard imports it, because "which customers can this person see"
+must have exactly one answer.
+
+**Inventory is scoped by location OR assignment, not location alone.** Below
+`ALL`, a unit is visible if it sits in a granted subtree **or** if its
+`staff_id` is the caller. `transferStock` clears `location_id` when stock goes
+to a technician (status `staff_van`), so a location-only rule hides from them
+exactly the boxes they are carrying to the next install. A rule that blinds
+somebody to their own van is not a tighter rule, it is a wrong one — see
+`InventoryService.visibleStock`.
 
 Authentication and the tenant are already done by the time a route's own
 `preHandler` runs, so a route declares only the permission it needs:
@@ -798,17 +910,29 @@ depends on the service remembering a `WHERE tenant_id = ?` is not isolation.
 `team_id` stays nullable — MATCH SIMPLE skips the check when it is null, so a
 member on no team is still legal.
 
-**`LOCATION` is a subtree grant over the location tree** (§8.6):
-`tenancy.membership_locations` holds node ids, and a grant
-on a node reaches everything beneath it — checked with
-`geo.location_ancestors`, in SQL, not by loading the tree. **A caller whose
-scope is below `ALL` and who has no grants reaches nothing**, and a list returns
-an empty page rather than everything. Fail closed is the whole point.
+**`LOCATION` is a subtree grant over the location tree** (§8.6). It is held in
+**two** tables and they are unioned, never merged: `tenancy.membership_locations`
+for one person, `tenancy.team_locations` for a whole crew. A grant on a node
+reaches everything beneath it — checked with `geo.location_ancestors`, in SQL,
+not by loading the tree — and a member's reach is their own nodes plus their
+team's, so an operator grants the collection round three apartments once instead
+of once per member. **A caller whose scope is below `ALL` and who has no grants
+reaches nothing**, and a list returns an empty page rather than everything. Fail
+closed is the whole point.
+
+**Nobody grants reach they do not hold.** The staff routes (§6.4) reject a node
+outside the caller's own subtrees with `PERM_SCOPE_DENIED`, and appointing an
+`admin` needs a tenant-wide grant. Otherwise an area manager with `staff.update`
+at `LOCATION` promotes a junior to the whole tenant and reads it back through
+them.
 
 > `ponytail:` the cache is a 60s TTL plus `app.access.invalidate(userId,
-> tenantId)`, not the `permission_version` column, because nothing writes
-> memberships yet. Key it on the version when that write path lands — the column
-> is already there.
+> tenantId)`, not the `permission_version` column. Every staff write calls
+> `invalidate` — for a team's areas, once per member — so a single API process
+> is exact. The ceiling is horizontal scale: a second instance keeps its own map
+> for up to 60s after somebody else's write. Key the cache on
+> `permission_version` when there is more than one instance; the column is
+> already there, and only the write path needs to bump it.
 
 ---
 
@@ -816,6 +940,24 @@ an empty page rather than everything. Fail closed is the whole point.
 
 **Base path `/api/v1`.** Set once via the autoload prefix. Never hardcode
 `/api/v1` inside a route file.
+
+**One route serves every audience; the scope decides the answer.** `GET
+/customers` returns the tenant to an admin, their areas to a field operator and
+one row to a subscriber — the branch is in the service (`customers.list.ts`),
+not in a second endpoint. **Do not add a parallel `/customer/*` tree for the
+subscriber app.** Two code paths over the same tables are two places for a
+tenant filter to be forgotten, and the copy that leaks is always the one nobody
+reads. A genuinely different *shape* — not different data — is another route
+file inside the same module, sharing the one service.
+
+**`GET /docs/customer.json`** is that same OpenAPI spec cut down to what the
+`customer` role can reach, so whoever builds the subscriber app is not reading
+sixty endpoints to find nine. It is derived, never listed: `requirePermission`
+stamps its key on the guard, `app.ts` records it as `RouteRecord.permission`,
+and the filter keeps an operation only when the role's seeded grants contain
+that key. Revoke a grant and the endpoint leaves the page on the next boot.
+Load it into any OpenAPI viewer; there is no second Swagger UI, because
+`@fastify/swagger-ui` may only be registered once per instance.
 
 **Resources are plural nouns; verbs live in the HTTP method.**
 
@@ -960,7 +1102,51 @@ areas, and a subscriber's `OWN` returns themselves.
 **Out of reach answers `404 RESOURCE_NOT_FOUND`, not `403`.** Whether a customer
 exists in an area the caller cannot access is not information the caller should learn (§4.5).
 
-### 6.4 API exploration and Postman
+### 6.4 Staff, teams and area grants — the shipped surface
+
+Who works for the operator, and where each of them may work. `:id` is a
+**membership id**, never a user id: identity is global (§4.1), so the record a
+tenant owns is the membership, and deleting one ends the job while the account
+survives.
+
+| Method | Path | Permission | Notes |
+|---|---|---|---|
+| `GET` | `/staff` | `staff.view` | A page of memberships with the person, their crew and their areas. Filter with `?q=`, `?roleId=`, `?status=`, `?teamId=` (`null` for none), `?locationId=` — the last asks "who serves this address?", and a grant on any ancestor counts. |
+| `POST` | `/staff` | `staff.create` | `email` or `phone` required. The `users` row is **found before it is created**, so someone who already signs in elsewhere gets a second membership, not a second login — and `password` on an existing account is a `409`. |
+| `GET` | `/staff/:id` | `staff.view` | |
+| `PATCH` | `/staff/:id` | `staff.update` | `roleId`, `status`, `teamId`, `name`. Moving someone onto a crew is how they join it. |
+| `DELETE` | `/staff/:id` | `staff.delete` | Removes the membership and its grants. Never the account. |
+| `PUT` | `/staff/:id/locations` | `staff.update` | Replaces that person's areas as a **set**. |
+| `GET` | `/teams` | `staff.view` | Crews, with `memberCount` and their areas. |
+| `POST` | `/teams` | `staff.create` | `slug` derived from the name when absent. |
+| `GET` | `/teams/:id` | `staff.view` | |
+| `PATCH` | `/teams/:id` | `staff.update` | |
+| `DELETE` | `/teams/:id` | `staff.delete` | Soft delete, and a crew with members is a `409` — emptying it would strip every member's inherited areas silently. |
+| `PUT` | `/teams/:id/locations` | `staff.update` | Replaces the **crew's** areas. Every member reaches them at once. |
+
+**Teams share the `staff.*` keys on purpose.** A crew is not a resource of its
+own — it is how staff are organised, and a role that may edit one may edit the
+other. Four more permission keys that are always granted together are four more
+things for every client to mirror and nothing to decide with.
+
+**The two grant tables are unioned, never merged.** A member's reach is
+`membership_locations` ∪ their team's `team_locations` (§5), so an operator can
+grant the collection round three apartments once instead of once per member, and
+still give one engineer an area their crew does not hold. `GET /staff/:id`
+returns them separately — `locations` and `inheritedLocations` — so an admin can
+see *why* somebody reaches an area before trying to take it away.
+
+**You cannot hand out reach you do not hold.** Granting an area outside the
+caller's own subtrees is `403 PERM_SCOPE_DENIED`, and appointing an `admin`
+requires a tenant-wide grant. Without that, an area manager with
+`staff.update` at `LOCATION` could promote a junior to the whole tenant and read
+it back through them.
+
+**Every write drops the affected people's cached `AccessContext`** — the team
+routes drop it for every member, not just the caller, because the write changes
+what *other* people can see.
+
+### 6.5 API exploration and Postman
 
 The complete wire contract is maintained as an automated Postman v2.1 collection
 with pre-configured local and staging environments in [`postman/`](file:///Users/udaychittala/exp/cable-backend/postman):
@@ -1416,16 +1602,34 @@ Redis, `CACHE_TTL_SECONDS` (default 300). **`GET` reads the cache; a successful
 `POST`/`PUT`/`PATCH`/`DELETE` invalidates it.**
 
 **Invalidation is by version counter, not by key deletion.** A mutation runs
-`INCR ver:<tenant>:<resource>`; cache keys embed that version, so the previous
-generation is orphaned in one O(1) command and expires on its own TTL.
-SCAN-and-delete is O(keyspace), races with concurrent writes, and gets slower
-exactly as the cache gets more useful.
+`INCR ver:<tenant>`; cache keys embed that version, so the previous generation
+is orphaned in one O(1) command and expires on its own TTL. SCAN-and-delete is
+O(keyspace), races with concurrent writes, and gets slower exactly as the cache
+gets more useful.
+
+**The counter is per TENANT, not per resource.** Reads here cross resources
+constantly — `PUT /services/:id/coverage` changes which rows
+`GET /locations?coverageServiceId=…` returns, `PUT /teams/:id/locations` changes
+`GET /staff` — and a counter keyed on the URL's first path segment cannot see
+any of that. It served pages from before the write. So any successful mutation
+drops that tenant's whole cached read set; nothing else's.
+
+**The tenant in the key is the RESOLVED `request.tenantId`, never the raw
+`x-tenant-id` header.** A caller who belongs to one operator does not send the
+header, so keying on it put them in a `global` bucket while a multi-tenant admin
+of the same operator sat under its id: one tenant, two namespaces, and writes in
+one that never invalidated reads in the other. (This is also what hid the
+per-resource problem above — the `global` bucket was being bumped constantly by
+unrelated tenants. Correctness that depends on other tenants writing often
+enough is not correctness.) `plugins/cache.ts` therefore lists `tenant` in its
+plugin dependencies: `onRequest` hooks run in registration order, and the tenant
+has to be resolved before this one reads it.
 
 Key shape:
 
 ```
 cable:v<version>:<tenantId>:<userId|tenant>:<url>
-cable:ver:<tenantId>:<resource>        ← the counter
+cable:ver:<tenantId>                   ← the counter
 ```
 
 **Keys include the user id by default.** Responses are permission-filtered
@@ -1441,10 +1645,12 @@ scope-limited.
   sessions, anything reading its own write back immediately.
 - **A cache failure is never a request failure.** Every Redis call is wrapped;
   a dead cache degrades to reading Postgres, it does not 500.
-- Invalidation is keyed on the URL's first path segment, so
-  `POST /customers` clears `GET /customers` *and* `GET /customers/:id`. A
-  mutation that affects a different resource must invalidate that one too,
-  explicitly, via `app.cache.invalidate()`.
+- A write through the API invalidates by itself. **A write that does not go
+  through the API — a seed, a migration, a fixture inserting straight into the
+  tables — invalidates nothing**, and the next read serves the page from before
+  it. That is the one case worth remembering, and it is why a test that seeds
+  with drizzle and then asserts on an endpoint has to make an ordinary request
+  in that tenant first.
 - **Never cache a response whose body depends on a header the key omits.**
   Today the key covers tenant and user; anything else varying the body must
   either be in the URL or opt out.
@@ -1733,6 +1939,31 @@ substitute: a test against a different database tests a different database.
 Each test runs inside a transaction that rolls back, so tests are
 order-independent and safe to parallelise.
 
+**The database is reset at the start of every run, not cleaned up after.**
+`src/test/global-setup.ts` drops every application schema and re-migrates before
+the first test — Testcontainers gives a fresh container anyway, and pointing
+`DATABASE_URL_TEST` at a local Postgres now behaves the same way. It refuses to
+run against a database whose name does not contain `test`, because the step is
+unrecoverable.
+
+This exists because that local database had quietly accumulated 67 tenants and
+136 locations from previous runs. Nothing was failing — which is the problem.
+Leftovers hide ordering bugs, uniqueness collisions and `afterAll` cleanup that
+stopped working months ago, and they hide them until a run goes red for a reason
+nobody can reproduce. Isolation by construction beats isolation by discipline;
+the second one only has to be forgotten once.
+
+Two things the suite talks to for real, and will not pretend about:
+
+- **Redis.** The cache tests read and write it, because what is being tested is
+  the key namespace (§8.5). `cache.flushAll()` wipes the whole prefix, which
+  every parallel test file shares — so a test that needs a clean cache makes an
+  ordinary write in its own tenant instead.
+- **Auth.** Real JWT, real hooks, real `X-Tenant-Id`. See below.
+
+CI (`.github/workflows/ci.yml`) runs lint, type-check and the suite against
+service containers on every push and pull request.
+
 **Definition of done: one endpoint at a time.** An endpoint is not finished when
 it returns 200. It is finished when its unit tests and its end-to-end tests pass.
 Do not start the next endpoint until the current one is green.
@@ -1818,6 +2049,7 @@ does not merge.
 - ❌ **DO NOT** swallow an error and return a fallback value — that is how a broken query becomes an empty dashboard.
 - ❌ **DO NOT** make an audit write best-effort. A silently missing row is worse than a failed request; the table sat empty for months exactly that way.
 - ❌ **DO NOT** read the tenant for an audit row from `X-Tenant-Id`. Use the resolved `request.tenantId` — single-tenant callers never send the header (§6.0).
+- ❌ **DO NOT** add a second endpoint for an audience that a scope already answers — `/customer/*` beside `/customers` is two code paths over one table, and the copy that leaks is the one nobody reads (§6).
 - ❌ **DO NOT** put a role column on `users`. Role belongs to the membership.
 - ❌ **DO NOT** trust `X-Tenant-Id` without validating it against the token's memberships.
 - ❌ **DO NOT** infer the acting account from anything but the signed token's `sub`/`sid`.

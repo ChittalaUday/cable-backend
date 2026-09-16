@@ -1,10 +1,12 @@
 import type { Static } from 'typebox';
 import { Type } from 'typebox';
 import { CustomerProfileResponse } from '@/modules/customers/customers.service';
+import { DEVICE_PLATFORMS, OTP_CHANNELS } from '@/shared/constants/auth';
+import { StringEnum } from '@/shared/types/typebox';
 
 export const DeviceHeaders = Type.Object({
   'x-device-id': Type.String({ minLength: 8, maxLength: 128 }),
-  'x-platform': Type.Union([Type.Literal('ios'), Type.Literal('android'), Type.Literal('web')]),
+  'x-platform': StringEnum(DEVICE_PLATFORMS),
   'x-app-version': Type.Optional(Type.String({ maxLength: 32 })),
   'x-os-version': Type.Optional(Type.String({ maxLength: 64 })),
   'x-device-model': Type.Optional(Type.String({ maxLength: 64 })),
@@ -14,7 +16,7 @@ export const PhoneField = Type.String({ minLength: 6, maxLength: 20, description
 
 export const RequestOtpBody = Type.Object({
   phone: PhoneField,
-  channel: Type.Optional(Type.Union([Type.Literal('whatsapp'), Type.Literal('sms')])),
+  channel: Type.Optional(StringEnum(OTP_CHANNELS)),
 });
 
 export const RequestOtpResponse = Type.Object({
@@ -58,16 +60,6 @@ const MembershipResponse = Type.Object({
   roleId: Type.String(),
 });
 
-/**
- * Role is per membership, never per user (§11) — a user can be `admin` of one
- * operator and `customer` of another, so sign-in answers with the list and the
- * client picks.
- *
- * It is here so a client does not have to call `/auth/me` just to find out what
- * to render. It is **not** an authorization answer: permissions are resolved
- * from the database on every protected request (§5), and this list is as stale
- * as the moment sign-in happened.
- */
 export const SessionResponse = Type.Intersect([
   TokensResponse,
   Type.Object({
@@ -81,11 +73,6 @@ export const MeResponse = Type.Object({
   sessionId: Type.String({ format: 'uuid' }),
   deviceId: Type.String({ format: 'uuid' }),
   memberships: Type.Array(MembershipResponse),
-  /**
-   * The caller's subscriber record in the **active** tenant, with its address
-   * and what it is subscribed to — `null` for staff, and for a caller who
-   * belongs to several tenants and did not say which.
-   */
   customer: Type.Union([CustomerProfileResponse, Type.Null()]),
 });
 

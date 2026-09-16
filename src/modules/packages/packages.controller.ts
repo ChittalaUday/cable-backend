@@ -9,8 +9,6 @@ import type {
 } from './packages.schema';
 import type { Req } from '@/shared/types/request';
 
-/** The only layer that touches `request`/`reply` (AGENTS.md §3). */
-
 export async function list(request: Req<{ querystring: typeof ListPackagesQuery }>) {
   return request.server.packages.list(request.access, request.query);
 }

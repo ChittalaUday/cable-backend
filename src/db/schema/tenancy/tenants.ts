@@ -1,4 +1,5 @@
 import { index, integer, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { TENANT_STATUSES } from '@/shared/constants/tenancy';
 import { tenancy } from '../schemas';
 
 export const tenants = tenancy.table('tenants', {
@@ -9,7 +10,7 @@ export const tenants = tenancy.table('tenants', {
 
   customerSeq: integer('customer_seq').notNull().default(0),
 
-  status: text('status', { enum: ['active', 'suspended'] }).notNull().default('active'),
+  status: text('status', { enum: TENANT_STATUSES }).notNull().default('active'),
 
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

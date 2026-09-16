@@ -10,12 +10,6 @@ import {
   UpdateServiceBody,
 } from '../services.schema';
 
-/**
- * What a tenant sells (docs/services-providers-packages.md).
- *
- * A service is the thing a subscriber buys — Cable TV, Broadband. Who supplies
- * it is a provider, and that is the next file.
- */
 const routes: FastifyPluginAsyncTypebox = async (app) => {
   const errorRef = { $ref: 'ErrorResponse#' };
   const errors = { 400: errorRef, 401: errorRef, 403: errorRef, 404: errorRef, 409: errorRef };

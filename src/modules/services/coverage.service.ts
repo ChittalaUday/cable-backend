@@ -8,8 +8,9 @@ import { and, asc, eq, isNull, sql } from 'drizzle-orm';
 import { locationPaths, packages, serviceCoverage, serviceProviders, services } from '@/db/schema';
 import { audit } from '@/modules/audit/audit.service';
 import { AUDIT_ENTITIES } from '@/shared/constants/audit';
+import { owned } from '@/shared/db/owned';
 import { ERROR_CODES } from '@/shared/errors/codes';
-import { badRequest, notFound } from '@/shared/errors/domain-error';
+import { badRequest, orNotFound } from '@/shared/errors/domain-error';
 
 type Db = NodePgDatabase<typeof schema>;
 
@@ -31,15 +32,6 @@ interface AvailabilityRow extends Record<string, unknown> {
   packageAvailable: boolean;
 }
 
-/**
- * Where a service, or one provider of it, is sold
- * (docs/services-providers-packages.md §3, §5).
- *
- * A coverage row covers its node **and everything below it**, so an operator
- * states "ACT serves Mandapeta" once instead of per door. Resolution walks
- * `geo.location_ancestors` — at most the depth of the tree, whatever the tenant
- * has under it.
- */
 export class CoverageService {
   constructor(private readonly db: Db, private readonly locations: LocationsService) {}
 
@@ -52,13 +44,6 @@ export class CoverageService {
     );
   }
 
-  /**
-   * Where one package is sold, when that differs from its provider's reach.
-   *
-   * The narrowest statement the model makes: "ACT serves this apartment, but
-   * not the 4K tier". Empty — the normal case — means the package goes wherever
-   * its provider does.
-   */
   async listForPackage(access: RequestAccess, packageId: string): Promise<CoverageResponse[]> {
     await this.findPackage(access.tenantId, packageId);
 
@@ -78,12 +63,6 @@ export class CoverageService {
     );
   }
 
-  /**
-   * Replaces a provider's coverage in one call.
-   *
-   * Coverage is edited as a list in the UI. A diff of `POST`/`DELETE` calls is
-   * three round trips and a half-applied state when one of them fails.
-   */
   async replaceForProvider(access: RequestAccess, providerId: string, input: SetCoverageBody): Promise<CoverageResponse[]> {
     const provider = await this.findProvider(access.tenantId, providerId);
     await this.locations.assertOwned(access, input.entries.map(e => e.locationId));
@@ -165,14 +144,6 @@ export class CoverageService {
     return after;
   }
 
-  /**
-   * What a customer at this node can actually be sold (§5 of the doc).
-   *
-   * Three rules, stated in full in `crm.coverage_allows`: a level that names
-   * where it sells sells nowhere else, the nearest ancestor wins within a
-   * level, and a parent bounds its children. A level that has said nothing
-   * says nothing, so a tenant who has configured no coverage sells everywhere.
-   */
   async availabilityAt({ tenantId }: RequestAccess, locationId: string): Promise<AvailabilityResponse> {
     const result = await this.db.execute<AvailabilityRow>(sql`
       WITH chain AS (
@@ -277,10 +248,6 @@ export class CoverageService {
     return { locationId, services: this.group(result.rows) };
   }
 
-  /**
-   * Does this package reach this location? The check a subscription makes
-   * before it is written (§6 of the doc).
-   */
   async isPackageAvailableAt({ tenantId }: RequestAccess, target: { packageId: string; locationId: string }): Promise<boolean> {
     const result = await this.db.execute<{ available: boolean }>(sql`
       SELECT crm.coverage_allows(
@@ -293,24 +260,9 @@ export class CoverageService {
 
     const [row] = result.rows;
 
-    // No row at all means the package is not this tenant's — not "available".
     return row?.available ?? false;
   }
 
-  // ── Internals ───────────────────────────────────────────────────────────────
-
-  /**
-   * A child cannot be sold where its parent is not.
-   *
-   * `crm.coverage_allows` already ANDs the levels, so a row outside the parent
-   * would simply never resolve available — dead data that reads on screen as a
-   * served area. Rejecting it at the write is the only place the operator can
-   * still be told which places were the problem.
-   *
-   * Only the `true` entries are checked: marking somewhere "not served" that
-   * the parent does not serve either is redundant, not wrong, and a carve-out
-   * kept while a parent is temporarily narrowed is worth keeping.
-   */
   private async assertWithinParent(access: RequestAccess, target: {
     serviceId: string;
     serviceProviderId: string | null;
@@ -353,8 +305,6 @@ export class CoverageService {
     const packageId = target.packageId ?? null;
 
     await this.db.transaction(async (tx) => {
-      // Scoped to exactly one level: replacing a provider's coverage must not
-      // silently drop the package rows that sit underneath it.
       await tx.delete(serviceCoverage).where(and(
         eq(serviceCoverage.tenantId, tenantId),
         eq(serviceCoverage.serviceId, target.serviceId),
@@ -391,13 +341,10 @@ export class CoverageService {
       })
       .from(packages)
       .innerJoin(serviceProviders, eq(serviceProviders.id, packages.serviceProviderId))
-      .where(and(eq(packages.tenantId, tenantId), eq(packages.id, id), isNull(packages.deletedAt)))
+      .where(owned(packages, tenantId, id))
       .limit(1);
 
-    if (row === undefined)
-      throw notFound('Package');
-
-    return row;
+    return orNotFound(row, 'Package');
   }
 
   private async rowsWhere(where: SQL, tenantId: string): Promise<CoverageResponse[]> {
@@ -413,8 +360,6 @@ export class CoverageService {
         note: serviceCoverage.note,
       })
       .from(serviceCoverage)
-      // `geo.location_paths` resolves the breadcrumb once (§8.3) — coverage is
-      // read as "ACT: Mandapeta / Sri Sai Apartments", not as a bare uuid.
       .innerJoin(locationPaths, eq(locationPaths.id, serviceCoverage.locationId))
       .where(and(eq(serviceCoverage.tenantId, tenantId), where))
       .orderBy(asc(locationPaths.path));
@@ -450,9 +395,6 @@ export class CoverageService {
         service.providers.push(provider);
       }
 
-      // A provider with no active package still shows up: it covers the
-      // address, it just has nothing to sell yet, and hiding it makes that look
-      // like a coverage problem.
       if (row.packageId !== null && row.packageAvailable) {
         provider.packages.push({
           id: row.packageId,
@@ -472,29 +414,19 @@ export class CoverageService {
     const [row] = await this.db
       .select({ id: serviceProviders.id, serviceId: serviceProviders.serviceId })
       .from(serviceProviders)
-      .where(and(
-        eq(serviceProviders.tenantId, tenantId),
-        eq(serviceProviders.id, id),
-        isNull(serviceProviders.deletedAt),
-      ))
+      .where(owned(serviceProviders, tenantId, id))
       .limit(1);
 
-    if (row === undefined)
-      throw notFound('Service provider');
-
-    return row;
+    return orNotFound(row, 'Service provider');
   }
 
   private async findService(tenantId: string, id: string) {
     const [row] = await this.db
       .select({ id: services.id })
       .from(services)
-      .where(and(eq(services.tenantId, tenantId), eq(services.id, id), isNull(services.deletedAt)))
+      .where(owned(services, tenantId, id))
       .limit(1);
 
-    if (row === undefined)
-      throw notFound('Service');
-
-    return row;
+    return orNotFound(row, 'Service');
   }
 }

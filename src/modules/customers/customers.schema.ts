@@ -2,22 +2,13 @@ import type { Static } from 'typebox';
 import type { BillingCycle, CustomerStatus, PackageType, SubscriptionStatus } from '@/shared/constants/crm';
 import { Type } from 'typebox';
 import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from '@/config/constants';
-import { BILLING_CYCLES, CUSTOMER_STATUSES, PACKAGE_TYPES, SUBSCRIPTION_STATUSES } from '@/shared/constants/crm';
-
-/**
- * The subscriber view of a signed-in account (AGENTS.md §7).
- *
- * Flattened on purpose: this is what a customer's home screen renders, so the
- * client should not have to join a package to a provider to a service itself.
- */
+import { BILLING_CYCLES, CUSTOMER_LOCATION_SOURCES, CUSTOMER_STATUSES, PACKAGE_TYPES, SUBSCRIPTION_STATUSES } from '@/shared/constants/crm';
+import { StringEnum } from '@/shared/types/typebox';
 
 const Uuid = Type.String({ format: 'uuid' });
 const Nullable = <T extends ReturnType<typeof Type.String>>(inner: T) => Type.Union([inner, Type.Null()]);
 const Money = Type.String({ description: 'Decimal string, e.g. "349.00"' });
 
-// `Type.Unsafe` rather than a union of literals: the lists live in
-// `shared/constants/crm.ts`, so the column and the wire contract read the same
-// array and adding a value is one edit (same reason as packages.schema.ts).
 const SubscriptionStatusSchema = Type.Unsafe<SubscriptionStatus>({ type: 'string', enum: [...SUBSCRIPTION_STATUSES] });
 const BillingCycleSchema = Type.Unsafe<BillingCycle>({ type: 'string', enum: [...BILLING_CYCLES] });
 const Icon = Type.Union([Type.String({ maxLength: 40 }), Type.Null()]);
@@ -59,7 +50,6 @@ export const CustomerProfileResponse = Type.Object({
   locationId: Nullable(Uuid),
   address: Nullable(Type.String()),
   subscriptions: Type.Array(SubscriptionResponse),
-  /** The one-glance version, so a home screen needs nothing but this. */
   summary: Type.Object({
     subscriptions: Type.Integer(),
     activeSubscriptions: Type.Integer(),
@@ -70,17 +60,8 @@ export const CustomerProfileResponse = Type.Object({
 
 export type CustomerProfile = Static<typeof CustomerProfileResponse>;
 
-/* ── Staff-facing: the list, and the one call a details page makes ────────── */
-
 export const ListCustomersQuery = Type.Object({
   limit: Type.Integer({ minimum: 1, maximum: MAX_PAGE_SIZE, default: DEFAULT_PAGE_SIZE }),
-  /**
-   * `nextCursor` from the previous page. Keyset, not an offset: at 300k rows
-   * `OFFSET 200000` makes Postgres walk 200,050 index entries (89ms measured),
-   * where resuming from the last row read is 0.03ms and does not degrade with
-   * depth. It is also correct under writes — an offset skips or repeats rows
-   * when something is inserted while the operator is scrolling.
-   */
   cursor: Type.Optional(Type.String({ maxLength: 200 })),
   q: Type.Optional(Type.String({
     minLength: 1,
@@ -88,7 +69,6 @@ export const ListCustomersQuery = Type.Object({
     description: 'Customer, account, address, location or equipment value',
   })),
   status: Type.Optional(CustomerStatusSchema),
-  /** The subtree to look in — the node itself and everything under it. */
   locationId: Type.Optional(Uuid),
   serviceProviderId: Type.Optional(Uuid),
   packageId: Type.Optional(Uuid),
@@ -115,7 +95,7 @@ const SearchLocationResponse = Type.Object({
   locationId: Uuid,
   path: Type.String(),
   codes: Type.Array(Type.String()),
-  source: Type.Union([Type.Literal('customer'), Type.Literal('subscription')]),
+  source: StringEnum(CUSTOMER_LOCATION_SOURCES),
 });
 
 const SearchServiceAccountResponse = Type.Object({
@@ -140,13 +120,6 @@ const SearchEquipmentResponse = Type.Object({
   status: Type.String(),
 });
 
-/**
- * One row of the staff customer list.
- *
- * It carries the answers a row actually shows — who, where, what they are on,
- * what they owe, plus every searchable account, location and equipment value —
- * already resolved, so rendering a page never needs per-row follow-up requests.
- */
 export const CustomerListItemResponse = Type.Object({
   id: Uuid,
   customerCode: Nullable(Type.String()),
@@ -154,12 +127,10 @@ export const CustomerListItemResponse = Type.Object({
   phone: Nullable(Type.String()),
   status: CustomerStatusSchema,
   outstandingBalance: Money,
-  /** The breadcrumb, resolved — `Mandapeta / Sri Sai Apartments / 201`. */
   locationId: Nullable(Uuid),
   locationPath: Nullable(Type.String()),
   subscriptions: Type.Integer(),
   activeSubscriptions: Type.Integer(),
-  /** Distinct service names on the active lines, for the "Cable TV, Broadband" line. */
   services: Type.Array(Type.String()),
   createdAt: Type.String({ format: 'date-time' }),
   alternatePhone: Nullable(Type.String()),
@@ -194,14 +165,6 @@ const TransactionResponse = Type.Object({
   remarks: Nullable(Type.String()),
 });
 
-/**
- * Everything a customer details page draws, in ONE response.
- *
- * A customer id fans out to subscriptions, and each of those to a provider, a
- * package and a location — so the obvious client does six round trips and an
- * N+1 over the list. This resolves the whole graph server-side, where the joins
- * are indexed and free, and hands back a shape that needs no further lookups.
- */
 export const CustomerDetailResponse = Type.Object({
   id: Uuid,
   customerCode: Nullable(Type.String()),
@@ -211,16 +174,13 @@ export const CustomerDetailResponse = Type.Object({
   whatsappNumber: Nullable(Type.String()),
   status: CustomerStatusSchema,
   outstandingBalance: Money,
-  /** Set when the subscriber has a login; most do not. */
   userId: Nullable(Uuid),
   locationId: Nullable(Uuid),
   locationPath: Nullable(Type.String()),
-  /** Free text off the import or an agent — a hint, never the structured address. */
   address: Nullable(Type.String()),
   notes: Nullable(Type.String()),
   subscriptions: Type.Array(SubscriptionResponse),
   equipment: Type.Array(EquipmentResponse),
-  /** The latest ledger lines, newest first — enough for the page, not the whole history. */
   recentTransactions: Type.Array(TransactionResponse),
   summary: Type.Object({
     subscriptions: Type.Integer(),
@@ -233,18 +193,10 @@ export const CustomerDetailResponse = Type.Object({
   updatedAt: Type.String({ format: 'date-time' }),
 });
 
-/**
- * A page of the customer list.
- *
- * `total` only on the FIRST page: it costs a second aggregate over every
- * matching row, and it cannot change usefully while one operator scrolls. Later
- * pages send `null` rather than paying for it again.
- */
 export const CustomerPageResponse = Type.Object({
   items: Type.Array(CustomerListItemResponse),
   total: Type.Union([Type.Integer(), Type.Null()]),
   limit: Type.Integer(),
-  /** Pass back as `?cursor=`. `null` means this was the last page. */
   nextCursor: Type.Union([Type.String(), Type.Null()]),
 });
 

@@ -65,26 +65,26 @@ describe('cacheService', () => {
     expect(await cache.get(parts({ url: '/api/v1/customers?page=2' }))).toBeNull();
   });
 
-  it('invalidates every key for a resource in one command', async () => {
+  it('invalidates every key for a tenant in one command', async () => {
     await cache.set(parts(), 'list');
     await cache.set(parts({ url: '/api/v1/customers/abc' }), 'one');
 
-    await cache.invalidate('customers', 'tenant-a');
+    await cache.invalidate('tenant-a');
 
     expect(await cache.get(parts())).toBeNull();
     expect(await cache.get(parts({ url: '/api/v1/customers/abc' }))).toBeNull();
   });
 
-  it('leaves other resources alone', async () => {
+  it('drops the tenant\'s other resources too', async () => {
     await cache.set(parts({ resource: 'packages', url: '/api/v1/packages' }), 'packages');
-    await cache.invalidate('customers', 'tenant-a');
+    await cache.invalidate('tenant-a');
 
-    expect(await cache.get(parts({ resource: 'packages', url: '/api/v1/packages' }))).toBe('packages');
+    expect(await cache.get(parts({ resource: 'packages', url: '/api/v1/packages' }))).toBeNull();
   });
 
   it('leaves other tenants alone', async () => {
     await cache.set(parts({ tenantId: 'tenant-b' }), 'tenant-b rows');
-    await cache.invalidate('customers', 'tenant-a');
+    await cache.invalidate('tenant-a');
 
     expect(await cache.get(parts({ tenantId: 'tenant-b' }))).toBe('tenant-b rows');
   });
@@ -97,7 +97,7 @@ describe('cacheService', () => {
   it('survives repeated invalidation without leaking the version counter', async () => {
     for (let i = 0; i < 5; i += 1) {
       await cache.set(parts(), `gen-${i}`);
-      await cache.invalidate('customers', 'tenant-a');
+      await cache.invalidate('tenant-a');
     }
 
     await cache.set(parts(), 'final');
