@@ -5,6 +5,7 @@ import {
   CreateRemoteBody,
   IdParams,
   ListRemotesQuery,
+  RemoteCaptureSchema,
   RemoteDetail,
   RemoteSummary,
 } from './remote.schema';
@@ -48,6 +49,20 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
     },
   }, async (request) => {
     return request.server.remotes.get(request.access, request.params.id);
+  });
+
+  app.get('/remotes/:id/captures', {
+    config: { cache: { tag: 'remotes', scope: 'tenant' } },
+    preHandler: app.requirePermission(PERMISSIONS.REMOTES_VIEW),
+    schema: {
+      tags: ['remotes'],
+      summary: 'Get raw IR captures for a remote handset',
+      description: 'Returns all raw signal captures recorded for this remote handset.',
+      params: IdParams,
+      response: { 200: Type.Array(RemoteCaptureSchema), ...errors },
+    },
+  }, async (request) => {
+    return request.server.remotes.getCaptures(request.access, request.params.id);
   });
 
   app.post('/remotes', {

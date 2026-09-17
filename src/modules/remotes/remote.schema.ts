@@ -30,9 +30,27 @@ export const RemoteSummary = Type.Object({
   buttonCount: Type.Integer(),
 });
 
+export const RemoteCaptureSchema = Type.Object({
+  id: Type.String({ format: 'uuid' }),
+  remoteId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
+  buttonName: Type.String(),
+  buttonKey: Type.String(),
+  protocol: Type.String(),
+  address: Type.String(),
+  command: Type.String(),
+  commandNumber: Type.Integer(),
+  rawData: Type.String(),
+  bits: Type.Integer(),
+  bitOrder: Type.String(),
+  repeat: Type.Boolean(),
+  rawTimings: Type.Array(Type.Integer()),
+  capturedAt: Type.Union([Type.String(), Type.Null()]),
+});
+
 export const RemoteDetail = Type.Object({
   ...RemoteFields,
   buttons: Type.Array(RemoteButtonSchema),
+  captures: Type.Optional(Type.Array(RemoteCaptureSchema)),
 });
 
 export const CreateRemoteBody = Type.Object({
@@ -47,4 +65,5 @@ export const CreateRemoteBody = Type.Object({
 export type ListRemotesQuery = Static<typeof ListRemotesQuery>;
 export type CreateRemoteBody = Static<typeof CreateRemoteBody>;
 export type RemoteSummary = Static<typeof RemoteSummary>;
+export type RemoteCapture = Static<typeof RemoteCaptureSchema>;
 export type RemoteDetail = Static<typeof RemoteDetail>;

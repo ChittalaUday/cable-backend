@@ -1,12 +1,12 @@
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import type { CreateRemoteBody, ListRemotesQuery, RemoteDetail, RemoteSummary } from './remote.schema';
+import type { CreateRemoteBody, ListRemotesQuery, RemoteCapture, RemoteDetail, RemoteSummary } from './remote.schema';
 import type * as schema from '@/db/schema';
 import type { RemoteButton, RemoteRecord } from '@/db/schema';
 import type { RequestAccess } from '@/modules/iam/access.service';
 import { and, asc, eq, ilike, isNull, or, sql } from 'drizzle-orm';
 import { AUDIT_ENTITIES } from '@/constants/audit';
 import { REMOTE_SOURCE } from '@/constants/remotes';
-import { remotes } from '@/db/schema';
+import { remoteCaptures, remotes } from '@/db/schema';
 import { ERROR_CODES } from '@/errors';
 import { badRequest, conflict, notFound } from '@/errors/domain-error';
 import { isUniqueViolation } from '@/errors/postgres';
@@ -111,6 +111,12 @@ export class RemotesService {
     if (!row)
       throw notFound('Remote');
 
+    const captures = await this.db
+      .select()
+      .from(remoteCaptures)
+      .where(eq(remoteCaptures.remoteId, id))
+      .orderBy(asc(remoteCaptures.buttonName));
+
     return {
       id: row.id,
       deviceType: row.deviceType,
@@ -121,7 +127,28 @@ export class RemotesService {
       notes: row.notes,
       isTenantOwned: row.tenantId !== null,
       buttons: row.buttons,
+      captures: captures.map(c => ({
+        id: c.id,
+        remoteId: c.remoteId,
+        buttonName: c.buttonName,
+        buttonKey: c.buttonKey,
+        protocol: c.protocol,
+        address: c.address,
+        command: c.command,
+        commandNumber: c.commandNumber,
+        rawData: c.rawData,
+        bits: c.bits,
+        bitOrder: c.bitOrder,
+        repeat: c.repeat,
+        rawTimings: c.rawTimings,
+        capturedAt: c.capturedAt ? c.capturedAt.toISOString() : null,
+      })),
     };
+  }
+
+  async getCaptures(access: RequestAccess, id: string): Promise<RemoteCapture[]> {
+    const detail = await this.get(access, id);
+    return detail.captures ?? [];
   }
 
   async create(access: RequestAccess, input: CreateRemoteBody): Promise<RemoteDetail> {

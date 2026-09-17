@@ -1,8 +1,10 @@
 import type { RemoteDetail, RemoteSummary } from './remote.schema';
 import type { BuiltApp } from '@/app';
 import type { SeededAuthData } from '@/test/fixtures';
+import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from '@/app';
+import { remoteCaptures } from '@/db/schema';
 import { seedRemotes } from '@/db/seeds/seed-remotes';
 import { createTestDb } from '@/test/db';
 import { seedAuthData, TEST_PASSWORD, uniqueDeviceId } from '@/test/fixtures';
@@ -64,11 +66,13 @@ describe('the seeded library', () => {
     expect((await list('?deviceType=stb')).every(r => r.deviceType === 'stb')).toBe(true);
   });
 
-  it('marks the set-top box reference layouts unverified, and the televisions verified', async () => {
+  it('marks only the hand-checked handsets verified', async () => {
     const remotes = await list();
 
+    // Set-top boxes are reference layouts, and the imported television library
+    // is community data — only the three handsets we checked ourselves pass.
     expect(remotes.filter(r => r.deviceType === 'stb').every(r => !r.verified)).toBe(true);
-    expect(remotes.filter(r => r.deviceType === 'tv').every(r => r.verified)).toBe(true);
+    expect(remotes.filter(r => r.verified).map(r => r.brand).sort()).toEqual(['LG', 'Samsung', 'Sony']);
   });
 
   it('leaves code sets out of the list and returns them on selecting one', async () => {
@@ -88,7 +92,50 @@ describe('the seeded library', () => {
   });
 
   it('searches across brand and model', async () => {
-    expect((await list('?search=bravia')).map(r => r.brand)).toEqual(['Sony']);
+    const found = await list('?search=bravia');
+    expect(found.length).toBeGreaterThan(0);
+    expect(new Set(found.map(r => r.brand))).toEqual(new Set(['Sony']));
+  });
+
+  it('seeds the ACT remote with 35 captured buttons and stores raw captures', async () => {
+    const [act] = await list('?deviceType=stb&brand=ACT');
+    expect(act).toBeDefined();
+    expect(act?.model).toBe('ACT Remote');
+    expect(act?.buttonCount).toBe(35);
+
+    const response = await app.inject({ method: 'GET', url: `/api/v1/remotes/${act!.id}`, headers: auth });
+    expect(response.statusCode).toBe(200);
+    const detail = bodyOf<RemoteDetail>(response);
+    expect(detail.buttons).toHaveLength(35);
+
+    const power = detail.buttons.find(b => b.key === 'power');
+    expect(power?.command).toEqual({ protocol: 'nec', address: 0x00, command: 0x1C });
+
+    const captures = await db.select().from(remoteCaptures).where(eq(remoteCaptures.remoteId, act!.id));
+    expect(captures).toHaveLength(35);
+    const powerCapture = captures.find(c => c.buttonName === 'power');
+    expect(powerCapture?.command).toBe('0x1C');
+    expect(powerCapture?.commandNumber).toBe(28);
+    expect(powerCapture?.bits).toBe(32);
+    expect(powerCapture?.rawTimings.length).toBeGreaterThan(0);
+
+    expect(detail.captures).toHaveLength(35);
+
+    const capturesRes = await app.inject({ method: 'GET', url: `/api/v1/remotes/${act!.id}/captures`, headers: auth });
+    expect(capturesRes.statusCode).toBe(200);
+    const fetchedCaptures = bodyOf<unknown[]>(capturesRes);
+    expect(fetchedCaptures).toHaveLength(35);
+  });
+
+  it('refuses unauthenticated requests to list, detail, and captures', async () => {
+    const listRes = await app.inject({ method: 'GET', url: '/api/v1/remotes' });
+    expect(listRes.statusCode).toBe(401);
+
+    const detailRes = await app.inject({ method: 'GET', url: '/api/v1/remotes/00000000-0000-0000-0000-000000000000' });
+    expect(detailRes.statusCode).toBe(401);
+
+    const capturesRes = await app.inject({ method: 'GET', url: '/api/v1/remotes/00000000-0000-0000-0000-000000000000/captures' });
+    expect(capturesRes.statusCode).toBe(401);
   });
 });
 

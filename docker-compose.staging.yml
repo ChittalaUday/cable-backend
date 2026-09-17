@@ -1,0 +1,20 @@
+services:
+  cable-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: cable-api:latest
+    container_name: cable-api
+    restart: unless-stopped
+    networks:
+      - staging-network
+    ports:
+      - "127.0.0.1:5050:5050"
+    env_file:
+      - .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+networks:
+  staging-network:
+    external: true

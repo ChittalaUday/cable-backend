@@ -1,55 +1,83 @@
 services:
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: node-exporter
+    restart: unless-stopped
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--path.rootfs=/rootfs'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    networks:
+      - staging-network
+
   prometheus:
     image: prom/prometheus:v3.5.0
+    container_name: prometheus
     restart: unless-stopped
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
       - --storage.tsdb.retention.time=30d
-    extra_hosts:
-      - host.docker.internal:host-gateway
-    ports:
-      - '9090:9090'
+    networks:
+      - staging-network
     volumes:
       - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./monitoring/prometheus/targets.yml:/etc/prometheus/targets.yml:ro
       - prometheus-data:/prometheus
 
   loki:
     image: grafana/loki:3.5.3
+    container_name: loki
     restart: unless-stopped
     command: -config.file=/etc/loki/local-config.yml
+    networks:
+      - staging-network
     volumes:
       - ./monitoring/loki/loki.yml:/etc/loki/local-config.yml:ro
       - loki-data:/loki
 
   alloy:
     image: grafana/alloy:v1.10.2
+    container_name: alloy
     restart: unless-stopped
     command: run --storage.path=/var/lib/alloy/data /etc/alloy/config.alloy
     depends_on:
       - loki
+    networks:
+      - staging-network
     volumes:
       - ./monitoring/alloy/config.alloy:/etc/alloy/config.alloy:ro
       - ./logs:/var/log/backends/cable-backend:ro
-      - ./monitoring/logs:/var/log/backends/extra:ro
       - alloy-data:/var/lib/alloy/data
 
   grafana:
     image: grafana/grafana:12.1.1
+    container_name: grafana
     restart: unless-stopped
     depends_on:
       - prometheus
       - loki
     environment:
       GF_SECURITY_ADMIN_USER: admin
-      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-Onmog@Uday-015}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SERVER_ROOT_URL: https://grafana.onmog.tech
     ports:
-      - '3099:3000'
+      - '127.0.0.1:3099:3000'
+    networks:
+      - staging-network
     volumes:
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana-data:/var/lib/grafana
+
+networks:
+  staging-network:
+    external: true
 
 volumes:
   prometheus-data:

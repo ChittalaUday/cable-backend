@@ -8,7 +8,7 @@ export default defineConfig({
   dbCredentials: {
     url: process.env.DATABASE_URL ?? 'postgres://cable:cable@localhost:5432/cable',
   },
-  schemaFilter: ['tenancy', 'auth', 'iam', 'crm', 'geo', 'notify', 'media', 'analytics', 'audit', 'inventory'],
+  schemaFilter: ['tenancy', 'auth', 'iam', 'crm', 'geo', 'notify', 'media', 'analytics', 'audit', 'inventory', 'remotes'],
   strict: true,
   verbose: true,
 });

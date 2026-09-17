@@ -351,6 +351,13 @@
       "when": 1789577442947,
       "tag": "0049_shiny_bullseye",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1789622511357,
+      "tag": "0050_furry_fenris",
+      "breakpoints": true
     }
   ]
 }
