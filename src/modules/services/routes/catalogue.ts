@@ -14,6 +14,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   const errors = { 400: errorRef, 401: errorRef, 403: errorRef, 404: errorRef, 409: errorRef };
 
   app.get('/services', {
+    config: { cache: { tag: 'services' } },
     preHandler: app.requirePermission(PERMISSIONS.SERVICES_VIEW),
     schema: {
       tags: ['services'],
@@ -26,6 +27,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.post('/services', {
+    config: { invalidates: ['analytics', 'coverage', 'customers', 'packages', 'service-providers', 'services'] },
     preHandler: app.requirePermission(PERMISSIONS.SERVICES_CREATE),
     schema: {
       tags: ['services'],
@@ -40,6 +42,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.get('/services/:id', {
+    config: { cache: { tag: 'services' } },
     preHandler: app.requirePermission(PERMISSIONS.SERVICES_VIEW),
     schema: {
       tags: ['services'],
@@ -52,6 +55,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.patch('/services/:id', {
+    config: { invalidates: ['analytics', 'coverage', 'customers', 'packages', 'service-providers', 'services'] },
     preHandler: app.requirePermission(PERMISSIONS.SERVICES_UPDATE),
     schema: {
       tags: ['services'],
@@ -66,6 +70,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.delete('/services/:id', {
+    config: { invalidates: ['analytics', 'channels', 'coverage', 'customers', 'locations', 'packages', 'service-providers', 'services'] },
     preHandler: app.requirePermission(PERMISSIONS.SERVICES_DELETE),
     schema: {
       tags: ['services'],

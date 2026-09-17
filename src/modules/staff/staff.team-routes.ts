@@ -17,6 +17,7 @@ const teamRoutes: FastifyPluginAsyncTypebox = async (app) => {
   const errors = { 400: errorRef, 401: errorRef, 403: errorRef, 404: errorRef, 409: errorRef };
 
   app.get('/teams', {
+    config: { cache: { tag: 'teams' } },
     preHandler: app.requirePermission(PERMISSIONS.STAFF_VIEW),
     schema: {
       tags: ['staff'],
@@ -29,6 +30,7 @@ const teamRoutes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.post('/teams', {
+    config: { invalidates: ['staff', 'teams'] },
     preHandler: app.requirePermission(PERMISSIONS.STAFF_CREATE),
     schema: {
       tags: ['staff'],
@@ -42,6 +44,7 @@ const teamRoutes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.get('/teams/:id', {
+    config: { cache: { tag: 'teams' } },
     preHandler: app.requirePermission(PERMISSIONS.STAFF_VIEW),
     schema: {
       tags: ['staff'],
@@ -54,6 +57,7 @@ const teamRoutes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.patch('/teams/:id', {
+    config: { invalidates: ['staff', 'teams'] },
     preHandler: app.requirePermission(PERMISSIONS.STAFF_UPDATE),
     schema: {
       tags: ['staff'],
@@ -67,6 +71,7 @@ const teamRoutes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.delete('/teams/:id', {
+    config: { invalidates: ['staff', 'teams'] },
     preHandler: app.requirePermission(PERMISSIONS.STAFF_DELETE),
     schema: {
       tags: ['staff'],
@@ -81,6 +86,7 @@ const teamRoutes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.get('/teams/:id/members', {
+    config: { cache: { tag: 'teams' } },
     preHandler: app.requirePermission(PERMISSIONS.STAFF_VIEW),
     schema: {
       tags: ['staff'],
@@ -93,6 +99,7 @@ const teamRoutes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.put('/teams/:id/locations', {
+    config: { invalidates: ['staff', 'teams'] },
     preHandler: app.requirePermission(PERMISSIONS.STAFF_UPDATE),
     schema: {
       tags: ['staff'],

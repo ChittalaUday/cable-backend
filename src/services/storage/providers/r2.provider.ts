@@ -1,4 +1,4 @@
-import type { ObjectHead, PutObject, SignedUrl, StorageProvider } from '../storage.types';
+import type { ObjectHead, ObjectPage, PutObject, SignedUrl, StorageProvider } from '../storage.types';
 import {
   DeleteObjectCommand,
   GetObjectCommand,
@@ -46,6 +46,25 @@ export function createR2Provider(config: R2Config): StorageProvider {
     name: 'cloudflare-r2',
     bucket: config.bucket,
     configured: true,
+
+    list: async (continuationToken?: string): Promise<ObjectPage> => {
+      const response = await client.send(new ListObjectsV2Command({
+        Bucket: config.bucket,
+        MaxKeys: 1000,
+        ...(continuationToken === undefined ? {} : { ContinuationToken: continuationToken }),
+      }));
+
+      return {
+        objects: (response.Contents ?? [])
+          .filter(item => item.Key !== undefined)
+          .map(item => ({
+            key: item.Key!,
+            sizeBytes: item.Size ?? 0,
+            lastModified: item.LastModified ?? null,
+          })),
+        nextToken: response.IsTruncated === true ? response.NextContinuationToken ?? null : null,
+      };
+    },
 
     createUploadUrl: async (key, contentType, expiresInSeconds) => sign(
       new PutObjectCommand({ Bucket: config.bucket, Key: key, ContentType: contentType }),

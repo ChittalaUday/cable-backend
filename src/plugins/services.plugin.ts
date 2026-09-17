@@ -2,6 +2,8 @@ import type { MessagingProvider } from '@/services/messaging/messaging.types';
 import type { SearchService } from '@/services/search/search.service';
 import type { StorageService } from '@/services/storage/storage.service';
 import fp from 'fastify-plugin';
+import { cert, getApps, initializeApp } from 'firebase-admin/app';
+import { getMessaging } from 'firebase-admin/messaging';
 import { env, isTest } from '@/config/env';
 import { AnalyticsService } from '@/modules/analytics/analytics.service';
 import { CustomerRepository } from '@/modules/customers/customer.repository';
@@ -16,6 +18,7 @@ import { ServicesService } from '@/modules/services/service.service';
 import { StaffService } from '@/modules/staff/staff.service';
 import { TeamsService } from '@/modules/staff/teams.service';
 import { MessagingService } from '@/services/messaging/messaging.service';
+import { createFcmProvider } from '@/services/messaging/providers/fcm.provider';
 import { createLogProvider } from '@/services/messaging/providers/log.provider';
 import { createOpenWaProvider } from '@/services/messaging/providers/openwa.provider';
 import { createPlaceholderProvider } from '@/services/messaging/providers/placeholder.provider';
@@ -46,22 +49,55 @@ export default fp(async (app) => {
   // 1. Cross-cutting shared services
   const providers: MessagingProvider[] = [];
 
+  // Assigned below, once the messaging service it depends on exists. The
+  // provider only reaches for it when a session cannot be restarted, which is
+  // long after startup.
+  let notifications: NotificationService | undefined;
+  let lastAlertAt = 0;
+
+  // A WhatsApp session that needs a human stays broken for as long as it takes
+  // somebody to scan a code. Alerting on every OTP in the meantime would bury
+  // the first alert under hundreds of copies.
+  const ALERT_INTERVAL_MS = 15 * 60 * 1000;
+
+  function alertAdminsOnce(detail: { status: string; reason: string }): void {
+    if (Date.now() - lastAlertAt < ALERT_INTERVAL_MS || notifications === undefined)
+      return;
+
+    lastAlertAt = Date.now();
+
+    notifications.alertAdmins({
+      type: 'whatsapp_session_down',
+      title: 'WhatsApp is not sending',
+      body: `${detail.reason} Customers cannot receive a sign-in code until it is back.`,
+    }).then((result) => {
+      app.log.error({ status: detail.status, notified: result.notified }, 'whatsapp session needs attention — admins alerted');
+    }).catch((error: unknown) => {
+      app.log.error({ err: error }, 'whatsapp session needs attention, and the alert could not be sent');
+    });
+  }
+
   if (env.MESSAGING_ENABLED && !isTest) {
     providers.push(createOpenWaProvider({
       baseUrl: env.MESSAGING_BASE_URL.replace(/\/+$/, ''),
       apiKey: env.MESSAGING_API_KEY,
       sessionId: env.MESSAGING_SESSION_ID,
       timeoutMs: env.MESSAGING_TIMEOUT_MS,
+      onSessionUnrecoverable: alertAdminsOnce,
     }));
 
     providers.push(
       createPlaceholderProvider({ channel: 'sms', requiredEnv: ['SMS_PROVIDER', 'SMS_API_KEY'] }),
       createPlaceholderProvider({ channel: 'email', requiredEnv: ['RESEND_API_KEY'], plannedProvider: 'Resend' }),
-      createPlaceholderProvider({
-        channel: 'push',
-        requiredEnv: ['FIREBASE_SERVICE_ACCOUNT_PATH'],
-        plannedProvider: 'Firebase Cloud Messaging',
-      }),
+      env.FIREBASE_SERVICE_ACCOUNT_PATH === ''
+        ? createPlaceholderProvider({
+            channel: 'push',
+            requiredEnv: ['FIREBASE_SERVICE_ACCOUNT_PATH'],
+            plannedProvider: 'Firebase Cloud Messaging',
+          })
+        : createFcmProvider(getMessaging(
+            getApps()[0] ?? initializeApp({ credential: cert(env.FIREBASE_SERVICE_ACCOUNT_PATH) }),
+          )),
     );
   }
   else {
@@ -79,7 +115,7 @@ export default fp(async (app) => {
     app.log.warn('Object storage is not configured — file endpoints will return 503.');
   }
   const storage = createStorageService(app.db, storageProvider);
-  const notifications = new NotificationService(app.db, messaging);
+  notifications = new NotificationService(app.db, messaging);
 
   // 2. Domain Services
   const customerRepo = new CustomerRepository(app.db);

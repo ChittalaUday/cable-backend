@@ -64,7 +64,7 @@ export async function buildApp() {
   await app.register(underPressure, {
     exposeStatusRoute: {
       url: '/health',
-      routeOpts: { logLevel: 'warn', config: { cache: false, public: true } },
+      routeOpts: { logLevel: 'warn', config: { public: true } },
     },
     healthCheck: async () => {
       await app.db.execute('select 1');
@@ -75,7 +75,7 @@ export async function buildApp() {
 
   app.get(`${API_PREFIX}/health`, {
     logLevel: 'warn',
-    config: { cache: false, public: true },
+    config: { public: true },
     schema: {
       tags: ['health'],
       summary: 'Service health, under the API version prefix',

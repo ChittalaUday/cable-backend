@@ -18,6 +18,16 @@ const UNGUARDED_ROUTES: Readonly<Record<string, string>> = {
   'POST /api/v1/auth/logout': 'Ends the caller\'s own session. Needing a permission to sign out is how someone gets stuck signed in.',
   'POST /api/v1/auth/logout-all': 'Ends the caller\'s own sessions, nobody else\'s.',
   'GET /api/v1/auth/me': 'The caller\'s own identity and memberships. Scoped to the session, so a grant would add nothing.',
+
+  'GET /api/v1/notifications': 'The caller\'s own inbox, scoped to their user id. A grant would only let somebody read their own post.',
+  'GET /api/v1/notifications/unread-count': 'The caller\'s own badge count.',
+  'PATCH /api/v1/notifications/:id/read': 'Marks one of the caller\'s own notifications read; the update is scoped to their user id.',
+  'PATCH /api/v1/notifications/read-all': 'Marks the caller\'s own notifications read.',
+  'POST /api/v1/notifications/token': 'Records a device and its push token before anybody has signed in, and keeps recording it after sign-out. There is no session to hold a permission.',
+
+  'POST /api/v1/files': 'Anybody signed in may upload — a customer attaching proof of payment as much as an admin picking a banner. The limits that matter are size, content type and rate, not a grant.',
+  'GET /api/v1/files/:id': 'Resolved through findOwned, so it only ever signs a URL for a file in the caller\'s own tenant.',
+  'DELETE /api/v1/files/:id': 'The same ownership check. Deleting your own upload needs no grant.',
 };
 
 beforeAll(async () => {

@@ -55,9 +55,16 @@ export const AUDITED_ROUTES: Readonly<Record<string, readonly AuditAction[]>> = 
   'POST /api/v1/inventory/requests/:id/review': [auditAction(AUDIT_ENTITIES.INVENTORY_APPROVAL_REQUEST, AUDIT_VERBS.UPDATED)],
 
   'POST /api/v1/remotes': [auditAction(AUDIT_ENTITIES.REMOTE, AUDIT_VERBS.CREATED)],
+
+  'POST /api/v1/notifications/send': [AUDIT_ACTIONS.NOTIFICATION_SENT],
 };
 
 export const UNAUDITED_ROUTES: Readonly<Record<string, string>> = {
+  'PATCH /api/v1/notifications/:id/read': 'Somebody reading their own notification. Auditing it would log every scroll of the inbox and tell an investigator nothing.',
+  'PATCH /api/v1/notifications/read-all': 'The same, in bulk.',
+  'POST /api/v1/files': 'Storing somebody\'s own upload. media.files already records who uploaded it and when, so an audit row would only duplicate it.',
+  'DELETE /api/v1/files/:id': 'A soft delete on the caller\'s own file; user_files keeps deleted_at.',
+  'POST /api/v1/notifications/token': 'Records a device push token. Unauthenticated by design, so there is no actor to attribute, and the device row already carries first_seen_at and last_seen_at.',
 };
 
 export const MUTATING_METHODS = ['POST', 'PUT', 'PATCH', 'DELETE'] as const;

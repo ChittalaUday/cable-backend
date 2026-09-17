@@ -25,7 +25,7 @@ so nobody improvises one later:
 
 | Capability | Lands in | Phase |
 |---|---|---|
-| Redis cache | `plugins/redis.ts` | when a measured query is actually hot |
+| Redis cache | `plugins/cache.plugin.ts` | 1 — opt-in per route, tag-versioned, `x-cache: HIT/MISS` |
 | BullMQ queue + worker | `jobs/`, `src/worker.ts` | with billing |
 | PostgreSQL-backed scheduled jobs (pg-boss) | `jobs/`, `src/worker.ts` | 1 |
 | Billing, invoices, payments, collections | `modules/billing`, `invoices`, `payments`, `collections` | 2 |
@@ -104,6 +104,8 @@ Search is `pg_trgm` in Postgres, not a search cluster.
 | `@fastify/jwt` | Sign/verify access tokens | `jsonwebtoken` directly |
 | `@fastify/swagger` + `-ui` | OpenAPI generated from route schemas | A hand-maintained `openapi.yaml` |
 | `@fastify/under-pressure` | `/health` with real load signals | `reply.send({ ok: true })` |
+| `@fastify/etag` | Conditional GETs — the mobile client revalidates, we answer 304 | Hand-rolled `if-modified-since` |
+| `@fastify/compress` | gzip/br on responses over 1 KB | Compressing in the handler |
 | `fastify-plugin` | Un-encapsulating a plugin so decorators are global | — |
 | `close-with-grace` | Graceful shutdown: drain, then close the pool | `process.on('SIGTERM')` by hand |
 
@@ -1636,51 +1638,97 @@ and cost every FK guarantee.
 
 ### 8.5 Caching
 
-Redis, `CACHE_TTL_SECONDS` (default 300). **`GET` reads the cache; a successful
-`POST`/`PUT`/`PATCH`/`DELETE` invalidates it.**
+Redis, `CACHE_TTL_SECONDS` (default 300 — five minutes, one value for every
+route). **Caching is opt-in per route.** A `GET` is cached only if it declares
+`config: { cache: { tag } }`; a write drops only the tags it declares in
+`config: { invalidates: [...] }`. A route that says nothing is never cached and
+answers `cache-control: no-store`.
 
-**Invalidation is by version counter, not by key deletion.** A mutation runs
-`INCR ver:<tenant>`; cache keys embed that version, so the previous generation
-is orphaned in one O(1) command and expires on its own TTL. SCAN-and-delete is
-O(keyspace), races with concurrent writes, and gets slower exactly as the cache
-gets more useful.
+```ts
+app.get('/packages', {
+  config: { cache: { tag: 'packages' } },
+  preHandler: app.requirePermission(PERMISSIONS.PACKAGES_VIEW),
+  schema: { querystring: ListPackagesQuery, response: { 200: PackagePageResponse } },
+}, handler);
 
-**The counter is per TENANT, not per resource.** Reads here cross resources
-constantly — `PUT /services/:id/coverage` changes which rows
-`GET /locations?coverageServiceId=…` returns, `PUT /teams/:id/locations` changes
-`GET /staff` — and a counter keyed on the URL's first path segment cannot see
-any of that. It served pages from before the write. So any successful mutation
-drops that tenant's whole cached read set; nothing else's.
+app.put('/packages/:id/channels', {
+  config: { invalidates: ['packages', 'channels'] },
+  preHandler: app.requirePermission(PERMISSIONS.PACKAGES_UPDATE),
+}, handler);
+```
+
+**Invalidation is by version counter, not by key deletion.** A write runs
+`INCR ver:<tenant>:<tag>` for each tag it names; keys embed that version, so the
+previous generation is orphaned in one O(1) command and expires on its own TTL.
+SCAN-and-delete is O(keyspace), races with concurrent writes, and gets slower
+exactly as the cache gets more useful.
+
+**A counter per tag means the tags have to be honest about what a write
+touches.** `invalidates` is not "my own resource" — it is every tag whose reads
+join a table this route writes. Naming only the tag whose URL you are editing is
+the mistake this design makes easy. Derive it, in this order:
+
+1. **The tables the route's handler writes.** Follow the service into its
+   repository and its helpers; the write is often two files down.
+2. **What those tables cascade to.** `DELETE /services/:id` writes one table and
+   `ON DELETE CASCADE` takes `service_providers`, `packages`, `channels` and
+   `service_coverage` with it, so it invalidates all of their tags.
+3. **The tables each cached read joins** — again transitively. A read that joins
+   `users` is invalidated by a write that renames a staff member, which is why
+   `POST /staff` drops `customers` and `inventory`.
+4. **Stored functions hide joins from TypeScript.** `GET /locations` looks like
+   it reads `geo.locations` and nothing else, but with `coverageServiceId` it
+   calls `crm.coverage_allows(…)`, which reads `crm.service_coverage` — so every
+   coverage write drops `locations`. Grep the migrations for the function body;
+   the .ts file will not tell you. `coverage.api.test.ts` catches this one.
+
+Two things deliberately left out: **the location tree writes fan out to nearly
+every tag**, because almost every read joins `geo.locations` — that is real, not
+sloppiness, and it is affordable because editing the tree is rare. And **the
+`/auth/*` routes invalidate nothing.** They write `sessions`, `devices`, and on
+first sign-in link an existing `customers` row to a `users` row; no cached body
+renders that linkage. The cost of the alternative is dropping the tenant's
+`customers`, `staff` and `analytics` caches on every subscriber sign-in. The
+visible consequence: a brand-new subscriber can take up to five minutes to
+appear in a staff list.
 
 **The tenant in the key is the RESOLVED `request.tenantId`, never the raw
 `x-tenant-id` header.** A caller who belongs to one operator does not send the
 header, so keying on it put them in a `global` bucket while a multi-tenant admin
 of the same operator sat under its id: one tenant, two namespaces, and writes in
-one that never invalidated reads in the other. (This is also what hid the
-per-resource problem above — the `global` bucket was being bumped constantly by
-unrelated tenants. Correctness that depends on other tenants writing often
-enough is not correctness.) `plugins/cache.ts` therefore lists `tenant` in its
-plugin dependencies: `onRequest` hooks run in registration order, and the tenant
-has to be resolved before this one reads it.
+one that never invalidated reads in the other.
 
 Key shape:
 
 ```
-cable:v<version>:<tenantId>:<userId|tenant>:<url>
-cable:ver:<tenantId>                   ← the counter
+cable:<tag>:v<version>:<tenantId>:<userId>.<grantHash>:<url>
+cable:ver:<tenantId>:<tag>                                   ← the counter
 ```
 
-**Keys include the user id by default.** Responses are permission-filtered
-(§5), so a key shared across users would serve one user's rows to another. A
-route whose response is identical for everyone in a tenant opts in with
-`config: { cache: { scope: 'tenant' } }` — that is a deliberate statement that
-the response carries no per-user filtering, and it is wrong for anything
-scope-limited.
+**Keys carry the caller and their grants.** Responses are permission-filtered
+(§5) — every list narrows by `locationScopeFor` — so a key shared across users
+would serve one user's rows to another. The `grantHash` covers role, team,
+leadership and granted nodes, which is why re-scoping a staff member does not
+need every write to invalidate every tag: their key simply changes. A route
+whose body is identical for everyone in the tenant opts out of the user part
+with `config: { cache: { tag, scope: 'tenant' } }` — true today only of
+`/location-categories`, `/location-schemas` and `/remotes`, whose handlers read
+nothing off `access` but `tenantId`. Check the service before claiming it.
 
 **Rules:**
 
-- `config: { cache: false }` on anything whose freshness is the point — auth,
-  sessions, anything reading its own write back immediately.
+- **The lookup runs as a route-level `preHandler`, after `requirePermission`.**
+  An `onRequest` cache hook answers before the permission check and will serve a
+  body to someone who has since lost the grant.
+- **Only a 200 is stored.** An error body is never worth five minutes.
+- **`server.ts` empties the cache before it listens**, and logs the count. A
+  deploy can change a response shape, and a body cached by the previous build is
+  then wrong in a way no invalidation tag would catch. It clears by `SCAN` +
+  `UNLINK` on `CACHE_PREFIX` — never `FLUSHDB`, and never `KEYS`, which blocks
+  the whole server; the instance is shared with other projects. It belongs in
+  the server entry, **not** in `buildApp()` or the plugin: `verify.ts` and every
+  test file build an app too, and none of them should empty the cache a running
+  server is serving from.
 - **A cache failure is never a request failure.** Every Redis call is wrapped;
   a dead cache degrades to reading Postgres, it does not 500.
 - A write through the API invalidates by itself. **A write that does not go
@@ -1690,8 +1738,8 @@ scope-limited.
   with drizzle and then asserts on an endpoint has to make an ordinary request
   in that tenant first.
 - **Never cache a response whose body depends on a header the key omits.**
-  Today the key covers tenant and user; anything else varying the body must
-  either be in the URL or opt out.
+  Today the key covers tenant, caller, grants and URL; anything else varying the
+  body must either be in the URL or stay uncached.
 - Responses carry `x-cache: HIT|MISS`, which is how you check this is working
   rather than assuming it.
 - The Redis instance may be shared with other projects. `CACHE_PREFIX` and a

@@ -27,6 +27,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   const errors = { 400: errorRef, 401: errorRef, 403: errorRef, 404: errorRef, 409: errorRef };
 
   app.get('/staff', {
+    config: { cache: { tag: 'staff' } },
     preHandler: app.requirePermission(PERMISSIONS.STAFF_VIEW),
     schema: {
       tags: ['staff'],
@@ -46,6 +47,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.post('/staff', {
+    config: { invalidates: ['analytics', 'customers', 'inventory', 'staff', 'teams'] },
     preHandler: app.requirePermission(PERMISSIONS.STAFF_CREATE),
     schema: {
       tags: ['staff'],
@@ -66,6 +68,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.get('/staff/:id', {
+    config: { cache: { tag: 'staff' } },
     preHandler: app.requirePermission(PERMISSIONS.STAFF_VIEW),
     schema: {
       tags: ['staff'],
@@ -78,6 +81,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.patch('/staff/:id', {
+    config: { invalidates: ['analytics', 'customers', 'inventory', 'staff', 'teams'] },
     preHandler: app.requirePermission(PERMISSIONS.STAFF_UPDATE),
     schema: {
       tags: ['staff'],
@@ -91,6 +95,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.delete('/staff/:id', {
+    config: { invalidates: ['analytics', 'staff', 'teams'] },
     preHandler: app.requirePermission(PERMISSIONS.STAFF_DELETE),
     schema: {
       tags: ['staff'],
@@ -105,6 +110,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.put('/staff/:id/locations', {
+    config: { invalidates: ['staff', 'teams'] },
     preHandler: app.requirePermission(PERMISSIONS.STAFF_UPDATE),
     schema: {
       tags: ['staff'],
@@ -119,6 +125,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.put('/staff/:id/team-areas', {
+    config: { invalidates: ['staff', 'teams'] },
     preHandler: app.requirePermission(PERMISSIONS.STAFF_UPDATE),
     schema: {
       tags: ['staff'],

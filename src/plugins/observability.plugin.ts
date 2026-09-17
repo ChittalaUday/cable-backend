@@ -1,12 +1,14 @@
 import type { FastifyError, FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { PermissionKey } from '@/security/permissions';
+import { readdir, stat, statfs } from 'node:fs/promises';
+import path from 'node:path';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 import sensible from '@fastify/sensible';
 import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import metricsPlugin from 'fastify-metrics';
 import fp from 'fastify-plugin';
 import { Type } from 'typebox';
@@ -14,6 +16,28 @@ import { API_PREFIX, SYSTEM_ROLES } from '@/config/constants';
 import { csv, env, exposeErrorDetail, isProduction } from '@/config/env';
 import { rolePermissions } from '@/db/schema';
 import { DomainError, ERROR_CODES } from '@/errors';
+
+/**
+ * Recounted at most once a minute rather than on every scrape: 30 days of
+ * retention is a few thousand files, and walking them all every 15 seconds to
+ * answer a gauge nobody watches that closely is not a trade worth making.
+ */
+const LOG_SIZE_TTL_MS = 60_000;
+let logSize = { bytes: 0, at: 0 };
+
+async function logDirectoryBytes(): Promise<number> {
+  if (Date.now() - logSize.at < LOG_SIZE_TTL_MS)
+    return logSize.bytes;
+
+  const entries = await readdir(env.LOG_DIRECTORY, { recursive: true, withFileTypes: true }).catch(() => []);
+
+  const sizes = await Promise.all(entries
+    .filter(entry => entry.isFile())
+    .map(async entry => stat(path.join(entry.parentPath, entry.name)).then(s => s.size).catch(() => 0)));
+
+  logSize = { bytes: sizes.reduce((total, size) => total + size, 0), at: Date.now() };
+  return logSize.bytes;
+}
 
 export const ErrorResponse = Type.Object({
   statusCode: Type.Integer(),
@@ -211,11 +235,76 @@ export default fp(async (app) => {
   });
 
   // 4. Metrics
+  //
+  // Prometheus scrapes with no credentials, and the request-context hook
+  // demands a bearer token from everything that is not marked `public`. The
+  // route belongs to fastify-metrics, so the only place to mark it is on the
+  // way past. Anyone who can reach this port can now read route timings and
+  // process stats: keep :PORT off the public interface, or let only the
+  // scraper's address through to /metrics at Nginx.
+  app.addHook('onRoute', (route) => {
+    if (route.url === '/metrics')
+      route.config = { ...route.config, public: true };
+  });
+
   await app.register(metricsPlugin, {
     endpoint: '/metrics',
     defaultMetrics: { enabled: true },
     routeMetrics: { enabled: true },
+    // prom-client's registry is module-global, so a second buildApp() in the
+    // same process — which is every test file after the first — otherwise dies
+    // on "a metric with the name process_cpu_seconds_total is already
+    // registered". One app per process in production, so there is nothing to
+    // lose by clearing.
+    clearRegisterOnInit: true,
   });
+
+  // 4b. Storage
+  //
+  // prom-client's defaults describe the process and nothing underneath it, and
+  // the numbers that end an outage here are all storage: the volume filling,
+  // the log directory eating it, and the database growing into it.
+  const prom = app.metrics.client;
+
+  const storage = [
+    new prom.Gauge({
+      name: 'cable_disk_bytes',
+      help: 'The filesystem LOG_DIRECTORY sits on, by state.',
+      labelNames: ['state'] as const,
+      async collect() {
+        const fs = await statfs(env.LOG_DIRECTORY).catch(() => null);
+        if (fs === null)
+          return;
+
+        this.set({ state: 'total' }, fs.blocks * fs.bsize);
+        this.set({ state: 'free' }, fs.bavail * fs.bsize);
+        this.set({ state: 'used' }, (fs.blocks - fs.bavail) * fs.bsize);
+      },
+    }),
+
+    new prom.Gauge({
+      name: 'cable_log_directory_bytes',
+      help: 'What this service has written to LOG_DIRECTORY and not yet aged out.',
+      async collect() {
+        this.set(await logDirectoryBytes());
+      },
+    }),
+
+    new prom.Gauge({
+      name: 'cable_database_bytes',
+      help: 'pg_database_size of the database this service is connected to.',
+      async collect() {
+        const result = await app.db.execute<{ bytes: string }>(
+          sql`SELECT pg_database_size(current_database()) bytes`,
+        ).catch(() => null);
+
+        if (result !== null)
+          this.set(Number(result.rows[0]?.bytes ?? 0));
+      },
+    }),
+  ];
+
+  app.log.debug(`${storage.length} storage gauges added to /metrics.`);
 
   // 5. OpenAPI Swagger
   if (!isProduction) {
@@ -247,7 +336,7 @@ export default fp(async (app) => {
     const customerPermissions = grantsOf(app, SYSTEM_ROLES.CUSTOMER);
     app.get('/docs/customer.json', {
       schema: { hide: true },
-      config: { public: true, cache: false },
+      config: { public: true },
     }, async () => {
       const full = app.swagger();
       return specForRole(full as Record<string, unknown>, app.routeTable, customerPermissions);

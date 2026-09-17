@@ -14,6 +14,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   const coverageList = Type.Array(CoverageResponse);
 
   app.get('/service-providers/:id/coverage', {
+    config: { cache: { tag: 'coverage' } },
     preHandler: app.requirePermission(PERMISSIONS.SERVICES_VIEW),
     schema: {
       tags: ['services'],
@@ -26,6 +27,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.put('/service-providers/:id/coverage', {
+    config: { invalidates: ['coverage', 'locations', 'packages', 'service-providers', 'services'] },
     preHandler: app.requirePermission(PERMISSIONS.SERVICES_UPDATE),
     schema: {
       tags: ['services'],
@@ -40,6 +42,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.get('/packages/:id/coverage', {
+    config: { cache: { tag: 'coverage' } },
     preHandler: app.requirePermission(PERMISSIONS.PACKAGES_VIEW),
     schema: {
       tags: ['services'],
@@ -53,6 +56,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.put('/packages/:id/coverage', {
+    config: { invalidates: ['coverage', 'locations', 'packages', 'service-providers', 'services'] },
     preHandler: app.requirePermission(PERMISSIONS.PACKAGES_UPDATE),
     schema: {
       tags: ['services'],
@@ -67,6 +71,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.get('/services/:id/coverage', {
+    config: { cache: { tag: 'coverage' } },
     preHandler: app.requirePermission(PERMISSIONS.SERVICES_VIEW),
     schema: {
       tags: ['services'],
@@ -80,6 +85,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.put('/services/:id/coverage', {
+    config: { invalidates: ['coverage', 'locations', 'packages', 'service-providers', 'services'] },
     preHandler: app.requirePermission(PERMISSIONS.SERVICES_UPDATE),
     schema: {
       tags: ['services'],
@@ -93,6 +99,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.get('/locations/:id/available-services', {
+    config: { cache: { tag: 'coverage' } },
     preHandler: app.requirePermission(PERMISSIONS.SERVICES_VIEW),
     schema: {
       tags: ['services'],

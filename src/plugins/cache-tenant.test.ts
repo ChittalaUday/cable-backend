@@ -143,4 +143,33 @@ describe('cache tenant namespace', () => {
     expect(after.cache).toBe('MISS');
     expect(after.names).toContain(added);
   });
+  it('leaves another tag alone when a write drops one', async () => {
+    const packages = async () => app.inject({ method: 'GET', url: '/api/v1/packages?limit=10', headers: soloAuth });
+
+    expect((await packages()).headers['x-cache']).toBe('MISS');
+    expect((await packages()).headers['x-cache']).toBe('HIT');
+
+    const created = await app.inject({
+      method: 'POST',
+      url: '/api/v1/locations',
+      headers: { ...multiAuth, 'content-type': 'application/json' },
+      payload: { schemaId, name: `Tag Probe ${unique()}` },
+    });
+    expect(created.statusCode, created.body).toBe(201);
+
+    expect((await listAsSolo()).cache).toBe('MISS');
+    expect((await packages()).headers['x-cache']).toBe('HIT');
+  });
+
+  it('never caches an error', async () => {
+    const url = `/api/v1/locations/${randomUUID()}`;
+
+    const first = await app.inject({ method: 'GET', url, headers: soloAuth });
+    expect(first.statusCode).toBe(404);
+    expect(first.headers['x-cache']).toBeUndefined();
+
+    const second = await app.inject({ method: 'GET', url, headers: soloAuth });
+    expect(second.statusCode).toBe(404);
+    expect(second.headers['x-cache']).toBeUndefined();
+  });
 });

@@ -87,3 +87,98 @@ describe('openWA provider', () => {
       .toThrow(/OpenWA rejected/);
   });
 });
+
+function INACTIVE() {
+  return Response.json(
+    { message: `Session 'session-1' is not active. Start the session first.`, error: 'Bad Request', statusCode: 400 },
+    { status: 400 },
+  );
+}
+
+/** Replies to each call in turn, so a restart-then-retry can be told apart. */
+function scriptFetch(replies: ((url: string) => Response)[]) {
+  let call = 0;
+  const spy = vi.fn(async (url: string) => {
+    const reply = replies[Math.min(call, replies.length - 1)]!;
+    call += 1;
+    return reply(url);
+  });
+  vi.stubGlobal('fetch', spy);
+  return spy;
+}
+
+describe('openWA session recovery', () => {
+  it('restarts a dormant session and sends the message it was holding', async () => {
+    const fetchSpy = scriptFetch([
+      INACTIVE, // send-text
+      () => Response.json({ ok: true }), // start
+      () => Response.json({ status: 'ready' }), // status poll
+      () => Response.json({ id: 'msg-after-restart' }, { status: 201 }), // retried send
+    ]);
+
+    const provider = createOpenWaProvider(config);
+    const result = await provider.send({ to: '918309154716', text: 'code', channel: 'whatsapp' });
+
+    // The caller never sees the outage: one OTP arrives late rather than not at all.
+    expect(result).toEqual({ providerMessageId: 'msg-after-restart' });
+
+    const paths = fetchSpy.mock.calls.map(([url]) => String(url).replace('http://openwa.test/api/sessions/session-1', ''));
+    expect(paths).toEqual(['/messages/send-text', '/start', '', '/messages/send-text']);
+  });
+
+  it('gives up at once when the session wants a QR scan, and says who to tell', async () => {
+    const alerts: { status: string; reason: string }[] = [];
+    scriptFetch([
+      INACTIVE,
+      () => Response.json({ ok: true }),
+      () => Response.json({ status: 'qr_ready' }),
+    ]);
+
+    const provider = createOpenWaProvider({ ...config, onSessionUnrecoverable: d => alerts.push(d) });
+
+    await expect(provider.send({ to: '918309154716', text: 'code', channel: 'whatsapp' }))
+      .rejects
+      .toMatchObject({ code: ERROR_CODES.OTP_DELIVERY_FAILED });
+
+    // No amount of restarting fixes a session waiting to be scanned, so it must
+    // not be polled until the deadline — somebody has to be told immediately.
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]?.status).toBe('qr_ready');
+  });
+
+  it('alerts when a restarted session never comes back', async () => {
+    const alerts: { status: string; reason: string }[] = [];
+    scriptFetch([
+      INACTIVE,
+      () => Response.json({ ok: true }),
+      () => Response.json({ status: 'initializing' }),
+    ]);
+
+    const provider = createOpenWaProvider({
+      ...config,
+      recoveryTimeoutMs: 50,
+      onSessionUnrecoverable: d => alerts.push(d),
+    });
+
+    await expect(provider.send({ to: '918309154716', text: 'code', channel: 'whatsapp' }))
+      .rejects
+      .toMatchObject({ code: ERROR_CODES.OTP_DELIVERY_FAILED });
+
+    expect(alerts).toHaveLength(1);
+  });
+
+  it('leaves an unrelated rejection alone', async () => {
+    const alerts: unknown[] = [];
+    const fetchSpy = scriptFetch([() => Response.json({ message: 'bad number' }, { status: 400 })]);
+
+    const provider = createOpenWaProvider({ ...config, onSessionUnrecoverable: d => alerts.push(d) });
+
+    await expect(provider.send({ to: 'nonsense', text: 'code', channel: 'whatsapp' }))
+      .rejects
+      .toMatchObject({ code: ERROR_CODES.OTP_DELIVERY_FAILED });
+
+    // A 400 that is not about the session must not restart anything.
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(alerts).toEqual([]);
+  });
+});

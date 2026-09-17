@@ -1,5 +1,6 @@
+import { sql } from 'drizzle-orm';
 import { index, jsonb, text, timestamp, uuid } from 'drizzle-orm/pg-core';
-import { NOTIFICATION_CHANNELS, NOTIFICATION_STATUSES } from '@/constants/notify';
+import { NOTIFICATION_CATEGORIES, NOTIFICATION_CHANNELS, NOTIFICATION_DELIVERIES, NOTIFICATION_STATUSES } from '@/constants/notify';
 import { users } from '../auth/users';
 import { files } from '../media/files';
 import { notify } from '../schemas';
@@ -12,11 +13,17 @@ export const notifications = notify.table('notifications', {
   userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
 
   channel: text('channel', { enum: NOTIFICATION_CHANNELS }).notNull(),
+
+  category: text('category', { enum: NOTIFICATION_CATEGORIES }).notNull().default('general'),
+  delivery: text('delivery', { enum: NOTIFICATION_DELIVERIES }).notNull().default('notification'),
+
   type: text('type').notNull(),
 
   title: text('title'),
   body: text('body').notNull(),
   data: jsonb('data').$type<Record<string, unknown>>(),
+
+  imageUrl: text('image_url'),
 
   destination: text('destination'),
 
@@ -36,9 +43,10 @@ export const notifications = notify.table('notifications', {
   index('notifications_user_created_idx').on(table.userId, table.createdAt.desc()),
   index('notifications_tenant_created_idx').on(table.tenantId, table.createdAt.desc()),
   index('notifications_status_idx').on(table.status),
+  index('notifications_pending_in_app_idx')
+    .on(table.userId, table.createdAt.desc())
+    .where(sql`${table.delivery} = 'in_app' AND ${table.readAt} IS NULL`),
 ]);
 
 export type Notification = typeof notifications.$inferSelect;
 export type NewNotification = typeof notifications.$inferInsert;
-export type NotificationChannel = (typeof NOTIFICATION_CHANNELS)[number];
-export type NotificationStatus = (typeof NOTIFICATION_STATUSES)[number];

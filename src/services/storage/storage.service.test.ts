@@ -19,6 +19,7 @@ function fakeProvider(overrides: Partial<StorageProvider> = {}): StorageProvider
     createUploadUrl: async (key: string) => ({ url: `https://upload.test/${key}`, expiresAt: new Date() }),
     createDownloadUrl: async (key: string) => ({ url: `https://download.test/${key}`, expiresAt: new Date() }),
     head: async (): Promise<ObjectHead | null> => ({ sizeBytes: 10, contentType: 'image/png', checksum: null }),
+    list: async () => ({ objects: [], nextToken: null }),
     put: async () => {},
     remove: async () => {},
     ...overrides,

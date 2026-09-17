@@ -323,6 +323,34 @@
       "when": 1789555451176,
       "tag": "0045_common_wolverine",
       "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1789555452176,
+      "tag": "0046_installation_location",
+      "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1789574659301,
+      "tag": "0047_public_sharon_carter",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1789576993983,
+      "tag": "0048_perfect_shinko_yamashiro",
+      "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1789577442947,
+      "tag": "0049_shiny_bullseye",
+      "breakpoints": true
     }
   ]
 }

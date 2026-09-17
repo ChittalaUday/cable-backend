@@ -94,7 +94,7 @@ export default antfu(
   },
 
   {
-    files: ['**/src/config/env.ts', '**/drizzle.config.ts', '**/vitest.config.ts', '**/src/test/**/*.ts', '**/*.test.ts'],
+    files: ['**/src/config/env.ts', '**/drizzle.config.ts', '**/vitest.config.ts', '**/src/test/**/*.ts', '**/*.test.ts', '**/scripts/**/*.ts'],
     rules: { 'node/no-process-env': 'off' },
   },
 
@@ -109,6 +109,17 @@ export default antfu(
       'no-console': 'off',
       'max-lines-per-function': 'off',
       'complexity': 'off',
+    },
+  },
+
+  // Operator-facing scripts: their whole output is what they print.
+  {
+    files: ['**/scripts/**/*.ts'],
+    rules: {
+      'no-console': 'off',
+      'max-lines-per-function': 'off',
+      'complexity': 'off',
+      'antfu/no-top-level-await': 'off',
     },
   },
 );

@@ -23,6 +23,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   const errors = { 400: errorRef, 401: errorRef, 403: errorRef, 404: errorRef, 409: errorRef };
 
   app.get('/remotes', {
+    config: { cache: { tag: 'remotes', scope: 'tenant' } },
     preHandler: app.requirePermission(PERMISSIONS.REMOTES_VIEW),
     schema: {
       tags: ['remotes'],
@@ -36,6 +37,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.get('/remotes/:id', {
+    config: { cache: { tag: 'remotes', scope: 'tenant' } },
     preHandler: app.requirePermission(PERMISSIONS.REMOTES_VIEW),
     schema: {
       tags: ['remotes'],
@@ -49,6 +51,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.post('/remotes', {
+    config: { invalidates: ['remotes'] },
     preHandler: app.requirePermission(PERMISSIONS.REMOTES_MANAGE),
     schema: {
       tags: ['remotes'],

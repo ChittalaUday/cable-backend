@@ -10,8 +10,11 @@ export interface DeviceInfo {
   clientDeviceId: string;
   platform: 'ios' | 'android' | 'web';
   osVersion?: string | null;
+  manufacturer?: string | null;
   model?: string | null;
   appVersion?: string | null;
+  ramMb?: number | null;
+  screenResolution?: string | null;
 }
 
 export interface SessionsConfig {
@@ -26,6 +29,24 @@ export interface IssuedSession {
   refreshToken: string;
 }
 
+/**
+ * The device characteristics a fingerprint is built from.
+ *
+ * A field the client did not send is left as it was rather than nulled: an
+ * endpoint that carries fewer headers than another must not erase what a
+ * richer request already recorded.
+ */
+function fingerprintOf(info: DeviceInfo) {
+  return {
+    ...(info.osVersion != null ? { osVersion: info.osVersion } : {}),
+    ...(info.manufacturer != null ? { manufacturer: info.manufacturer } : {}),
+    ...(info.model != null ? { model: info.model } : {}),
+    ...(info.appVersion != null ? { appVersion: info.appVersion } : {}),
+    ...(info.ramMb != null ? { ramMb: info.ramMb } : {}),
+    ...(info.screenResolution != null ? { screenResolution: info.screenResolution } : {}),
+  };
+}
+
 export class SessionsService {
   constructor(
     private readonly db: Database,
@@ -38,17 +59,13 @@ export class SessionsService {
       .values({
         clientDeviceId: info.clientDeviceId,
         platform: info.platform,
-        osVersion: info.osVersion ?? null,
-        model: info.model ?? null,
-        appVersion: info.appVersion ?? null,
+        ...fingerprintOf(info),
       })
       .onConflictDoUpdate({
         target: devices.clientDeviceId,
         set: {
           lastSeenAt: new Date(),
-          osVersion: info.osVersion ?? null,
-          model: info.model ?? null,
-          appVersion: info.appVersion ?? null,
+          ...fingerprintOf(info),
         },
       })
       .returning();

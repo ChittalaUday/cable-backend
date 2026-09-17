@@ -20,6 +20,7 @@ export const AUDIT_ENTITIES = {
   INVENTORY_STOCK_MOVEMENT: 'inventory_stock_movement',
   INVENTORY_APPROVAL_REQUEST: 'inventory_approval_request',
   REMOTE: 'remote',
+  NOTIFICATION: 'notification',
 } as const;
 
 export type AuditEntity = (typeof AUDIT_ENTITIES)[keyof typeof AUDIT_ENTITIES];
@@ -51,6 +52,8 @@ export const AUDIT_ACTIONS = {
   LOCATION_GENERATED: 'location.generated',
 
   STORAGE_CLEANED: 'storage.cleaned',
+
+  NOTIFICATION_SENT: 'notification.sent',
 } as const;
 
 export type AuditAction

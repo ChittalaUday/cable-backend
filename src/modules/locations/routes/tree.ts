@@ -16,6 +16,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   const errors = { 400: errorRef, 401: errorRef, 403: errorRef, 404: errorRef, 409: errorRef };
 
   app.get('/locations', {
+    config: { cache: { tag: 'locations' } },
     preHandler: app.requirePermission(PERMISSIONS.LOCATIONS_VIEW),
     schema: {
       tags: ['locations'],
@@ -29,6 +30,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.post('/locations', {
+    config: { invalidates: ['analytics', 'coverage', 'customers', 'inventory', 'locations', 'service-providers', 'services', 'staff', 'teams'] },
     preHandler: app.requirePermission(PERMISSIONS.LOCATIONS_CREATE),
     schema: {
       tags: ['locations'],
@@ -43,6 +45,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.get('/locations/:id', {
+    config: { cache: { tag: 'locations' } },
     preHandler: app.requirePermission(PERMISSIONS.LOCATIONS_VIEW),
     schema: {
       tags: ['locations'],
@@ -55,6 +58,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.get('/locations/:id/ancestors', {
+    config: { cache: { tag: 'locations' } },
     preHandler: app.requirePermission(PERMISSIONS.LOCATIONS_VIEW),
     schema: {
       tags: ['locations'],
@@ -68,6 +72,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.patch('/locations/:id', {
+    config: { invalidates: ['analytics', 'coverage', 'customers', 'inventory', 'locations', 'service-providers', 'services', 'staff', 'teams'] },
     preHandler: app.requirePermission(PERMISSIONS.LOCATIONS_UPDATE),
     schema: {
       tags: ['locations'],
@@ -81,6 +86,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.delete('/locations/:id', {
+    config: { invalidates: ['analytics', 'coverage', 'customers', 'inventory', 'locations', 'packages', 'service-providers', 'services', 'staff', 'teams'] },
     preHandler: app.requirePermission(PERMISSIONS.LOCATIONS_DELETE),
     schema: {
       tags: ['locations'],

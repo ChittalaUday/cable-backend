@@ -22,3 +22,6 @@ logs/
 *.xls
 *.xlsx
 *.csv
+
+# Stress-test reports
+perf/

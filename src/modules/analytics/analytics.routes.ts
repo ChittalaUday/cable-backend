@@ -16,6 +16,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   const errors = { 400: errorRef, 401: errorRef, 403: errorRef, 404: errorRef };
 
   app.get('/analytics/dashboard/admin', {
+    config: { cache: { tag: 'analytics' } },
     preHandler: app.requirePermission(PERMISSIONS.REPORTS_VIEW),
     schema: {
       tags: ['analytics'],
@@ -28,6 +29,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.get('/analytics/dashboard/staff', {
+    config: { cache: { tag: 'analytics' } },
     preHandler: app.requirePermission(PERMISSIONS.STAFF_VIEW),
     schema: {
       tags: ['analytics'],

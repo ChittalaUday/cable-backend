@@ -17,5 +17,28 @@ services:
       timeout: 5s
       retries: 10
 
+  redisinsight:
+    image: redis/redisinsight:latest
+    container_name: cable-redisinsight
+    restart: unless-stopped
+    environment:
+      # Pre-adds the connection, so the UI opens on the app's Redis instead of
+      # an empty "add database" form. REDIS_URL points at the host's 6379, which
+      # from inside a container is host.docker.internal, never 127.0.0.1.
+      # Without this the EULA prompt gates startup and the connection below is
+      # never added.
+      RI_ACCEPT_TERMS_AND_CONDITIONS: 'true'
+      RI_REDIS_HOST: host.docker.internal
+      RI_REDIS_PORT: 6379
+      RI_REDIS_DB: 2
+      RI_REDIS_ALIAS: cable (db 2)
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    ports:
+      - '5540:5540'
+    volumes:
+      - cable-redisinsight:/data
+
 volumes:
   cable-pgdata:
+  cable-redisinsight:

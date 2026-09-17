@@ -10,6 +10,9 @@ export const DeviceHeaders = Type.Object({
   'x-app-version': Type.Optional(Type.String({ maxLength: 32 })),
   'x-os-version': Type.Optional(Type.String({ maxLength: 64 })),
   'x-device-model': Type.Optional(Type.String({ maxLength: 64 })),
+  'x-device-manufacturer': Type.Optional(Type.String({ maxLength: 64 })),
+  'x-device-ram-mb': Type.Optional(Type.String({ pattern: '^[0-9]{1,7}$' })),
+  'x-screen-resolution': Type.Optional(Type.String({ pattern: '^[0-9]{1,5}x[0-9]{1,5}$' })),
 });
 
 export const PhoneField = Type.String({ minLength: 6, maxLength: 20, description: 'E.164 or national; normalised server-side' });

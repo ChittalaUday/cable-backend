@@ -3,11 +3,15 @@ import type {
   DirectUploadResult,
   FileRecord,
   LocalStagedUploadInput,
+  ObjectPage,
+  OrphanSweepOptions,
+  OrphanSweepReport,
   RequestUploadInput,
   StorageCleanupOptions,
   StorageCleanupReport,
   StorageFolder,
   StorageProvider,
+  StoredObject,
   UploadResult,
   UserFileRecord,
   UserFileWithFile,
@@ -18,7 +22,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
-import { and, count, eq, isNull, lte, ne } from 'drizzle-orm';
+import { and, count, eq, inArray, isNotNull, isNull, lte, ne } from 'drizzle-orm';
 import { csv, env } from '@/config/env';
 import { AUDIT_ACTIONS, AUDIT_ENTITIES } from '@/constants/audit';
 import { FILE_STATUS } from '@/constants/media';
@@ -340,9 +344,115 @@ export class StorageService {
       ));
 
     if (!row)
-      throw notFound('File');
+      throw await this.explainMissing(userFileId);
 
     return row;
+  }
+
+  /**
+   * Says which kind of "not found" this is.
+   *
+   * Two uuids exist for every upload — the `files` row that owns the bytes and
+   * the `user_files` row that is somebody's reference to them — and the API
+   * takes the second. Handing it the first is an easy mistake that a bare
+   * "File not found" gives no way to spot, and the answer differs again when
+   * the reference is simply deleted.
+   */
+  private async explainMissing(id: string): Promise<DomainError> {
+    const [deleted] = await this.db.select({ id: userFiles.id })
+      .from(userFiles)
+      .where(and(eq(userFiles.id, id), isNotNull(userFiles.deletedAt)));
+
+    if (deleted) {
+      return new DomainError({
+        code: ERROR_CODES.RESOURCE_NOT_FOUND,
+        statusCode: 404,
+        message: 'That file was deleted.',
+      });
+    }
+
+    const [byFileId] = await this.db.select({ userFileId: userFiles.id })
+      .from(userFiles)
+      .where(eq(userFiles.fileId, id));
+
+    if (byFileId) {
+      return new DomainError({
+        code: ERROR_CODES.RESOURCE_NOT_FOUND,
+        statusCode: 404,
+        message: `That is a stored-file id, not a file id. Use the \`id\` from the upload response — for this object it is ${byFileId.userFileId}.`,
+      });
+    }
+
+    return notFound('File');
+  }
+
+  /**
+   * Finds objects in the bucket that no `files` row points at, and optionally
+   * removes them.
+   *
+   * The scheduled cleanup works the other way round — from a row outwards — so
+   * it can never see an object the database has no record of at all. Those
+   * accumulate from interrupted uploads and from rows deleted before the
+   * object was.
+   *
+   * Destructive and not reversible, so it reports by default and only deletes
+   * when asked. `minimumAgeMinutes` is the other guard: an upload writes its
+   * object and its row a moment apart, and sweeping in between would delete a
+   * file somebody is still uploading.
+   */
+  async sweepOrphanedObjects(options: OrphanSweepOptions = {}): Promise<OrphanSweepReport> {
+    const dryRun = options.dryRun ?? true;
+    const minimumAgeMinutes = options.minimumAgeMinutes ?? 120;
+    const cutoff = new Date(Date.now() - minimumAgeMinutes * 60 * 1000);
+
+    const report: OrphanSweepReport = { scanned: 0, orphans: [], removed: 0, skippedTooRecent: 0, dryRun };
+    let token: string | null = null;
+
+    do {
+      const page: ObjectPage = await this.options.provider.list(token ?? undefined);
+      token = page.nextToken;
+      report.scanned += page.objects.length;
+
+      const { orphans, tooRecent } = await this.orphansIn(page.objects, cutoff);
+      report.orphans.push(...orphans);
+      report.skippedTooRecent += tooRecent;
+    } while (token !== null);
+
+    if (dryRun || report.orphans.length === 0)
+      return report;
+
+    for (const orphan of report.orphans) {
+      await this.options.provider.remove(orphan.key);
+      report.removed++;
+    }
+
+    await audit.log(this.db, systemAuditContext('job:orphan-sweep'), {
+      action: AUDIT_ACTIONS.STORAGE_CLEANED,
+      entityType: AUDIT_ENTITIES.STORAGE,
+      entityId: 'orphan-sweep',
+      after: { removed: report.removed, scanned: report.scanned, minimumAgeMinutes },
+    });
+
+    return report;
+  }
+
+  /** Which of these objects no `files` row claims, and which are too new to judge. */
+  private async orphansIn(
+    objects: StoredObject[],
+    cutoff: Date,
+  ): Promise<{ orphans: StoredObject[]; tooRecent: number }> {
+    if (objects.length === 0)
+      return { orphans: [], tooRecent: 0 };
+
+    const rows = await this.db.select({ storageKey: files.storageKey })
+      .from(files)
+      .where(inArray(files.storageKey, objects.map(object => object.key)));
+
+    const known = new Set(rows.map(row => row.storageKey));
+    const unknown = objects.filter(object => !known.has(object.key));
+    const orphans = unknown.filter(object => object.lastModified === null || object.lastModified <= cutoff);
+
+    return { orphans, tooRecent: unknown.length - orphans.length };
   }
 
   async verifyAndCleanupStorage(options: StorageCleanupOptions = {}): Promise<StorageCleanupReport> {

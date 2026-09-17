@@ -74,7 +74,7 @@ export class AnalyticsService {
       `),
       this.db.execute<{ id: string; name: string; count: number }>(sql`
         SELECT lp.id, lp.path name, count(*)::int count
-        FROM crm.subscriptions sub JOIN geo.location_paths lp ON lp.id = sub.location_id
+        FROM crm.subscriptions sub JOIN geo.location_paths lp ON lp.id = sub.installation_location_id
         WHERE sub.tenant_id = ${tenantId} AND sub.deleted_at IS NULL
         GROUP BY lp.id, lp.path ORDER BY count(*) DESC, lp.path LIMIT 5
       `),

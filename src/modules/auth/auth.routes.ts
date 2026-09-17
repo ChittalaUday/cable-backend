@@ -15,12 +15,17 @@ import {
 } from './auth.schema';
 
 function deviceFrom(headers: DeviceHeaders): DeviceInfo {
+  const ramMb = Number(headers['x-device-ram-mb']);
+
   return {
     clientDeviceId: headers['x-device-id'],
     platform: headers['x-platform'],
     appVersion: headers['x-app-version'] ?? null,
     osVersion: headers['x-os-version'] ?? null,
+    manufacturer: headers['x-device-manufacturer'] ?? null,
     model: headers['x-device-model'] ?? null,
+    ramMb: Number.isFinite(ramMb) && ramMb > 0 ? ramMb : null,
+    screenResolution: headers['x-screen-resolution'] ?? null,
   };
 }
 
@@ -30,7 +35,6 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   const signInLimit = {
     config: {
       rateLimit: { max: env.SIGN_IN_RATE_LIMIT_MAX, timeWindow: '1 minute' },
-      cache: false as const,
       public: true,
     },
   };
@@ -122,7 +126,6 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.post('/auth/logout', {
-    config: { cache: false },
     schema: {
       tags: ['auth'],
       summary: 'Sign out of this session only',
@@ -135,7 +138,6 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.post('/auth/logout-all', {
-    config: { cache: false },
     schema: {
       tags: ['auth'],
       summary: 'Sign out of every session for this user, on every device',
@@ -147,7 +149,6 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.get('/auth/me', {
-    config: { cache: false },
     schema: {
       tags: ['auth'],
       summary: 'The signed-in user, session and memberships',

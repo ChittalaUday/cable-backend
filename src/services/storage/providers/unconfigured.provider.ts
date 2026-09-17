@@ -18,6 +18,7 @@ export function createUnconfiguredStorage(bucket = 'unconfigured'): StorageProvi
     createUploadUrl: async () => fail(),
     createDownloadUrl: async () => fail(),
     head: async () => fail(),
+    list: async () => fail(),
     put: async () => fail(),
     remove: async () => fail(),
   };

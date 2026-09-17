@@ -88,6 +88,8 @@ export const PERMISSIONS = {
 
   AUDIT_VIEW: 'audit.view',
 
+  NOTIFICATIONS_SEND: 'notifications.send',
+
   DEVICES_VIEW: 'devices.view',
   DEVICES_BLOCK: 'devices.block',
 

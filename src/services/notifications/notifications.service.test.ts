@@ -83,16 +83,16 @@ describe('in-app notifications', () => {
 
   it('counts and clears unread', async () => {
     const { service } = serviceWith();
-    const before = await service.unreadCount(tenantId, userId);
+    const before = (await service.unreadCount(tenantId, userId)).total;
 
     await service.notify({ channel: 'in_app', type: 'x', body: 'one', tenantId, userId });
     await service.notify({ channel: 'in_app', type: 'x', body: 'two', tenantId, userId });
 
-    expect(await service.unreadCount(tenantId, userId)).toBe(before + 2);
+    expect((await service.unreadCount(tenantId, userId)).total).toBe(before + 2);
 
     const cleared = await service.markAllRead(tenantId, userId);
     expect(cleared).toBeGreaterThanOrEqual(2);
-    expect(await service.unreadCount(tenantId, userId)).toBe(0);
+    expect((await service.unreadCount(tenantId, userId)).total).toBe(0);
   });
 
   it('does not re-stamp readAt when marked read twice', async () => {

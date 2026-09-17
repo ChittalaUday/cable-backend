@@ -33,6 +33,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   const errors = { 400: errorRef, 401: errorRef, 403: errorRef, 404: errorRef, 409: errorRef };
 
   app.get('/inventory/dashboard', {
+    config: { cache: { tag: 'inventory' } },
     preHandler: app.requirePermission(PERMISSIONS.INVENTORY_VIEW),
     schema: {
       tags: ['inventory'],
@@ -45,6 +46,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.get('/inventory/locations', {
+    config: { cache: { tag: 'inventory' } },
     preHandler: app.requirePermission(PERMISSIONS.INVENTORY_VIEW),
     schema: {
       tags: ['inventory'],
@@ -56,6 +58,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.get('/inventory/stock', {
+    config: { cache: { tag: 'inventory' } },
     preHandler: app.requirePermission(PERMISSIONS.INVENTORY_VIEW),
     schema: {
       tags: ['inventory'],
@@ -68,6 +71,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.get('/inventory/stock/:id', {
+    config: { cache: { tag: 'inventory' } },
     preHandler: app.requirePermission(PERMISSIONS.INVENTORY_VIEW),
     schema: {
       tags: ['inventory'],
@@ -80,6 +84,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.post('/inventory/catalog', {
+    config: { invalidates: ['customers', 'inventory'] },
     preHandler: app.requirePermission(PERMISSIONS.INVENTORY_MANAGE_CATALOG),
     schema: {
       tags: ['inventory'],
@@ -93,6 +98,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.put('/inventory/catalog/:id', {
+    config: { invalidates: ['customers', 'inventory'] },
     preHandler: app.requirePermission(PERMISSIONS.INVENTORY_MANAGE_CATALOG),
     schema: {
       tags: ['inventory'],
@@ -106,6 +112,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.delete('/inventory/catalog/:id', {
+    config: { invalidates: ['customers', 'inventory'] },
     preHandler: app.requirePermission(PERMISSIONS.INVENTORY_MANAGE_CATALOG),
     schema: {
       tags: ['inventory'],
@@ -118,6 +125,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.post('/inventory/issue', {
+    config: { invalidates: ['analytics', 'customers', 'inventory'] },
     preHandler: app.requirePermission(PERMISSIONS.INVENTORY_ISSUE),
     schema: {
       tags: ['inventory'],
@@ -131,6 +139,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.get('/inventory/customer-equipment', {
+    config: { cache: { tag: 'inventory' } },
     preHandler: app.requirePermission(PERMISSIONS.INVENTORY_VIEW),
     schema: {
       tags: ['inventory'],
@@ -143,18 +152,20 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.get('/inventory/lookup', {
+    config: { cache: { tag: 'inventory' } },
     preHandler: app.requirePermission(PERMISSIONS.INVENTORY_VIEW),
     schema: {
       tags: ['inventory'],
       summary: 'Scan / search equipment by serial number, MAC address, or model',
       querystring: LookupQuery,
-      response: { 200: LookupItemResponse, ...errors },
+      response: { 200: Type.Array(LookupItemResponse), ...errors },
     },
   }, async (request) => {
     return request.server.inventory.lookup(request.access, request.query.q);
   });
 
   app.post('/inventory/inward', {
+    config: { invalidates: ['customers', 'inventory'] },
     preHandler: app.requirePermission(PERMISSIONS.INVENTORY_UPDATE),
     schema: {
       tags: ['inventory'],
@@ -168,6 +179,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.post('/inventory/transfer', {
+    config: { invalidates: ['customers', 'inventory'] },
     preHandler: app.requirePermission(PERMISSIONS.INVENTORY_UPDATE),
     schema: {
       tags: ['inventory'],
@@ -181,6 +193,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.get('/inventory/movements', {
+    config: { cache: { tag: 'inventory' } },
     preHandler: app.requirePermission(PERMISSIONS.INVENTORY_VIEW),
     schema: {
       tags: ['inventory'],
@@ -192,6 +205,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.post('/inventory/approval-requests', {
+    config: { invalidates: ['inventory'] },
     preHandler: app.requirePermission(PERMISSIONS.INVENTORY_UPDATE),
     schema: {
       tags: ['inventory'],
@@ -205,6 +219,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.get('/inventory/approval-requests', {
+    config: { cache: { tag: 'inventory' } },
     preHandler: app.requirePermission(PERMISSIONS.INVENTORY_VIEW),
     schema: {
       tags: ['inventory'],
@@ -216,6 +231,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.patch('/inventory/approval-requests/:id', {
+    config: { invalidates: ['customers', 'inventory'] },
     preHandler: app.requirePermission(PERMISSIONS.INVENTORY_APPROVE),
     schema: {
       tags: ['inventory'],

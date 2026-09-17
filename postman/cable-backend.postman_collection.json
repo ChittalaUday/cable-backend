@@ -1085,9 +1085,9 @@
               }
             }
           ]
-    },
-    {
-      "name": "Get one customer, fully resolved",
+        },
+        {
+          "name": "Get one customer, fully resolved",
           "request": {
             "method": "GET",
             "header": [
@@ -1646,7 +1646,7 @@
               }
             },
             {
-              "name": "What can this address buy?",
+              "name": "Available services at a location",
               "request": {
                 "method": "GET",
                 "header": [
@@ -1656,14 +1656,14 @@
                   }
                 ],
                 "url": {
-                  "raw": "{{baseUrl}}/locations/{{locationId}}/availability",
+                  "raw": "{{baseUrl}}/locations/{{locationId}}/available-services",
                   "host": [
                     "{{baseUrl}}"
                   ],
                   "path": [
                     "locations",
                     "{{locationId}}",
-                    "availability"
+                    "available-services"
                   ]
                 },
                 "description": "The add-customer wizard call: services → providers that reach this node → their active packages, already filtered. One request instead of three plus client-side guessing."
@@ -1961,6 +1961,1433 @@
               }
             }
           ]
+        }
+      ]
+    },
+    {
+      "name": "Analytics",
+      "item": [
+        {
+          "name": "High-level business telemetry for tenant administrators",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/analytics/dashboard/admin",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "analytics",
+                "dashboard",
+                "admin"
+              ]
+            },
+            "description": "Provides KPI summaries, status breakdowns, revenue trends, and recent transaction activities."
+          }
+        },
+        {
+          "name": "Operational and territory telemetry for field agents and managers",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/analytics/dashboard/staff",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "analytics",
+                "dashboard",
+                "staff"
+              ]
+            },
+            "description": "Provides territorial stats, connection status, collection metrics, and assigned customers."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Inventory",
+      "item": [
+        {
+          "name": "Inventory overview dashboard stats, low stock items, and recent movements",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/inventory/dashboard",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "inventory",
+                "dashboard"
+              ],
+              "query": [
+                {
+                  "key": "locationId",
+                  "value": "{{locationId}}",
+                  "disabled": true
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get locations for inventory stock filtering",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/inventory/locations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "inventory",
+                "locations"
+              ]
+            }
+          }
+        },
+        {
+          "name": "List catalog items with aggregated stock counts and status breakdown",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/inventory/stock",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "inventory",
+                "stock"
+              ],
+              "query": [
+                {
+                  "key": "locationId",
+                  "value": "{{locationId}}",
+                  "disabled": true
+                },
+                {
+                  "key": "status",
+                  "value": "all",
+                  "disabled": true
+                },
+                {
+                  "key": "search",
+                  "value": "search",
+                  "disabled": true
+                },
+                {
+                  "key": "page",
+                  "value": "1",
+                  "disabled": true
+                },
+                {
+                  "key": "limit",
+                  "value": "50",
+                  "disabled": true
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get full catalog item details with serial numbers and recent movements",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/inventory/stock/{{stockId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "inventory",
+                "stock",
+                "{{stockId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create a new catalog item definition",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/inventory/catalog",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "inventory",
+                "catalog"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"name\",\n  \"code\": \"code\",\n  \"brand\": \"brand\",\n  \"model\": \"model\",\n  \"itemType\": \"other\",\n  \"trackingType\": \"serialized\",\n  \"isBundle\": false,\n  \"defaultOwnership\": \"tenant_provided\",\n  \"defaultSalePrice\": \"0\",\n  \"defaultDepositAmount\": \"0\",\n  \"defaultRentalPrice\": \"0\",\n  \"isReturnable\": true,\n  \"description\": \"description\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Update a catalog item definition",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/inventory/catalog/{{catalogId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "inventory",
+                "catalog",
+                "{{catalogId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"name\",\n  \"code\": \"code\",\n  \"brand\": \"brand\",\n  \"model\": \"model\",\n  \"itemType\": \"other\",\n  \"trackingType\": \"serialized\",\n  \"isBundle\": false,\n  \"defaultOwnership\": \"tenant_provided\",\n  \"defaultSalePrice\": \"0\",\n  \"defaultDepositAmount\": \"0\",\n  \"defaultRentalPrice\": \"0\",\n  \"isReturnable\": true,\n  \"description\": \"description\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Soft-delete a catalog item definition",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/inventory/catalog/{{catalogId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "inventory",
+                "catalog",
+                "{{catalogId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Issue equipment to a customer with automatic or selected serial",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/inventory/issue",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "inventory",
+                "issue"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerId\": \"{{customerId}}\",\n  \"subscriptionId\": \"{{subscriptionId}}\",\n  \"catalogId\": \"{{catalogId}}\",\n  \"equipmentId\": \"{{equipmentId}}\",\n  \"serialNumber\": \"serialNumber\",\n  \"ownershipType\": \"tenant_provided\",\n  \"chargedAmount\": \"0\",\n  \"depositAmount\": \"0\",\n  \"notes\": \"notes\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "List equipment assigned to customers with filtering by customer, catalog item, and location",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/inventory/customer-equipment",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "inventory",
+                "customer-equipment"
+              ],
+              "query": [
+                {
+                  "key": "customerId",
+                  "value": "{{customerId}}",
+                  "disabled": true
+                },
+                {
+                  "key": "limit",
+                  "value": "50",
+                  "disabled": true
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Scan / search equipment by serial number, MAC address, or model",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/inventory/lookup?q=q",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "inventory",
+                "lookup"
+              ],
+              "query": [
+                {
+                  "key": "q",
+                  "value": "q"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Receive new stock into a location with purchase details and serial numbers",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/inventory/inward",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "inventory",
+                "inward"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"catalogId\": \"{{catalogId}}\",\n  \"locationId\": \"{{locationId}}\",\n  \"quantity\": 1,\n  \"serialNumbers\": [\n    \"serialNumbers\"\n  ],\n  \"costPrice\": \"0\",\n  \"depositAmount\": \"0\",\n  \"notes\": \"notes\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Transfer stock between locations or issue to staff",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/inventory/transfer",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "inventory",
+                "transfer"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"equipmentId\": \"{{equipmentId}}\",\n  \"catalogId\": \"{{catalogId}}\",\n  \"fromLocationId\": \"{{fromLocationId}}\",\n  \"toLocationId\": \"{{toLocationId}}\",\n  \"toStaffId\": \"{{toStaffId}}\",\n  \"quantity\": 1,\n  \"notes\": \"notes\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Get recent stock movement logs",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/inventory/movements",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "inventory",
+                "movements"
+              ]
+            }
+          }
+        },
+        {
+          "name": "List approval requests with filtering",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/inventory/approval-requests",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "inventory",
+                "approval-requests"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Submit a stock movement request for admin approval",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/inventory/approval-requests",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "inventory",
+                "approval-requests"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"requestType\": \"create_item\",\n  \"targetItemId\": \"{{targetItemId}}\",\n  \"proposedData\": {},\n  \"reason\": \"reason\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Approve or reject a stock movement request",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/inventory/approval-requests/{{approvalRequestId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "inventory",
+                "approval-requests",
+                "{{approvalRequestId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"approved\",\n  \"reviewNotes\": \"reviewNotes\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Remotes",
+      "item": [
+        {
+          "name": "List IR remotes — the shared library plus this tenant's own captures",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/remotes",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "remotes"
+              ],
+              "query": [
+                {
+                  "key": "deviceType",
+                  "value": "tv",
+                  "disabled": true
+                },
+                {
+                  "key": "brand",
+                  "value": "brand",
+                  "disabled": true
+                },
+                {
+                  "key": "search",
+                  "value": "search",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Filter by `deviceType` to browse televisions or set-top boxes separately. Button code sets are omitted; fetch one remote to get them."
+          }
+        },
+        {
+          "name": "File a remote captured from a real handset",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/remotes",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "remotes"
+              ]
+            },
+            "description": "Stored against this tenant as a `learned` remote. The seeded library is read-only over the API.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"deviceType\": \"tv\",\n  \"brand\": \"brand\",\n  \"model\": \"model\",\n  \"notes\": \"notes\",\n  \"verified\": false,\n  \"buttons\": [\n    {\n      \"key\": \"key\",\n      \"label\": \"label\",\n      \"command\": {\n        \"protocol\": \"raw\",\n        \"carrierFrequencyHz\": 1,\n        \"pattern\": [\n          1\n        ]\n      }\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Get one remote with its full button code set",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/remotes/{{remoteId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "remotes",
+                "{{remoteId}}"
+              ]
+            },
+            "description": "Each button carries an IR command in exactly the shape the app's emitter transmits."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Staff",
+      "item": [
+        {
+          "name": "The people this operator employs",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/staff?page=1&limit=50",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "staff"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "50"
+                },
+                {
+                  "key": "q",
+                  "value": "q",
+                  "disabled": true,
+                  "description": "Matches name, email or phone"
+                },
+                {
+                  "key": "roleId",
+                  "value": "admin",
+                  "disabled": true
+                },
+                {
+                  "key": "status",
+                  "value": "active",
+                  "disabled": true
+                },
+                {
+                  "key": "teamId",
+                  "value": "{{teamId}}",
+                  "disabled": true
+                },
+                {
+                  "key": "locationId",
+                  "value": "{{locationId}}",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Every row carries the areas the person reaches, split into the grants held on them (`locations`) and the ones inherited from their crew (`inheritedLocations`) — so a screen can show why someone reaches an area without a second call.\n\n`locationId` asks the operational question instead: who serves this address? A grant on the node or on any ancestor of it counts, because a grant covers its whole subtree.\n\nScoped like every other list: `ALL` returns the tenant, `LOCATION` returns the staff working inside your areas, `TEAM` returns your own crew."
+          }
+        },
+        {
+          "name": "Hire someone, or give an existing account a job here",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/staff",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "staff"
+              ]
+            },
+            "description": "An `email` or a `phone` is required — one of them is how the person signs in.\n\nThe account is found before it is created: somebody who already signs in as another operator’s subscriber gets a second membership, not a second login. `password` is therefore rejected when the account already exists; those people set their own.\n\n`locationIds` grants areas in the same call. You can only grant areas you hold yourself, and only a tenant-wide grant may appoint an `admin`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"name\",\n  \"email\": \"someone@example.com\",\n  \"phone\": \"9876543210\",\n  \"password\": \"password\",\n  \"roleId\": \"admin\",\n  \"status\": \"active\",\n  \"teamId\": \"{{teamId}}\",\n  \"locationIds\": [\n    \"{{locationId}}\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "One employee, with their active areas resolved",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/staff/{{staffId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "staff",
+                "{{staffId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Change name, phone, or crew membership",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/staff/{{staffId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "staff",
+                "{{staffId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"name\",\n  \"roleId\": \"admin\",\n  \"status\": \"active\",\n  \"teamId\": \"{{teamId}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "End someone’s employment here",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/staff/{{staffId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "staff",
+                "{{staffId}}"
+              ]
+            },
+            "description": "Their account continues to exist, and their memberships at other operators are untouched. You cannot fire the last `admin`."
+          }
+        },
+        {
+          "name": "Replace the areas this person serves directly",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/staff/{{staffId}}/locations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "staff",
+                "{{staffId}}",
+                "locations"
+              ]
+            },
+            "description": "Replaces the entire set of direct grants. You cannot grant an area you do not hold yourself.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"locationIds\": [\n    \"{{locationId}}\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Narrow this person to part of their crew’s patch",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/staff/{{staffId}}/team-areas",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "staff",
+                "{{staffId}}",
+                "team-areas"
+              ]
+            },
+            "description": "An empty list widens them back to the crew’s whole patch. Every area must sit inside it.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"locationIds\": [\n    \"{{locationId}}\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Crews operating within the business",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/teams?page=1&limit=50",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "teams"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "50"
+                },
+                {
+                  "key": "q",
+                  "value": "q",
+                  "disabled": true
+                },
+                {
+                  "key": "status",
+                  "value": "active",
+                  "disabled": true
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Form a crew",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/teams",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "teams"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"name\",\n  \"slug\": \"slug\",\n  \"description\": \"description\",\n  \"status\": \"active\",\n  \"locationIds\": [\n    \"{{locationId}}\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "One crew with its operational areas resolved",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/teams/{{teamId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "teams",
+                "{{teamId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Rename a crew or appoint a leader",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/teams/{{teamId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "teams",
+                "{{teamId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"name\",\n  \"description\": \"description\",\n  \"status\": \"active\",\n  \"leaderMembershipId\": \"{{leaderMembershipId}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Disband a crew",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/teams/{{teamId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "teams",
+                "{{teamId}}"
+              ]
+            },
+            "description": "Members lose the crew’s inherited areas. Their direct grants and accounts are untouched."
+          }
+        },
+        {
+          "name": "The people on this crew",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/teams/{{teamId}}/members",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "teams",
+                "{{teamId}}",
+                "members"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Replace the areas this crew serves",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/teams/{{teamId}}/locations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "teams",
+                "{{teamId}}",
+                "locations"
+              ]
+            },
+            "description": "Every crew member inherits these areas.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"locationIds\": [\n    \"{{locationId}}\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Notifications",
+      "item": [
+        {
+          "name": "Your inbox — every notification addressed to you, newest first",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/notifications?page=1&limit=50",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "notifications"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "50"
+                },
+                {
+                  "key": "unreadOnly",
+                  "value": "false",
+                  "disabled": true
+                },
+                {
+                  "key": "category",
+                  "value": "general",
+                  "disabled": true
+                },
+                {
+                  "key": "delivery",
+                  "value": "notification",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Filter by `category` for one bucket, or `delivery=in_app` with `unreadOnly` to pull the in-app messages waiting to be shown."
+          }
+        },
+        {
+          "name": "Unread totals for the bell badge, broken down by category",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/notifications/unread-count",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "notifications",
+                "unread-count"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Mark one notification read",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/notifications/{{notificationId}}/read",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "notifications",
+                "{{notificationId}}",
+                "read"
+              ]
+            },
+            "description": "For an in-app message this doubles as \"shown\" — it is how the app stops re-presenting it."
+          }
+        },
+        {
+          "name": "Mark everything read, or just one category",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/notifications/read-all",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "notifications",
+                "read-all"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"category\": \"general\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Record this device and its push token",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/notifications/token",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "notifications",
+                "token"
+              ]
+            },
+            "description": "Unauthenticated on purpose: the app registers on first launch and keeps registering through sign-out, so a signed-out phone still receives promotional pushes. Send a Bearer token when you have one and the device is filed against your tenant. `token: null` clears it.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"token\": \"token\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Send a notification now",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/notifications/send",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "notifications",
+                "send"
+              ]
+            },
+            "description": "Covers every direction: staff → admin is `audience: \"role\", roleId: \"admin\"`, admin → everybody is `audience: \"tenant\"`, admin → one person is `audience: \"user\"`. Staff may only address admins. A signed-out device is only ever reached by `category: \"promotional\"`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"audience\": \"user\",\n  \"userIds\": [\n    \"{{userId}}\"\n  ],\n  \"roleId\": \"admin\",\n  \"category\": \"general\",\n  \"delivery\": \"notification\",\n  \"type\": \"type\",\n  \"title\": \"title\",\n  \"body\": \"body\",\n  \"data\": {}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Files",
+      "item": [
+        {
+          "name": "Upload a file",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/files",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "files"
+              ],
+              "query": [
+                {
+                  "key": "folder",
+                  "value": "logos",
+                  "disabled": true
+                },
+                {
+                  "key": "visibility",
+                  "value": "private",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "A `multipart/form-data` body with one `file` part. Identical bytes already stored are reused rather than uploaded twice — the response says so with `deduplicated`. The signed `url` it returns is what a notification `imageUrl` expects.",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": [],
+                  "description": "Pick a file. Allowed: image/jpeg, image/png, image/webp, application/pdf. Max 20MB."
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "A fresh signed download URL for one file",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/files/{{fileId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "files",
+                "{{fileId}}"
+              ]
+            },
+            "description": "Signed URLs expire, so fetch this each time rather than storing the URL."
+          }
+        },
+        {
+          "name": "Delete a file",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/files/{{fileId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "files",
+                "{{fileId}}"
+              ]
+            },
+            "description": "Soft delete. The stored object is removed later by the storage cleanup job, once nothing else references those bytes."
+          }
         }
       ]
     }

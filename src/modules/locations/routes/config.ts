@@ -18,6 +18,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   const errors = { 400: errorRef, 401: errorRef, 403: errorRef, 404: errorRef, 409: errorRef };
 
   app.get('/location-categories', {
+    config: { cache: { tag: 'location-config', scope: 'tenant' } },
     preHandler: app.requirePermission(PERMISSIONS.LOCATIONS_VIEW),
     schema: {
       tags: ['locations'],
@@ -29,6 +30,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.post('/location-categories', {
+    config: { invalidates: ['location-config'] },
     preHandler: app.requirePermission(PERMISSIONS.LOCATIONS_CONFIGURE),
     schema: {
       tags: ['locations'],
@@ -42,6 +44,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.patch('/location-categories/:id', {
+    config: { invalidates: ['location-config'] },
     preHandler: app.requirePermission(PERMISSIONS.LOCATIONS_CONFIGURE),
     schema: {
       tags: ['locations'],
@@ -55,6 +58,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.delete('/location-categories/:id', {
+    config: { invalidates: ['location-config'] },
     preHandler: app.requirePermission(PERMISSIONS.LOCATIONS_CONFIGURE),
     schema: {
       tags: ['locations'],
@@ -68,6 +72,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.get('/location-schemas', {
+    config: { cache: { tag: 'location-config', scope: 'tenant' } },
     preHandler: app.requirePermission(PERMISSIONS.LOCATIONS_VIEW),
     schema: {
       tags: ['locations'],
@@ -79,6 +84,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.post('/location-schemas', {
+    config: { invalidates: ['location-config'] },
     preHandler: app.requirePermission(PERMISSIONS.LOCATIONS_CONFIGURE),
     schema: {
       tags: ['locations'],
@@ -92,6 +98,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.patch('/location-schemas/:id', {
+    config: { invalidates: ['location-config'] },
     preHandler: app.requirePermission(PERMISSIONS.LOCATIONS_CONFIGURE),
     schema: {
       tags: ['locations'],
@@ -105,6 +112,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.delete('/location-schemas/:id', {
+    config: { invalidates: ['location-config'] },
     preHandler: app.requirePermission(PERMISSIONS.LOCATIONS_CONFIGURE),
     schema: {
       tags: ['locations'],
@@ -118,6 +126,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.post('/location-schemas/:id/generate', {
+    config: { invalidates: ['analytics', 'coverage', 'customers', 'inventory', 'locations', 'service-providers', 'services', 'staff', 'teams'] },
     preHandler: app.requirePermission(PERMISSIONS.LOCATIONS_CONFIGURE),
     schema: {
       tags: ['locations'],

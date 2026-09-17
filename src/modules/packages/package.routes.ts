@@ -19,6 +19,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   const errors = { 400: errorRef, 401: errorRef, 403: errorRef, 404: errorRef, 409: errorRef };
 
   app.get('/packages', {
+    config: { cache: { tag: 'packages' } },
     preHandler: app.requirePermission(PERMISSIONS.PACKAGES_VIEW),
     schema: {
       tags: ['packages'],
@@ -31,6 +32,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.post('/packages', {
+    config: { invalidates: ['coverage', 'customers', 'packages'] },
     preHandler: app.requirePermission(PERMISSIONS.PACKAGES_CREATE),
     schema: {
       tags: ['packages'],
@@ -45,6 +47,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.get('/packages/:id', {
+    config: { cache: { tag: 'packages' } },
     preHandler: app.requirePermission(PERMISSIONS.PACKAGES_VIEW),
     schema: {
       tags: ['packages'],
@@ -57,6 +60,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.patch('/packages/:id', {
+    config: { invalidates: ['coverage', 'customers', 'packages'] },
     preHandler: app.requirePermission(PERMISSIONS.PACKAGES_UPDATE),
     schema: {
       tags: ['packages'],
@@ -70,6 +74,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.delete('/packages/:id', {
+    config: { invalidates: ['channels', 'coverage', 'customers', 'locations', 'packages', 'service-providers', 'services'] },
     preHandler: app.requirePermission(PERMISSIONS.PACKAGES_DELETE),
     schema: {
       tags: ['packages'],
@@ -83,6 +88,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.put('/packages/:id/channels', {
+    config: { invalidates: ['channels', 'packages'] },
     preHandler: app.requirePermission(PERMISSIONS.PACKAGES_UPDATE),
     schema: {
       tags: ['packages'],
@@ -97,12 +103,13 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.get('/channels', {
+    config: { cache: { tag: 'channels' } },
     preHandler: app.requirePermission(PERMISSIONS.PACKAGES_VIEW),
     schema: {
       tags: ['packages'],
       summary: 'All channels this operator distributes',
       querystring: ListChannelsQuery,
-      response: { 200: Type.Array(ChannelResponse), ...errors },
+      response: { 200: paginated(ChannelResponse), ...errors },
     },
   }, async (request) => {
     return request.server.packages.listChannels(request.access, request.query);

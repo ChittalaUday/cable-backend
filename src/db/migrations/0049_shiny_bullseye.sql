@@ -1,0 +1,1 @@
+ALTER TABLE "notify"."notifications" ADD COLUMN "image_url" text;

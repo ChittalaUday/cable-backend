@@ -12,6 +12,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   const errors = { 400: errorRef, 401: errorRef, 403: errorRef, 404: errorRef };
 
   app.get('/customers', {
+    config: { cache: { tag: 'customers' } },
     preHandler: app.requirePermission(PERMISSIONS.CUSTOMERS_VIEW),
     schema: {
       tags: ['customers'],
@@ -33,6 +34,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.get('/customers/:id', {
+    config: { cache: { tag: 'customers' } },
     preHandler: app.requirePermission(PERMISSIONS.CUSTOMERS_VIEW),
     schema: {
       tags: ['customers'],
