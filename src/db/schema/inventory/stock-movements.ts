@@ -9,17 +9,17 @@ import { equipment } from './equipment';
 export const stockMovements = inventory.table('stock_movements', {
   id: uuid('id').primaryKey().defaultRandom(),
   tenantId: uuid('tenant_id').notNull().references(() => tenants.id, { onDelete: 'cascade' }),
-  equipmentId: uuid('equipment_id').notNull().references(() => equipment.id, { onDelete: 'cascade' }),
+  equipmentId: uuid('equipment_id').notNull().references(() => equipment.id, { onDelete: 'restrict' }),
 
   movementType: text('movement_type', { enum: STOCK_MOVEMENT_TYPES }).notNull(),
 
-  fromLocationId: uuid('from_location_id').references(() => locations.id, { onDelete: 'set null' }),
-  toLocationId: uuid('to_location_id').references(() => locations.id, { onDelete: 'set null' }),
+  fromLocationId: uuid('from_location_id').references(() => locations.id, { onDelete: 'restrict' }),
+  toLocationId: uuid('to_location_id').references(() => locations.id, { onDelete: 'restrict' }),
 
-  fromStaffId: uuid('from_staff_id').references(() => users.id, { onDelete: 'set null' }),
-  toStaffId: uuid('to_staff_id').references(() => users.id, { onDelete: 'set null' }),
+  fromStaffId: uuid('from_staff_id').references(() => users.id, { onDelete: 'restrict' }),
+  toStaffId: uuid('to_staff_id').references(() => users.id, { onDelete: 'restrict' }),
 
-  performedBy: uuid('performed_by').references(() => users.id, { onDelete: 'set null' }),
+  performedBy: uuid('performed_by').references(() => users.id, { onDelete: 'restrict' }),
 
   quantity: integer('quantity').notNull().default(1),
   notes: text('notes'),

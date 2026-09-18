@@ -11,8 +11,8 @@ export const accountTransactions = crm.table('account_transactions', {
   id: uuid('id').primaryKey().defaultRandom(),
   tenantId: uuid('tenant_id').notNull().references(() => tenants.id, { onDelete: 'cascade' }),
   serviceId: uuid('service_id').notNull().references(() => services.id, { onDelete: 'cascade' }),
-  customerId: uuid('customer_id').references(() => customers.id, { onDelete: 'set null' }),
-  subscriptionId: uuid('subscription_id').references(() => subscriptions.id, { onDelete: 'set null' }),
+  customerId: uuid('customer_id').references(() => customers.id, { onDelete: 'restrict' }),
+  subscriptionId: uuid('subscription_id').references(() => subscriptions.id, { onDelete: 'restrict' }),
 
   serviceAccountNumber: text('service_account_number').notNull(),
   transactionNo: text('transaction_no').notNull(),
@@ -38,7 +38,7 @@ export const accountTransactions = crm.table('account_transactions', {
     columns: [table.tenantId, table.collectedBy],
     foreignColumns: [tenantMemberships.tenantId, tenantMemberships.userId],
     name: 'account_transactions_collector_membership_fk',
-  }).onDelete('set null'),
+  }).onDelete('restrict'),
 ]);
 
 export type AccountTransaction = typeof accountTransactions.$inferSelect;

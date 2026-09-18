@@ -12,12 +12,12 @@ import type {
 import type { Database as Db, Transaction as Tx } from '@/db/client';
 import type { RequestAccess } from '@/modules/iam/access.service';
 import type { PermissionKey } from '@/security/permissions';
-import { and, asc, count, eq, ilike, isNull, ne, or, sql } from 'drizzle-orm';
+import { and, asc, count, eq, ilike, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import { AUDIT_ENTITIES } from '@/constants/audit';
 import { ENTITY_STATUS } from '@/constants/crm';
 import { owned } from '@/db/owned';
-import { serviceProviders, services } from '@/db/schema';
-import { isForeignKeyViolation, isUniqueViolation } from '@/errors';
+import { packages, serviceProviders, services, subscriptions } from '@/db/schema';
+import { isUniqueViolation } from '@/errors';
 import { conflict, inUse, orNotFound } from '@/errors/domain-error';
 import { audit } from '@/modules/audit/audit.service';
 import { locationScopeFor } from '@/modules/iam/access.service';
@@ -41,10 +41,6 @@ const ACTIVE_PROVIDER_COUNT = sql<number>`(
 export class ServicesService {
   constructor(private readonly db: Db) {}
 
-  /**
-   * Below `ALL`, the catalogue answers the areas the caller holds: an entry is
-   * theirs to see when its coverage reaches into one of their subtrees (§5).
-   */
   private reaching(access: RequestAccess, key: PermissionKey, target: {
     serviceId: SQL;
     serviceProviderId?: SQL;
@@ -347,17 +343,36 @@ export class ServicesService {
   async removeProvider(access: RequestAccess, id: string): Promise<void> {
     const before = await this.getProvider(access, id, PERMISSIONS.SERVICES_DELETE);
 
-    try {
-      await this.db
-        .update(serviceProviders)
-        .set({ deletedAt: new Date(), status: ENTITY_STATUS.INACTIVE, isDefault: false })
-        .where(and(eq(serviceProviders.tenantId, access.tenantId), eq(serviceProviders.id, id)));
-    }
-    catch (error) {
-      if (isForeignKeyViolation(error))
-        throw inUse('This provider still has live subscriptions');
-      throw error;
-    }
+    // A soft delete raises no foreign key error, so what still depends on the row
+    // has to be counted here or it is left pointing at a provider nobody can see.
+    const [live] = await this.db
+      .select({ total: count() })
+      .from(subscriptions)
+      .where(and(
+        eq(subscriptions.serviceProviderId, id),
+        isNull(subscriptions.deletedAt),
+        inArray(subscriptions.status, ['active', 'suspended']),
+      ));
+
+    if ((live?.total ?? 0) > 0)
+      throw inUse(`${live!.total} subscription(s) are still with this provider`);
+
+    const [livePackages] = await this.db
+      .select({ total: count() })
+      .from(packages)
+      .where(and(eq(packages.serviceProviderId, id), isNull(packages.deletedAt)));
+
+    if ((livePackages?.total ?? 0) > 0)
+      throw inUse(`${livePackages!.total} package(s) still belong to this provider; remove them first`);
+
+    await this.db
+      .update(serviceProviders)
+      .set({ deletedAt: new Date(), status: ENTITY_STATUS.INACTIVE, isDefault: false })
+      .where(and(
+        eq(serviceProviders.tenantId, access.tenantId),
+        eq(serviceProviders.id, id),
+        isNull(serviceProviders.deletedAt),
+      ));
 
     await audit.deleted(this.db, access.audit, { entityType: AUDIT_ENTITIES.SERVICE_PROVIDER, entityId: id, before });
   }

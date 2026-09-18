@@ -10,11 +10,11 @@ import { NotificationService } from './notifications.service';
 const { db, close } = createTestDb();
 
 function fakeMessaging() {
-  const sent: { to: string; category: string | undefined; imageUrl: string | null | undefined; data: Record<string, unknown> | null | undefined }[] = [];
+  const sent: { to: string; category: string | undefined; imageUrl: string | null | undefined; data: Record<string, unknown> | null | undefined; silent: boolean | undefined }[] = [];
   const messaging = {
     defaultChannel: 'whatsapp' as const,
-    async send(message: { to: string; category?: string; imageUrl?: string | null; data?: Record<string, unknown> | null }) {
-      sent.push({ to: message.to, category: message.category, imageUrl: message.imageUrl, data: message.data });
+    async send(message: { to: string; category?: string; imageUrl?: string | null; data?: Record<string, unknown> | null; silent?: boolean }) {
+      sent.push({ to: message.to, category: message.category, imageUrl: message.imageUrl, data: message.data, silent: message.silent });
       return { providerMessageId: 'p1' };
     },
   };
@@ -40,12 +40,10 @@ beforeAll(async () => {
 
   await db.insert(tenantMemberships).values({ userId: signedInUser, tenantId, roleId: 'customer' });
 
-  // A member who never granted notification permission: no device, no token.
   const [tokenless] = await db.insert(users).values({ email: uniqueEmail('tokenless') }).returning();
   tokenlessUser = tokenless!.id;
   await db.insert(tenantMemberships).values({ userId: tokenlessUser, tenantId, roleId: 'admin' });
 
-  // One phone somebody is signed in on, one phone nobody is signed in on.
   const [live] = await db.insert(devices).values({
     clientDeviceId: uniqueDeviceId(),
     platform: 'android',
@@ -113,8 +111,6 @@ describe('what a broadcast carries', () => {
       body: 'Something happened',
     });
 
-    // The client gates its in-app banner on delivery, so delivery has to travel
-    // with the push — gating on category silently dropped every `both` banner.
     expect(sent[0]?.data).toMatchObject({ delivery: 'both', category: 'general' });
   });
 });
@@ -132,7 +128,6 @@ describe('who a broadcast reaches', () => {
       body: 'We are shut on Friday',
     });
 
-    // Both members are addressed; only the one with a device is pushed to.
     expect(result).toMatchObject({ notified: 2, pushed: 1 });
     expect(sent.map(s => s.to)).toEqual([SIGNED_IN_TOKEN]);
 
@@ -227,20 +222,15 @@ describe('alerting admins that something is down', () => {
       body: 'Customers cannot receive a sign-in code until it is back.',
     });
 
-    // tokenlessUser is the admin of this tenant, signedInUser is a customer.
     const admin = await service.inbox({ tenantId, userId: tokenlessUser, page: 1, limit: 5 });
     const customer = await service.inbox({ tenantId, userId: signedInUser, page: 1, limit: 5 });
 
     expect(admin.items[0]).toMatchObject({
       type: 'whatsapp_session_down',
-      // `alert` is the high-importance Android channel, and `both` is what puts
-      // it in front of somebody whether or not the app is already open.
       category: 'alert',
       delivery: 'both',
     });
 
-    // An operational failure is not a customer's problem, and telling them the
-    // operator's WhatsApp is down would be worse than telling them nothing.
     expect(customer.items.map(item => item.type)).not.toContain('whatsapp_session_down');
   });
 });
@@ -271,16 +261,62 @@ describe('reaching a device that cannot receive push', () => {
 
     const base = { tenantId, userId: signedInUser, page: 1, limit: 20, unreadOnly: true } as const;
 
-    // An iOS Simulator, or anyone who refused permission, has no push token at
-    // all — asking only for `in_app` would leave the `both` message invisible.
     const withoutPush = await service.inbox({ ...base, delivery: ['in_app', 'both'] });
     expect(withoutPush.items.map(i => i.type)).toEqual(
       expect.arrayContaining(['pull_only', 'push_or_pull']),
     );
 
-    // Where push works, `both` arrives as a push and must not be pulled too.
     const withPush = await service.inbox({ ...base, delivery: ['in_app'] });
     expect(withPush.items.map(i => i.type)).toContain('pull_only');
     expect(withPush.items.map(i => i.type)).not.toContain('push_or_pull');
+  });
+});
+
+describe('a silent sync signal', () => {
+  it('nudges the open session and writes nothing to anybody\'s inbox', async () => {
+    const { service, sent } = fakeMessaging();
+    const before = await db.select().from(notifications).where(eq(notifications.tenantId, tenantId));
+
+    const result = await service.signal(tenantId, [{ kind: 'tenant' }], { sync: 'payments', collectionId: 'rcp-1' });
+
+    expect(result).toEqual({ pushed: 1, failed: 0 });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
+      to: SIGNED_IN_TOKEN,
+      silent: true,
+      data: { sync: 'payments', collectionId: 'rcp-1' },
+    });
+
+    const after = await db.select().from(notifications).where(eq(notifications.tenantId, tenantId));
+    expect(after).toHaveLength(before.length);
+  });
+
+  it('never reaches a phone nobody is signed in on — there is no screen to refresh', async () => {
+    const { service, sent } = fakeMessaging();
+
+    await service.signal(tenantId, [{ kind: 'tenant' }], { sync: 'payments' });
+
+    expect(sent.map(message => message.to)).not.toContain(SIGNED_OUT_TOKEN);
+  });
+
+  it('nudges a device once however many audiences name it', async () => {
+    const { service, sent } = fakeMessaging();
+
+    await service.signal(
+      tenantId,
+      [{ kind: 'tenant' }, { kind: 'role', roleId: 'customer' }, { kind: 'user', userIds: [signedInUser] }],
+      { sync: 'payments' },
+    );
+
+    expect(sent).toHaveLength(1);
+  });
+
+  it('answers plainly when nobody is listening', async () => {
+    const { service, sent } = fakeMessaging();
+
+    const result = await service.signal(tenantId, [{ kind: 'user', userIds: [tokenlessUser] }], { sync: 'payments' });
+
+    expect(result).toEqual({ pushed: 0, failed: 0 });
+    expect(sent).toHaveLength(0);
   });
 });

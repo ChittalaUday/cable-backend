@@ -5,7 +5,6 @@ import pg from 'pg';
 import { env } from '@/config/env';
 import * as schema from '@/db/schema';
 import {
-  bundleItems,
   equipment,
   itemCatalog,
   locationCategories,
@@ -117,7 +116,7 @@ async function main() {
         code: 'STB-001',
         brand: 'ACT',
         model: 'HD-2024',
-        trackingType: 'serialized' as const,
+        isSerialized: true,
         isBundle: false,
         defaultSalePrice: '1500.00',
         defaultDepositAmount: '500.00',
@@ -130,7 +129,7 @@ async function main() {
         code: 'REM-001',
         brand: 'ACT',
         model: 'REM-V2',
-        trackingType: 'quantity' as const,
+        isSerialized: false,
         isBundle: false,
         defaultSalePrice: '250.00',
         defaultDepositAmount: '0.00',
@@ -143,7 +142,7 @@ async function main() {
         code: 'PWR-001',
         brand: 'Huntkey',
         model: '12V 1.5A',
-        trackingType: 'quantity' as const,
+        isSerialized: false,
         isBundle: false,
         defaultSalePrice: '300.00',
         defaultDepositAmount: '0.00',
@@ -156,7 +155,7 @@ async function main() {
         code: 'CAB-001',
         brand: 'HighSpeed',
         model: '1.5m 4K',
-        trackingType: 'quantity' as const,
+        isSerialized: false,
         isBundle: false,
         defaultSalePrice: '150.00',
         defaultDepositAmount: '0.00',
@@ -169,7 +168,7 @@ async function main() {
         code: 'NODE-001',
         brand: 'OptiLink',
         model: 'FN-100',
-        trackingType: 'serialized' as const,
+        isSerialized: true,
         isBundle: false,
         defaultSalePrice: '850.00',
         defaultDepositAmount: '200.00',
@@ -182,7 +181,7 @@ async function main() {
         code: 'PATCH-003',
         brand: 'D-Link',
         model: 'SC-APC 3m',
-        trackingType: 'quantity' as const,
+        isSerialized: false,
         isBundle: false,
         defaultSalePrice: '120.00',
         defaultDepositAmount: '0.00',
@@ -195,7 +194,7 @@ async function main() {
         code: 'KIT-001',
         brand: 'ACT',
         model: 'STB-Bundle-HD',
-        trackingType: 'serialized' as const,
+        isSerialized: true,
         isBundle: true,
         defaultSalePrice: '2000.00',
         defaultDepositAmount: '500.00',
@@ -222,7 +221,6 @@ async function main() {
             code: item.code,
             brand: item.brand,
             model: item.model,
-            trackingType: item.trackingType,
             isBundle: item.isBundle,
             defaultSalePrice: item.defaultSalePrice,
             defaultDepositAmount: item.defaultDepositAmount,
@@ -240,68 +238,30 @@ async function main() {
         .where(eq(equipment.catalogId, existing!.id));
 
       if (existingEq.length === 0) {
-        if (item.trackingType === 'serialized') {
-          for (let i = 1; i <= 3; i++) {
-            await db.insert(equipment).values({
-              tenantId: tenant.id,
-              catalogId: existing!.id,
-              locationId: warehouse?.id ?? null,
-              serialNumber: `${item.code}-SN${1000 + i}`,
-              vcNumber: `VC${987600 + i}`,
-              macAddress: `00:1A:2B:3C:4D:0${i}`,
-              barcode: `${item.code}000${i}`,
-              quantity: 1,
-              inventoryStatus: 'available',
-            });
-          }
-          await db.insert(equipment).values({
-            tenantId: tenant.id,
-            catalogId: existing!.id,
-            locationId: warehouse?.id ?? null,
-            quantity: item.availQty - 3,
-            inventoryStatus: 'available',
-          });
-        }
-        else {
-          await db.insert(equipment).values({
-            tenantId: tenant.id,
-            catalogId: existing!.id,
-            locationId: warehouse?.id ?? null,
-            quantity: item.availQty,
-            inventoryStatus: 'available',
-          });
+        const unit = (index: number, status: 'available' | 'allocated') => ({
+          tenantId: tenant.id,
+          catalogId: existing!.id,
+          locationId: warehouse?.id ?? null,
+          inventoryStatus: status,
+          ...(item.isSerialized && index <= 3
+            ? {
+                serialNumber: `${item.code}-SN${1000 + index}`,
+                vcNumber: `VC${987600 + index}`,
+                macAddress: `00:1A:2B:3C:4D:0${index}`,
+                barcode: `${item.code}000${index}`,
+              }
+            : {}),
+        });
 
-          if (item.totalQty > item.availQty) {
-            await db.insert(equipment).values({
-              tenantId: tenant.id,
-              catalogId: existing!.id,
-              locationId: warehouse?.id ?? null,
-              quantity: item.totalQty - item.availQty,
-              inventoryStatus: 'allocated',
-            });
-          }
-        }
+        const units = [
+          ...Array.from({ length: item.availQty }, (_, i) => unit(i + 1, 'available')),
+          ...Array.from({ length: Math.max(0, item.totalQty - item.availQty) }, (_, i) => unit(item.availQty + i + 1, 'allocated')),
+        ];
+
+        if (units.length > 0)
+          await db.insert(equipment).values(units);
       }
     }
-
-    const kitId = createdCatalogMap.get('KIT-001');
-    const stbId = createdCatalogMap.get('STB-001');
-    const remId = createdCatalogMap.get('REM-001');
-    const pwrId = createdCatalogMap.get('PWR-001');
-    const cabId = createdCatalogMap.get('CAB-001');
-
-    if (kitId !== undefined && stbId !== undefined && remId !== undefined && pwrId !== undefined && cabId !== undefined) {
-      const existingBundles = await db.select().from(bundleItems).where(eq(bundleItems.bundleCatalogId, kitId));
-      if (existingBundles.length === 0) {
-        await db.insert(bundleItems).values([
-          { tenantId: tenant.id, bundleCatalogId: kitId, componentCatalogId: stbId, quantity: 1, isOptional: false },
-          { tenantId: tenant.id, bundleCatalogId: kitId, componentCatalogId: remId, quantity: 1, isOptional: false },
-          { tenantId: tenant.id, bundleCatalogId: kitId, componentCatalogId: pwrId, quantity: 1, isOptional: false },
-          { tenantId: tenant.id, bundleCatalogId: kitId, componentCatalogId: cabId, quantity: 1, isOptional: true },
-        ]);
-      }
-    }
-
     const [anyEq] = await db.select().from(equipment).limit(1);
     if (anyEq && adminUser) {
       const existingMovs = await db.select().from(stockMovements).where(eq(stockMovements.tenantId, tenant.id));
@@ -314,7 +274,6 @@ async function main() {
             fromLocationId: warehouse?.id ?? null,
             toLocationId: branch?.id ?? null,
             performedBy: adminUser.id,
-            quantity: 1,
             notes: 'STB-001 to Rajesh Kumar',
             createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
           },
@@ -325,7 +284,6 @@ async function main() {
             fromLocationId: null,
             toLocationId: warehouse?.id ?? null,
             performedBy: adminUser.id,
-            quantity: 50,
             notes: 'Adapter - 50 units inwarded',
             createdAt: new Date(Date.now() - 4 * 60 * 60 * 1000),
           },
@@ -336,7 +294,6 @@ async function main() {
             fromLocationId: warehouse?.id ?? null,
             toLocationId: branch?.id ?? null,
             performedBy: adminUser.id,
-            quantity: 20,
             notes: 'Remotes transferred to KPHB Branch',
             createdAt: new Date(Date.now() - 6 * 60 * 60 * 1000),
           },

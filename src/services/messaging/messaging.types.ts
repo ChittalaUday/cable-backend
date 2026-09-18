@@ -6,12 +6,10 @@ export interface OutboundMessage {
   text: string;
   channel: MessageChannel;
   subject?: string;
-  /** Push only: the Android notification channel to file this under. */
   category?: string;
-  /** Push only: travels alongside the notification for the app to route on. */
   data?: Record<string, unknown> | null;
-  /** Push only: an https image rendered inside the notification. */
   imageUrl?: string | null;
+  silent?: boolean;
 }
 
 export interface SendResult {

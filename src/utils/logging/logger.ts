@@ -63,14 +63,6 @@ export function createLogger(name: 'api' | 'worker') {
     ? pino.transport({ target: 'pino-pretty', options: { translateTime: 'HH:MM:ss', ignore: 'pid,hostname' } })
     : process.stdout;
 
-  // Both streams carry an explicit level: multistream defaults an entry to
-  // `info` regardless of the logger's own level, so the console has to say
-  // LOG_LEVEL out loud or a LOG_LEVEL=debug run silently loses its debug lines.
-  //
-  // The files take LOG_FILE_LEVEL (errors) rather than everything. Fastify logs
-  // a line per request, which is the right thing on a console you are watching
-  // and the wrong thing on a disk you are keeping: one afternoon of load
-  // testing wrote 1.2 GB across 114 rotations, none of it worth reading.
   return pino(options, pino.multistream([
     { level: env.LOG_LEVEL, stream: consoleStream },
     {

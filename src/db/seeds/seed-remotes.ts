@@ -301,11 +301,6 @@ const ACT_STB_BUTTONS: RemoteButton[] = [
   { key: 'reminder', label: 'Reminder', command: nec(0x00, 0x06) },
 ];
 
-/**
- * Television handsets imported from Flipper-IRDB, regenerated with
- * `pnpm tsx scripts/import-flipper-irdb.ts <clone>`. Community data, so every
- * entry lands unverified.
- */
 function flipperTvRemotes(): NewRemoteRecord[] {
   const file = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'data/tv-remotes.json');
   if (!fs.existsSync(file))
@@ -509,8 +504,6 @@ export async function seedRemotes(db: NodePgDatabase<typeof schema>): Promise<nu
       },
     });
 
-  // The shared library is owned by this file, so a handset dropped from it here
-  // goes from the database too. Tenant handsets are learned, never library.
   await db
     .delete(remotes)
     .where(and(

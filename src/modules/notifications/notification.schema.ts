@@ -60,11 +60,6 @@ export const MarkAllReadBody = Type.Object({
 
 export const MarkAllReadResponse = Type.Object({ updated: Type.Integer() });
 
-// Registering a push token is deliberately unauthenticated: the app records the
-// device on first launch, long before anybody signs in, and keeps the token
-// current through sign-out. Identity comes from the device headers, not a token
-// — the same set sign-in uses, reused rather than restated so the two cannot
-// drift into recording different things about the same device.
 export const RegisterTokenHeaders = DeviceHeaders;
 
 export const RegisterTokenBody = Type.Object({

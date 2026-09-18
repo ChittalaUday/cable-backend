@@ -98,7 +98,6 @@ export function multiBoxFilter(tenantId: string): SQL {
         AND ce.tenant_id = ${tenantId}
         AND ce.status = 'active'
         AND s.deleted_at IS NULL
-        AND eq.parent_equipment_id IS NULL
       GROUP BY sp.service_id
       HAVING count(*) >= 2
     )

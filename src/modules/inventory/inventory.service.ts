@@ -13,11 +13,13 @@ import type {
   ItemDetailsResponse,
   ListStockQuery,
   LookupItemResponse,
+  ReturnCustomerEquipmentBody,
+  ReturnCustomerEquipmentResponse,
   ReviewApprovalRequestBody,
   StockItemResponse,
   TransferStockBody,
 } from './inventory.schema';
-import type { EquipmentOwnership } from '@/constants/inventory';
+import type { CustomerEquipmentStatus, EquipmentOwnership } from '@/constants/inventory';
 import type * as schema from '@/db/schema';
 import type { StockMovementRecord } from '@/db/schema';
 import type { RequestAccess } from '@/modules/iam/access.service';
@@ -30,16 +32,15 @@ import { SUBSCRIPTION_STATUS } from '@/constants/crm';
 import {
   CUSTOMER_EQUIPMENT_STATUS,
   EQUIPMENT_OWNERSHIP,
+  EQUIPMENT_RETURN_CONDITION,
   INVENTORY_REQUEST_STATUS,
   INVENTORY_REQUEST_TYPE,
   INVENTORY_STATUS,
   STOCK_LEVEL_FILTER,
   STOCK_MOVEMENT_TYPE,
-  TRACKING_TYPE,
 } from '@/constants/inventory';
 import {
   approvalRequests,
-  bundleItems,
   customerEquipment,
   customers,
   equipment,
@@ -52,7 +53,7 @@ import {
   users,
 } from '@/db/schema';
 import { ERROR_CODES } from '@/errors';
-import { badRequest, forbidden, notFound } from '@/errors/domain-error';
+import { badRequest, conflict, forbidden, inUse, notFound } from '@/errors/domain-error';
 import { audit } from '@/modules/audit/audit.service';
 import { locationScopeFor } from '@/modules/iam/access.service';
 import { withinGrantedSubtree } from '@/security/location-scope';
@@ -70,7 +71,6 @@ function catalogRowFrom(tenantId: string, input: CreateCatalogItemBody) {
     code: input.code ?? null,
     brand: input.brand ?? null,
     model: input.model ?? null,
-    trackingType: input.trackingType ?? TRACKING_TYPE.SERIALIZED,
     isBundle: input.isBundle ?? false,
     defaultOwnership: input.defaultOwnership ?? EQUIPMENT_OWNERSHIP.TENANT_PROVIDED,
     defaultSalePrice: input.defaultSalePrice ?? '0',
@@ -112,7 +112,11 @@ export class InventoryService {
     const [member] = await this.db
       .select({ id: tenantMemberships.id })
       .from(tenantMemberships)
-      .where(and(eq(tenantMemberships.tenantId, tenantId), eq(tenantMemberships.userId, userId)))
+      .where(and(
+        eq(tenantMemberships.tenantId, tenantId),
+        eq(tenantMemberships.userId, userId),
+        isNull(tenantMemberships.deletedAt),
+      ))
       .limit(1);
 
     if (member === undefined)
@@ -165,10 +169,10 @@ export class InventoryService {
 
     const statsQuery = await this.db
       .select({
-        total: sql<number>`coalesce(sum(${equipment.quantity}), 0)::int`,
-        inStock: sql<number>`coalesce(sum(case when ${equipment.inventoryStatus} = ${INVENTORY_STATUS.AVAILABLE} then ${equipment.quantity} else 0 end), 0)::int`,
-        issued: sql<number>`coalesce(sum(case when ${equipment.inventoryStatus} = ${INVENTORY_STATUS.ALLOCATED} then ${equipment.quantity} else 0 end), 0)::int`,
-        inTransit: sql<number>`coalesce(sum(case when ${equipment.inventoryStatus} = ${INVENTORY_STATUS.STAFF_VAN} then ${equipment.quantity} else 0 end), 0)::int`,
+        total: sql<number>`count(${equipment.id})::int`,
+        inStock: sql<number>`count(*) FILTER (WHERE ${equipment.inventoryStatus} = ${INVENTORY_STATUS.AVAILABLE})::int`,
+        issued: sql<number>`count(*) FILTER (WHERE ${equipment.inventoryStatus} = ${INVENTORY_STATUS.ALLOCATED})::int`,
+        inTransit: sql<number>`count(*) FILTER (WHERE ${equipment.inventoryStatus} = ${INVENTORY_STATUS.STAFF_VAN})::int`,
       })
       .from(equipment)
       .where(eqWhere);
@@ -180,14 +184,14 @@ export class InventoryService {
         id: itemCatalog.id,
         name: itemCatalog.name,
         code: itemCatalog.code,
-        totalStock: sql<number>`coalesce(sum(${equipment.quantity}), 0)::int`,
-        availableStock: sql<number>`coalesce(sum(case when ${equipment.inventoryStatus} = ${INVENTORY_STATUS.AVAILABLE} then ${equipment.quantity} else 0 end), 0)::int`,
+        totalStock: sql<number>`count(${equipment.id})::int`,
+        availableStock: sql<number>`count(*) FILTER (WHERE ${equipment.inventoryStatus} = ${INVENTORY_STATUS.AVAILABLE})::int`,
       })
       .from(itemCatalog)
       .leftJoin(equipment, and(eq(itemCatalog.id, equipment.catalogId), ...eqConditions))
-      .where(eq(itemCatalog.tenantId, tenantId))
+      .where(and(eq(itemCatalog.tenantId, tenantId), isNull(itemCatalog.deletedAt)))
       .groupBy(itemCatalog.id, itemCatalog.name, itemCatalog.code)
-      .having(sql`coalesce(sum(case when ${equipment.inventoryStatus} = ${INVENTORY_STATUS.AVAILABLE} then ${equipment.quantity} else 0 end), 0)::int <= 10`)
+      .having(sql`count(*) FILTER (WHERE ${equipment.inventoryStatus} = ${INVENTORY_STATUS.AVAILABLE}) <= 10`)
       .limit(5);
 
     const locFrom = alias(locations, 'loc_from');
@@ -248,7 +252,7 @@ export class InventoryService {
   async getStockList(access: RequestAccess, query: ListStockQuery): Promise<StockItemResponse[]> {
     const tenantId = access.tenantId;
 
-    const conditions = [eq(itemCatalog.tenantId, tenantId)];
+    const conditions = [eq(itemCatalog.tenantId, tenantId), isNull(itemCatalog.deletedAt)];
     if (query.search !== undefined && query.search !== '') {
       const s = `%${query.search}%`;
       conditions.push(or(
@@ -282,7 +286,6 @@ export class InventoryService {
         brand: itemCatalog.brand,
         model: itemCatalog.model,
         itemType: sql<string>`coalesce(${itemCatalog.itemTypeId}::text, 'other')`,
-        trackingType: itemCatalog.trackingType,
         isBundle: itemCatalog.isBundle,
         defaultOwnership: itemCatalog.defaultOwnership,
         defaultSalePrice: itemCatalog.defaultSalePrice,
@@ -292,12 +295,14 @@ export class InventoryService {
         icon: itemCatalog.icon,
         description: itemCatalog.description,
 
-        totalStock: sql<number>`coalesce(sum(${equipment.quantity}), 0)::int`,
-        availableStock: sql<number>`coalesce(sum(case when ${equipment.inventoryStatus} = ${INVENTORY_STATUS.AVAILABLE} then ${equipment.quantity} else 0 end), 0)::int`,
-        issuedStock: sql<number>`coalesce(sum(case when ${equipment.inventoryStatus} = ${INVENTORY_STATUS.ALLOCATED} then ${equipment.quantity} else 0 end), 0)::int`,
-        inTransitStock: sql<number>`coalesce(sum(case when ${equipment.inventoryStatus} = ${INVENTORY_STATUS.STAFF_VAN} then ${equipment.quantity} else 0 end), 0)::int`,
+        totalStock: sql<number>`count(${equipment.id})::int`,
+        availableStock: sql<number>`count(*) FILTER (WHERE ${equipment.inventoryStatus} = ${INVENTORY_STATUS.AVAILABLE})::int`,
+        issuedStock: sql<number>`count(*) FILTER (WHERE ${equipment.inventoryStatus} = ${INVENTORY_STATUS.ALLOCATED})::int`,
+        inTransitStock: sql<number>`count(*) FILTER (WHERE ${equipment.inventoryStatus} = ${INVENTORY_STATUS.WITH_STAFF})::int`,
         aggregatedLocationName: sql<string | null>`max(${locations.name})`,
         aggregatedLocationId: sql<string | null>`max(${equipment.locationId}::text)`,
+
+        bundleContents: sql<ItemDetailsResponse['bundleComponents']>`'[]'::jsonb`,
       })
       .from(itemCatalog)
       .leftJoin(equipment, and(eq(itemCatalog.id, equipment.catalogId), ...eqFilter))
@@ -310,7 +315,6 @@ export class InventoryService {
         itemCatalog.brand,
         itemCatalog.model,
         itemCatalog.itemTypeId,
-        itemCatalog.trackingType,
         itemCatalog.isBundle,
         itemCatalog.defaultOwnership,
         itemCatalog.defaultSalePrice,
@@ -349,7 +353,6 @@ export class InventoryService {
         brand: itemCatalog.brand,
         model: itemCatalog.model,
         itemType: sql<string>`coalesce(${itemCatalog.itemTypeId}::text, 'other')`,
-        trackingType: itemCatalog.trackingType,
         isBundle: itemCatalog.isBundle,
         defaultOwnership: itemCatalog.defaultOwnership,
         defaultSalePrice: itemCatalog.defaultSalePrice,
@@ -360,7 +363,7 @@ export class InventoryService {
         description: itemCatalog.description,
       })
       .from(itemCatalog)
-      .where(and(eq(itemCatalog.id, id), eq(itemCatalog.tenantId, tenantId)));
+      .where(and(eq(itemCatalog.id, id), eq(itemCatalog.tenantId, tenantId), isNull(itemCatalog.deletedAt)));
 
     if (!catalog) {
       throw notFound('Item not found in catalog');
@@ -374,7 +377,6 @@ export class InventoryService {
         macAddress: equipment.macAddress,
         barcode: equipment.barcode,
         inventoryStatus: equipment.inventoryStatus,
-        quantity: equipment.quantity,
         locationId: equipment.locationId,
         locationName: locations.name,
         staffName: users.name,
@@ -385,34 +387,25 @@ export class InventoryService {
       .where(and(eq(equipment.catalogId, id), eq(equipment.tenantId, tenantId), ...this.visibleStock(access)))
       .limit(50);
 
-    const totalStock = unitRows.reduce((acc, u) => acc + u.quantity, 0);
-    const availableStock = unitRows.filter(u => u.inventoryStatus === INVENTORY_STATUS.AVAILABLE).reduce((acc, u) => acc + u.quantity, 0);
-    const issuedStock = unitRows.filter(u => u.inventoryStatus === INVENTORY_STATUS.ALLOCATED).reduce((acc, u) => acc + u.quantity, 0);
-    const inTransitStock = unitRows.filter(u => u.inventoryStatus === INVENTORY_STATUS.STAFF_VAN).reduce((acc, u) => acc + u.quantity, 0);
+    const [totals] = await this.db
+      .select({
+        totalStock: sql<number>`count(*)::int`,
+        availableStock: sql<number>`count(*) FILTER (WHERE ${equipment.inventoryStatus} = ${INVENTORY_STATUS.AVAILABLE})::int`,
+        issuedStock: sql<number>`count(*) FILTER (WHERE ${equipment.inventoryStatus} = ${INVENTORY_STATUS.ALLOCATED})::int`,
+        inTransitStock: sql<number>`count(*) FILTER (WHERE ${equipment.inventoryStatus} = ${INVENTORY_STATUS.STAFF_VAN})::int`,
+      })
+      .from(equipment)
+      .where(and(eq(equipment.catalogId, id), eq(equipment.tenantId, tenantId), ...this.visibleStock(access)));
+
+    const { totalStock = 0, availableStock = 0, issuedStock = 0, inTransitStock = 0 } = totals ?? {};
 
     const firstUnitWithLoc = unitRows.find(u => u.locationName != null);
     const itemLocationId = firstUnitWithLoc?.locationId ?? null;
     const itemLocationName = firstUnitWithLoc?.locationName ?? null;
 
-    let bundleComponents: ItemDetailsResponse['bundleComponents'] = [];
-    if (catalog.isBundle) {
-      const bRows = await this.db
-        .select({
-          componentId: bundleItems.componentCatalogId,
-          name: itemCatalog.name,
-          code: itemCatalog.code,
-          quantity: bundleItems.quantity,
-          isOptional: bundleItems.isOptional,
-        })
-        .from(bundleItems)
-        .innerJoin(itemCatalog, eq(bundleItems.componentCatalogId, itemCatalog.id))
-        .where(eq(bundleItems.bundleCatalogId, id));
-
-      bundleComponents = bRows;
-    }
-
     return {
       ...catalog,
+      bundleContents: [],
       totalStock,
       availableStock,
       issuedStock,
@@ -429,7 +422,7 @@ export class InventoryService {
         locationName: u.locationName,
         staffName: u.staffName,
       })),
-      bundleComponents,
+      bundleComponents: [],
     };
   }
 
@@ -480,7 +473,6 @@ export class InventoryService {
         serialNumber: input.serialNumber ?? `SN-${Date.now().toString().slice(-6)}`,
         inventoryStatus: INVENTORY_STATUS.AVAILABLE,
         ownershipType: input.ownershipType ?? defaultOwnership,
-        quantity: 1,
       })
       .returning(columns);
 
@@ -575,7 +567,7 @@ export class InventoryService {
     const [catalog] = await this.db
       .select({ id: itemCatalog.id, name: itemCatalog.name, code: itemCatalog.code, defaultOwnership: itemCatalog.defaultOwnership })
       .from(itemCatalog)
-      .where(and(eq(itemCatalog.id, input.catalogId), eq(itemCatalog.tenantId, tenantId)));
+      .where(and(eq(itemCatalog.id, input.catalogId), eq(itemCatalog.tenantId, tenantId), isNull(itemCatalog.deletedAt)));
 
     if (!catalog) {
       throw notFound('Catalog item not found');
@@ -612,8 +604,6 @@ export class InventoryService {
           equipmentId: unitId,
           status: CUSTOMER_EQUIPMENT_STATUS.ACTIVE,
           ownershipType: input.ownershipType ?? catalog.defaultOwnership,
-          chargedAmount: input.chargedAmount ?? '0',
-          depositAmount: input.depositAmount ?? '0',
           assignedBy: access.userId,
           notes: input.notes ?? null,
         })
@@ -686,7 +676,7 @@ export class InventoryService {
     const [existing] = await this.db
       .select()
       .from(itemCatalog)
-      .where(and(eq(itemCatalog.id, id), eq(itemCatalog.tenantId, tenantId)));
+      .where(and(eq(itemCatalog.id, id), eq(itemCatalog.tenantId, tenantId), isNull(itemCatalog.deletedAt)));
 
     if (!existing) {
       throw notFound('Item not found');
@@ -698,7 +688,7 @@ export class InventoryService {
         ...input,
         updatedAt: new Date(),
       })
-      .where(and(eq(itemCatalog.id, id), eq(itemCatalog.tenantId, tenantId)))
+      .where(and(eq(itemCatalog.id, id), eq(itemCatalog.tenantId, tenantId), isNull(itemCatalog.deletedAt)))
       .returning();
 
     await audit.updated(this.db, access.audit, {
@@ -721,15 +711,28 @@ export class InventoryService {
     const [existing] = await this.db
       .select()
       .from(itemCatalog)
-      .where(and(eq(itemCatalog.id, id), eq(itemCatalog.tenantId, tenantId)));
+      .where(and(eq(itemCatalog.id, id), eq(itemCatalog.tenantId, tenantId), isNull(itemCatalog.deletedAt)));
 
     if (!existing) {
       throw notFound('Item not found');
     }
 
+    const [live] = await this.db
+      .select({ total: sql<number>`count(*)::int` })
+      .from(equipment)
+      .where(and(
+        eq(equipment.tenantId, tenantId),
+        eq(equipment.catalogId, id),
+        sql`${equipment.inventoryStatus} <> ${INVENTORY_STATUS.RETIRED}`,
+      ));
+
+    if ((live?.total ?? 0) > 0)
+      throw inUse(`${live!.total} unit(s) of this item are still on the books; retire them first`);
+
     await this.db
-      .delete(itemCatalog)
-      .where(and(eq(itemCatalog.id, id), eq(itemCatalog.tenantId, tenantId)));
+      .update(itemCatalog)
+      .set({ deletedAt: new Date(), updatedAt: new Date() })
+      .where(and(eq(itemCatalog.id, id), eq(itemCatalog.tenantId, tenantId), isNull(itemCatalog.deletedAt)));
 
     await audit.deleted(this.db, access.audit, {
       entityType: AUDIT_ENTITIES.INVENTORY_ITEM,
@@ -822,17 +825,11 @@ export class InventoryService {
       throw notFound('Approval request not found');
     }
 
-    if (input.status === INVENTORY_REQUEST_STATUS.APPROVED && req.proposedData !== null) {
-      const proposed = req.proposedData;
-      if (req.requestType === INVENTORY_REQUEST_TYPE.CREATE_ITEM) {
-        await this.createCatalogItem(access, parseProposed(CreateCatalogItemBody, proposed));
-      }
-      else if (req.requestType === INVENTORY_REQUEST_TYPE.UPDATE_ITEM && req.targetItemId !== null) {
-        await this.updateCatalogItem(access, req.targetItemId, parseProposed(UpdateCatalogItemBody, proposed));
-      }
-      else if (req.requestType === INVENTORY_REQUEST_TYPE.DELETE_ITEM && req.targetItemId !== null) {
-        await this.deleteCatalogItem(access, req.targetItemId);
-      }
+    if (req.status !== INVENTORY_REQUEST_STATUS.PENDING)
+      throw conflict('This request has already been reviewed');
+
+    if (input.status === INVENTORY_REQUEST_STATUS.APPROVED) {
+      await this.applyApprovedRequest(access, req);
     }
 
     const [updated] = await this.db
@@ -855,6 +852,20 @@ export class InventoryService {
     });
 
     return updated;
+  }
+
+  private async applyApprovedRequest(access: RequestAccess, req: typeof approvalRequests.$inferSelect) {
+    const proposed = req.proposedData;
+
+    if (req.requestType === INVENTORY_REQUEST_TYPE.CREATE_ITEM && proposed !== null) {
+      await this.createCatalogItem(access, parseProposed(CreateCatalogItemBody, proposed));
+    }
+    else if (req.requestType === INVENTORY_REQUEST_TYPE.UPDATE_ITEM && req.targetItemId !== null && proposed !== null) {
+      await this.updateCatalogItem(access, req.targetItemId, parseProposed(UpdateCatalogItemBody, proposed));
+    }
+    else if (req.requestType === INVENTORY_REQUEST_TYPE.DELETE_ITEM && req.targetItemId !== null) {
+      await this.deleteCatalogItem(access, req.targetItemId);
+    }
   }
 
   async getMovements(access: RequestAccess, limit = 50) {
@@ -909,7 +920,7 @@ export class InventoryService {
         id: locations.id,
         name: locations.name,
         code: locations.code,
-        itemCount: sql<number>`coalesce(sum(${equipment.quantity}), 0)::int`,
+        itemCount: sql<number>`count(${equipment.id})::int`,
       })
       .from(locations)
       .leftJoin(equipment, and(
@@ -929,7 +940,7 @@ export class InventoryService {
         ),
       )
       .groupBy(locations.id, locations.name, locations.code)
-      .orderBy(desc(sql`coalesce(sum(${equipment.quantity}), 0)`), locations.name);
+      .orderBy(desc(sql`count(${equipment.id})`), locations.name);
 
     return rows.map(r => ({
       id: r.id,
@@ -995,13 +1006,14 @@ export class InventoryService {
         model: itemCatalog.model,
         defaultSalePrice: itemCatalog.defaultSalePrice,
         defaultDepositAmount: itemCatalog.defaultDepositAmount,
-        availableStock: sql<number>`coalesce(sum(case when ${equipment.inventoryStatus} = ${INVENTORY_STATUS.AVAILABLE} then ${equipment.quantity} else 0 end), 0)::int`,
+        availableStock: sql<number>`count(*) FILTER (WHERE ${equipment.inventoryStatus} = ${INVENTORY_STATUS.AVAILABLE})::int`,
       })
       .from(itemCatalog)
       .leftJoin(equipment, and(eq(itemCatalog.id, equipment.catalogId), eq(equipment.tenantId, tenantId)))
       .where(
         and(
           eq(itemCatalog.tenantId, tenantId),
+          isNull(itemCatalog.deletedAt),
           or(
             eq(itemCatalog.code, q),
             ilike(itemCatalog.name, searchPattern),
@@ -1070,6 +1082,12 @@ export class InventoryService {
     if (query.customerId !== undefined) {
       conditions.push(eq(customerEquipment.customerId, query.customerId));
     }
+    if (query.status !== undefined) {
+      conditions.push(eq(customerEquipment.status, query.status as CustomerEquipmentStatus));
+    }
+    if (query.equipmentId !== undefined) {
+      conditions.push(eq(customerEquipment.equipmentId, query.equipmentId));
+    }
 
     const rows = await this.db
       .select({
@@ -1081,9 +1099,13 @@ export class InventoryService {
         equipmentId: customerEquipment.equipmentId,
         status: customerEquipment.status,
         ownershipType: customerEquipment.ownershipType,
-        chargedAmount: customerEquipment.chargedAmount,
-        depositAmount: customerEquipment.depositAmount,
         assignedAt: customerEquipment.assignedAt,
+        returnedAt: customerEquipment.returnedAt,
+        returnCondition: customerEquipment.returnCondition,
+        returnRemarks: customerEquipment.returnRemarks,
+        returnedToLocationId: customerEquipment.returnedToLocationId,
+        depositRefundStatus: customerEquipment.depositRefundStatus,
+        depositDeductionAmount: customerEquipment.depositDeductionAmount,
         itemName: itemCatalog.name,
         itemCode: itemCatalog.code,
         serialNumber: equipment.serialNumber,
@@ -1103,7 +1125,119 @@ export class InventoryService {
       ...r,
       customerName: r.customerName ?? 'Customer',
       assignedAt: r.assignedAt.toISOString(),
+      returnedAt: r.returnedAt ? r.returnedAt.toISOString() : null,
+      returnCondition: r.returnCondition ?? null,
+      returnRemarks: r.returnRemarks ?? null,
+      returnedToLocationId: r.returnedToLocationId ?? null,
+      depositRefundStatus: r.depositRefundStatus,
+      depositDeductionAmount: r.depositDeductionAmount,
     }));
+  }
+
+  async returnCustomerEquipment(access: RequestAccess, input: ReturnCustomerEquipmentBody): Promise<ReturnCustomerEquipmentResponse> {
+    const tenantId = access.tenantId;
+
+    const [assignment] = await this.db
+      .select()
+      .from(customerEquipment)
+      .where(and(
+        eq(customerEquipment.id, input.customerEquipmentId),
+        eq(customerEquipment.tenantId, tenantId),
+      ))
+      .limit(1);
+
+    if (!assignment) {
+      throw notFound('Customer equipment assignment not found');
+    }
+
+    if (assignment.status === CUSTOMER_EQUIPMENT_STATUS.RETURNED) {
+      throw badRequest(ERROR_CODES.RESOURCE_CONFLICT, 'Equipment has already been returned');
+    }
+
+    const [unit] = await this.db
+      .select()
+      .from(equipment)
+      .where(and(eq(equipment.id, assignment.equipmentId), eq(equipment.tenantId, tenantId)))
+      .limit(1);
+
+    if (!unit) {
+      throw notFound('Physical equipment record not found');
+    }
+
+    const returnCondition = input.returnCondition ?? EQUIPMENT_RETURN_CONDITION.WORKING;
+    const isFaultyOrDamaged = returnCondition === EQUIPMENT_RETURN_CONDITION.FAULTY || returnCondition === EQUIPMENT_RETURN_CONDITION.DAMAGED;
+    const nextInventoryStatus = isFaultyOrDamaged
+      ? INVENTORY_STATUS.FAULTY
+      : INVENTORY_STATUS.AVAILABLE;
+
+    const targetLocationId = input.returnedToLocationId ?? unit.locationId;
+    if (input.returnedToLocationId !== undefined) {
+      await this.assertLocations(access, [input.returnedToLocationId]);
+    }
+
+    const now = new Date();
+
+    const result = await this.db.transaction(async (tx) => {
+      const [updatedAssignment] = await tx
+        .update(customerEquipment)
+        .set({
+          status: CUSTOMER_EQUIPMENT_STATUS.RETURNED,
+          returnedAt: now,
+          returnCondition,
+          collectedBy: access.userId,
+          returnedToLocationId: targetLocationId,
+          returnRemarks: input.returnRemarks ?? null,
+          depositRefundStatus: input.depositRefundStatus ?? 'not_applicable',
+          depositDeductionAmount: input.depositDeductionAmount ?? '0',
+          notes: input.notes ?? assignment.notes,
+          updatedAt: now,
+        })
+        .where(and(
+          eq(customerEquipment.id, assignment.id),
+          eq(customerEquipment.tenantId, tenantId),
+        ))
+        .returning();
+
+      await tx
+        .update(equipment)
+        .set({
+          inventoryStatus: nextInventoryStatus,
+          locationId: targetLocationId,
+          staffId: null,
+          updatedAt: now,
+        })
+        .where(and(eq(equipment.id, unit.id), eq(equipment.tenantId, tenantId)));
+
+      await tx.insert(stockMovements).values({
+        tenantId,
+        equipmentId: unit.id,
+        movementType: STOCK_MOVEMENT_TYPE.CUSTOMER_RETURN,
+        fromLocationId: unit.locationId,
+        toLocationId: targetLocationId,
+        performedBy: access.userId,
+        quantity: 1,
+        notes: `Customer return (${returnCondition}): ${input.returnRemarks ?? 'No remarks'}`,
+      });
+
+      return updatedAssignment!;
+    });
+
+    await audit.updated(this.db, access.audit, {
+      entityType: AUDIT_ENTITIES.INVENTORY_CUSTOMER_EQUIPMENT,
+      entityId: result.id,
+      before: assignment,
+      after: result,
+    });
+
+    return {
+      id: result.id,
+      equipmentId: result.equipmentId,
+      customerId: result.customerId,
+      status: result.status,
+      returnedAt: result.returnedAt!.toISOString(),
+      returnCondition: result.returnCondition,
+      equipmentStatus: nextInventoryStatus,
+    };
   }
 
   async inwardStock(access: RequestAccess, input: InwardStockBody) {
@@ -1114,7 +1248,7 @@ export class InventoryService {
     const [catalog] = await this.db
       .select()
       .from(itemCatalog)
-      .where(and(eq(itemCatalog.id, input.catalogId), eq(itemCatalog.tenantId, tenantId)))
+      .where(and(eq(itemCatalog.id, input.catalogId), eq(itemCatalog.tenantId, tenantId), isNull(itemCatalog.deletedAt)))
       .limit(1);
 
     if (!catalog) {
@@ -1122,20 +1256,21 @@ export class InventoryService {
     }
 
     const serials = input.serialNumbers?.filter(Boolean) ?? [];
-    const quantity = serials.length > 0 ? serials.length : (input.quantity ?? 1);
+
+    const quantity = Math.max(input.quantity ?? serials.length, serials.length, 1);
+
+    const numbers: (string | null)[] = Array.from(
+      { length: quantity },
+      (_, index) => serials[index] ?? null,
+    );
 
     const insertedMovements: StockMovementRecord[] = [];
 
     await this.db.transaction(async (tx) => {
       const base = { tenantId, catalog, input, userId: access.userId };
 
-      if (serials.length > 0) {
-        for (const serialNumber of serials)
-          insertedMovements.push(await this.inwardUnit(tx, { ...base, serialNumber, quantity: 1 }));
-      }
-      else {
-        insertedMovements.push(await this.inwardUnit(tx, { ...base, serialNumber: null, quantity }));
-      }
+      for (const serialNumber of numbers)
+        insertedMovements.push(await this.inwardUnit(tx, { ...base, serialNumber }));
     });
 
     const primaryMovement = insertedMovements[0];
@@ -1160,9 +1295,8 @@ export class InventoryService {
     input: InwardStockBody;
     userId: string;
     serialNumber: string | null;
-    quantity: number;
   }): Promise<StockMovementRecord> {
-    const { tenantId, catalog, input, serialNumber, quantity } = spec;
+    const { tenantId, catalog, input, serialNumber } = spec;
     const locationId = input.locationId ?? null;
 
     const [eqItem] = await tx
@@ -1172,14 +1306,13 @@ export class InventoryService {
         catalogId: catalog.id,
         locationId,
         ...(serialNumber === null ? {} : { serialNumber }),
-        quantity,
         costPrice: input.costPrice ?? '0',
         depositAmount: input.depositAmount ?? '0',
         inventoryStatus: INVENTORY_STATUS.AVAILABLE,
       })
       .returning();
 
-    const detail = serialNumber === null ? `Qty: ${quantity}` : `SN: ${serialNumber}`;
+    const detail = serialNumber === null ? 'no serial' : `SN: ${serialNumber}`;
     const [movement] = await tx
       .insert(stockMovements)
       .values({
@@ -1188,7 +1321,7 @@ export class InventoryService {
         movementType: STOCK_MOVEMENT_TYPE.INWARD,
         toLocationId: locationId,
         performedBy: spec.userId,
-        quantity,
+        quantity: 1,
         notes: input.notes ?? `Stock inward: ${catalog.name} (${detail})`,
       })
       .returning();

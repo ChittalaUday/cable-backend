@@ -35,8 +35,6 @@ describe('device fingerprint', () => {
   it('records every characteristic the client sends', async () => {
     const device = await register(uniqueDeviceId());
 
-    // ram_mb and screen_resolution were columns nothing wrote for a long time,
-    // and model/os_version never arrived because the app did not send them.
     expect(device).toMatchObject({
       platform: 'android',
       osVersion: '34',
@@ -52,8 +50,6 @@ describe('device fingerprint', () => {
     const clientDeviceId = uniqueDeviceId();
     await register(clientDeviceId);
 
-    // The push-token route and sign-in both upsert the same row; a request with
-    // fewer headers must not wipe the fingerprint a richer one recorded.
     const again = await sessions.upsertDevice({
       clientDeviceId,
       platform: 'android',

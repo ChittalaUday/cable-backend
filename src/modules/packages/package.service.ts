@@ -45,12 +45,6 @@ type Tx = Parameters<Parameters<Db['transaction']>[0]>[0];
 export class PackagesService {
   constructor(private readonly db: Db) {}
 
-  /**
-   * Below `ALL`, a package is the caller's to see when its own coverage — or
-   * the provider's, or the service's above it — reaches an area they hold (§5).
-   * Every query that returns packages joins the provider, so the service id is
-   * already in scope.
-   */
   private packagesInReach(access: RequestAccess, key: PermissionKey): SQL[] {
     const reach = locationScopeFor(access, key);
 
@@ -65,7 +59,6 @@ export class PackagesService {
     }, reach.nodeIds)];
   }
 
-  /** A channel rides its provider — it carries no coverage of its own. */
   private channelsInReach(access: RequestAccess, key: PermissionKey): SQL[] {
     const reach = locationScopeFor(access, key);
 

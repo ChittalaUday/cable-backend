@@ -27,12 +27,6 @@ export function underAnyGrant(nodeId: SQL | string, nodeIds: readonly string[]):
   )`;
 }
 
-/**
- * The node and a granted node sit on one root path — either the column is
- * inside a grant, or a grant is inside the column's subtree. A coverage row on
- * the whole district governs an area manager's block, so hiding it would show
- * them a rule they are subject to as an absence of one.
- */
 export function overlapsAnyGrant(column: SQL, nodeIds: readonly string[]): SQL {
   if (nodeIds.length === 0)
     return sql`false`;

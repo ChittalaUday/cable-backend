@@ -249,6 +249,9 @@ export class StorageService {
     if (file.status === FILE_STATUS.READY)
       return { userFile, file };
 
+    if (file.storageKey === null)
+      return { userFile, file };
+
     const head = await this.options.provider.head(file.storageKey);
 
     if (!head) {
@@ -318,6 +321,12 @@ export class StorageService {
     if (file.status !== FILE_STATUS.READY)
       throw notFound('File');
 
+    if (file.publicUrl !== null)
+      return { url: file.publicUrl, expiresAt: new Date(Date.now() + 86400000) };
+
+    if (file.storageKey === null)
+      throw notFound('File');
+
     const signed = await this.options.provider.createDownloadUrl(file.storageKey, this.options.downloadUrlTtlSeconds);
     return { url: signed.url, expiresAt: signed.expiresAt };
   }
@@ -349,15 +358,6 @@ export class StorageService {
     return row;
   }
 
-  /**
-   * Says which kind of "not found" this is.
-   *
-   * Two uuids exist for every upload — the `files` row that owns the bytes and
-   * the `user_files` row that is somebody's reference to them — and the API
-   * takes the second. Handing it the first is an easy mistake that a bare
-   * "File not found" gives no way to spot, and the answer differs again when
-   * the reference is simply deleted.
-   */
   private async explainMissing(id: string): Promise<DomainError> {
     const [deleted] = await this.db.select({ id: userFiles.id })
       .from(userFiles)
@@ -386,20 +386,6 @@ export class StorageService {
     return notFound('File');
   }
 
-  /**
-   * Finds objects in the bucket that no `files` row points at, and optionally
-   * removes them.
-   *
-   * The scheduled cleanup works the other way round — from a row outwards — so
-   * it can never see an object the database has no record of at all. Those
-   * accumulate from interrupted uploads and from rows deleted before the
-   * object was.
-   *
-   * Destructive and not reversible, so it reports by default and only deletes
-   * when asked. `minimumAgeMinutes` is the other guard: an upload writes its
-   * object and its row a moment apart, and sweeping in between would delete a
-   * file somebody is still uploading.
-   */
   async sweepOrphanedObjects(options: OrphanSweepOptions = {}): Promise<OrphanSweepReport> {
     const dryRun = options.dryRun ?? true;
     const minimumAgeMinutes = options.minimumAgeMinutes ?? 120;
@@ -436,7 +422,6 @@ export class StorageService {
     return report;
   }
 
-  /** Which of these objects no `files` row claims, and which are too new to judge. */
   private async orphansIn(
     objects: StoredObject[],
     cutoff: Date,
@@ -500,7 +485,7 @@ export class StorageService {
         continue;
       }
 
-      if (this.options.provider.configured) {
+      if (this.options.provider.configured && pendingFile.storageKey !== null) {
         const head = await this.options.provider.head(pendingFile.storageKey);
         if (head !== null) {
           await this.options.provider.remove(pendingFile.storageKey);
@@ -540,7 +525,7 @@ export class StorageService {
 
       const totalActive = Number(activeRefs?.total ?? 0);
       if (totalActive === 0) {
-        if (this.options.provider.configured) {
+        if (this.options.provider.configured && readyFile.storageKey !== null) {
           await this.options.provider.remove(readyFile.storageKey);
         }
         await this.db.update(files)
@@ -549,7 +534,7 @@ export class StorageService {
 
         orphanedFilesCleaned++;
       }
-      else if (verifyStorageIntegrity && this.options.provider.configured) {
+      else if (verifyStorageIntegrity && this.options.provider.configured && readyFile.storageKey !== null) {
         const head = await this.options.provider.head(readyFile.storageKey);
         if (head === null) {
           await this.db.update(files)

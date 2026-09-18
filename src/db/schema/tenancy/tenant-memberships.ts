@@ -20,7 +20,11 @@ export const tenantMemberships = tenancy.table('tenant_memberships', {
 
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  deletedAt: timestamp('deleted_at', { withTimezone: true }),
 }, table => [
+  // Stays total, not partial: crm.account_transactions points its collector at
+  // (tenant_id, user_id) and Postgres will not hang a foreign key off a partial
+  // index. Taking someone back on restores this row instead of inserting a second.
   unique('tenant_memberships_user_tenant_uq').on(table.userId, table.tenantId),
 
   foreignKey({

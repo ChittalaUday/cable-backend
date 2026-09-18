@@ -25,10 +25,6 @@ import {
   UnreadCountResponse,
 } from './notification.schema';
 
-/**
- * Your own inbox needs no permission — it is scoped to you — but it still needs
- * to know which tenant you are reading as, the same way `requirePermission` does.
- */
 function tenantOf(request: FastifyRequest): string {
   if (request.tenantId === undefined) {
     throw badRequest(
@@ -59,10 +55,6 @@ function audienceOf(body: SendBody): Audience {
 }
 
 const routes: FastifyPluginAsyncTypebox = async (app) => {
-  // ------------------------------------------------------------- the inbox
-  // Same four routes for admin, staff and customer. They differ in what they
-  // receive, not in how they read it.
-
   app.get('/notifications', {
     schema: {
       tags: ['notifications'],
@@ -124,8 +116,6 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
     return { updated };
   });
 
-  // -------------------------------------------------------- device registry
-
   app.post('/notifications/token', {
     config: { public: true, rateLimit: { max: 20, timeWindow: '1 minute' } },
     schema: {
@@ -163,11 +153,6 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
     return { status: 'registered' as const };
   });
 
-  // ------------------------------------------------------------- sending
-  // ponytail: no scheduling, no templates, no per-user preferences, no dedup —
-  // this writes the rows and pushes them on the spot. Add a queue when a blast
-  // is big enough that a request timeout becomes the limit.
-
   app.post('/notifications/send', {
     preHandler: app.requirePermission(PERMISSIONS.NOTIFICATIONS_SEND),
     schema: {
@@ -180,8 +165,6 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   }, async (request) => {
     const audience = audienceOf(request.body);
 
-    // Staff raise things with admins; they do not address customers or the
-    // whole tenant. Admins have no such limit.
     const isAdmin = request.access.permissions.has(PERMISSIONS.STAFF_CREATE);
     if (!isAdmin && !(audience.kind === 'role' && audience.roleId === 'admin')) {
       throw forbidden(
@@ -202,12 +185,9 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
       imageUrl: request.body.imageUrl ?? null,
     });
 
-    // Somebody addressed other people. Who, how many, and with what.
     await audit.log(request.server.db, request.access.audit, {
       action: AUDIT_ACTIONS.NOTIFICATION_SENT,
       entityType: AUDIT_ENTITIES.NOTIFICATION,
-      // A broadcast writes a row per recipient, so there is no one id to name —
-      // same synthetic-label convention as the storage cleanup job.
       entityId: 'broadcast',
       metadata: {
         audience: request.body.audience,
@@ -225,12 +205,6 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 };
 
-/**
- * The device registry is public, so a tenant claimed in a header could not be
- * trusted. If a valid Bearer token happens to be present we take the tenant
- * from its claims instead; otherwise the device stays untenanted until the
- * next call that does carry one.
- */
 async function softTenant(request: FastifyRequest): Promise<string | null> {
   if (request.headers.authorization === undefined)
     return null;

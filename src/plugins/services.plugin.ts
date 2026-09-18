@@ -12,6 +12,7 @@ import { AccessService } from '@/modules/iam/access.service';
 import { InventoryService } from '@/modules/inventory/inventory.service';
 import { LocationsService } from '@/modules/locations/location.service';
 import { PackagesService } from '@/modules/packages/package.service';
+import { PaymentService } from '@/modules/payments/payment.service';
 import { RemotesService } from '@/modules/remotes/remote.service';
 import { CoverageService } from '@/modules/services/coverage.service';
 import { ServicesService } from '@/modules/services/service.service';
@@ -34,6 +35,7 @@ declare module 'fastify' {
     staff: StaffService;
     teams: TeamsService;
     packages: PackagesService;
+    payments: PaymentService;
     services: ServicesService;
     coverage: CoverageService;
     remotes: RemotesService;
@@ -46,18 +48,11 @@ declare module 'fastify' {
 }
 
 export default fp(async (app) => {
-  // 1. Cross-cutting shared services
   const providers: MessagingProvider[] = [];
 
-  // Assigned below, once the messaging service it depends on exists. The
-  // provider only reaches for it when a session cannot be restarted, which is
-  // long after startup.
   let notifications: NotificationService | undefined;
   let lastAlertAt = 0;
 
-  // A WhatsApp session that needs a human stays broken for as long as it takes
-  // somebody to scan a code. Alerting on every OTP in the meantime would bury
-  // the first alert under hundreds of copies.
   const ALERT_INTERVAL_MS = 15 * 60 * 1000;
 
   function alertAdminsOnce(detail: { status: string; reason: string }): void {
@@ -117,7 +112,6 @@ export default fp(async (app) => {
   const storage = createStorageService(app.db, storageProvider);
   notifications = new NotificationService(app.db, messaging);
 
-  // 2. Domain Services
   const customerRepo = new CustomerRepository(app.db);
   const locations = new LocationsService(app.db);
   const customers = new CustomerService(customerRepo);
@@ -126,12 +120,29 @@ export default fp(async (app) => {
   const staff = new StaffService(app.db, locations, access);
   const teams = new TeamsService(app.db, locations, access);
   const packages = new PackagesService(app.db);
+  const payments = new PaymentService(app.db, (event) => {
+    notifications
+      .signal(
+        event.tenantId,
+        [
+          { kind: 'role', roleId: 'admin' },
+          { kind: 'role', roleId: 'staff' },
+          ...(event.customerUserId === null ? [] : [{ kind: 'user' as const, userIds: [event.customerUserId] }]),
+        ],
+        { sync: 'payments', collectionId: event.collectionId, customerId: event.customerId },
+      )
+      .catch((error: unknown) => {
+        app.log.error(
+          { err: error, collectionId: event.collectionId, tenantId: event.tenantId },
+          'payment recorded, but the live update was not delivered',
+        );
+      });
+  });
   const services = new ServicesService(app.db);
   const coverage = new CoverageService(app.db, locations);
   const remotes = new RemotesService(app.db);
   const analytics = new AnalyticsService(app.db);
 
-  // 3. Decorate Fastify Instance
   app.decorate('messaging', messaging);
   app.decorate('notifications', notifications);
   app.decorate('storage', storage);
@@ -143,6 +154,7 @@ export default fp(async (app) => {
   app.decorate('staff', staff);
   app.decorate('teams', teams);
   app.decorate('packages', packages);
+  app.decorate('payments', payments);
   app.decorate('services', services);
   app.decorate('coverage', coverage);
   app.decorate('remotes', remotes);

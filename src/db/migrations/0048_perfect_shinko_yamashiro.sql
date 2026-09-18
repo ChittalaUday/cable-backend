@@ -1,1 +1,0 @@
-ALTER TABLE "auth"."devices" ADD COLUMN "manufacturer" text;

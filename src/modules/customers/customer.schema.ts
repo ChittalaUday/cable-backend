@@ -23,6 +23,7 @@ export const SubscriptionResponse = Type.Object({
   endDate: Nullable(Type.String({ format: 'date-time' })),
   billingCycle: BillingCycleSchema,
   price: Money,
+  outstandingBalance: Money,
   locationId: Uuid,
   installationAddress: Nullable(Type.String()),
   service: Type.Object({
@@ -109,7 +110,7 @@ const SearchServiceAccountResponse = Type.Object({
 
 const SearchEquipmentResponse = Type.Object({
   id: Uuid,
-  subscriptionId: Uuid,
+  subscriptionId: Nullable(Uuid),
   type: Type.String(),
   brand: Nullable(Type.String()),
   model: Nullable(Type.String()),
@@ -145,7 +146,7 @@ export const CustomerListItemResponse = Type.Object({
 
 const EquipmentResponse = Type.Object({
   id: Uuid,
-  subscriptionId: Uuid,
+  subscriptionId: Nullable(Uuid),
   name: Type.String(),
   serialNumber: Nullable(Type.String()),
   status: Type.String(),

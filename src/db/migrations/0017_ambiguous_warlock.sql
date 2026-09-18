@@ -1,1 +1,0 @@
-ALTER TABLE "auth"."users" DROP COLUMN "is_super_admin";

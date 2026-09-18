@@ -13,9 +13,14 @@ export class AuthRepository {
   constructor(private readonly db: Database) {}
 
   async findUserById(id: string): Promise<User | null> {
-    const [user] = await this.db.select().from(users).where(eq(users.id, id));
+    const [user] = await this.db.select().from(users).where(and(eq(users.id, id), isNull(users.deletedAt)));
     return user ?? null;
   }
+
+  // The identifier lookups below deliberately still see soft-deleted accounts: the
+  // unique constraints on phone/email are global, so hiding the row here would turn
+  // a sign-in attempt into a duplicate-account insert. Sign-in is refused by
+  // AuthService.assertUsable instead.
 
   async findUserByPhone(phone: string): Promise<User | null> {
     const [user] = await this.db.select().from(users).where(eq(users.phone, phone));

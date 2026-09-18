@@ -1,8 +1,8 @@
 {
   "info": {
-    "name": "Cable Backend — API v1",
+    "name": "Cable Backend \u2014 API v1",
     "_postman_id": "b1f7c5a2-0e3d-4a91-9c4e-5d2f8a1b6c77",
-    "description": "Satya Cable & Broadband API.\n\nTokens are handled for you:\n- Any response containing `accessToken` is captured into the environment.\n- Before every authenticated request, the token is refreshed if it is missing or within 60s of expiry.\n- A rejected refresh clears the environment, because replaying a rotated refresh token revokes the session (AGENTS.md §4.6).\n\nStart with **Auth > OTP > Request code**, then **Verify code**.",
+    "description": "Satya Cable & Broadband API.\n\nTokens are handled for you:\n- Any response containing `accessToken` is captured into the environment.\n- Before every authenticated request, the token is refreshed if it is missing or within 60s of expiry.\n- A rejected refresh clears the environment, because replaying a rotated refresh token revokes the session (AGENTS.md \u00a74.6).\n\nStart with **Auth > OTP > Request code**, then **Verify code**.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "auth": {
@@ -119,6 +119,18 @@
           "    }",
           "}",
           "",
+          "// A recorded receipt is what every other payments request needs a handle on.",
+          "if (path.match(/\\/payments$/) && pm.request.method === 'POST') {",
+          "    if (pm.response.code === 201) {",
+          "        let receipt = null;",
+          "        try { receipt = pm.response.json(); } catch (e) { receipt = null; }",
+          "        if (receipt && receipt.id) {",
+          "            pm.environment.set('paymentId', receipt.id);",
+          "            console.log('[payments]', receipt.outcome, receipt.totalCollected, '- paymentId stored');",
+          "        }",
+          "    }",
+          "}",
+          "",
           "// On logout, clear session credentials from environment",
           "if (path.endsWith('auth/logout') || path.endsWith('auth/logout-all')) {",
           "    if (pm.response.code >= 200 && pm.response.code < 300) {",
@@ -130,7 +142,7 @@
           "    }",
           "}",
           "",
-          "// Every error carries a machine-readable `code` (AGENTS.md §7.1).",
+          "// Every error carries a machine-readable `code` (AGENTS.md \u00a77.1).",
           "if (pm.response.code >= 400) {",
           "    let body = null;",
           "    try { body = pm.response.json(); } catch (e) { body = null; }",
@@ -238,7 +250,7 @@
                     "request"
                   ]
                 },
-                "description": "Always answers 202, registered or not — a different answer would be a user-enumeration oracle.\n\n502 OTP_DELIVERY_FAILED usually means the WhatsApp session is disconnected and needs a QR scan.",
+                "description": "Always answers 202, registered or not \u2014 a different answer would be a user-enumeration oracle.\n\n502 OTP_DELIVERY_FAILED usually means the WhatsApp session is disconnected and needs a QR scan.",
                 "body": {
                   "mode": "raw",
                   "raw": "{\n  \"phone\": \"{{phone}}\",\n  \"channel\": \"whatsapp\"\n}",
@@ -335,7 +347,7 @@
                 "login"
               ]
             },
-            "description": "Email accounts only. Phone accounts sign in with an OTP.\n\nSets `tenantId` from the FIRST membership only as a convenience for this collection. A real client with more than one must ask the user — see the Auth folder note.",
+            "description": "Email accounts only. Phone accounts sign in with an OTP.\n\nSets `tenantId` from the FIRST membership only as a convenience for this collection. A real client with more than one must ask the user \u2014 see the Auth folder note.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"identifier\": \"{{identifier}}\",\n  \"password\": \"{{password}}\"\n}",
@@ -407,7 +419,7 @@
                 "me"
               ]
             },
-            "description": "The signed-in user, the session, and every tenant they are a member of with the role they hold there.\n\nAlso carries `customer`: the subscriber record in the **active** tenant — its primary address, every subscription joined through package → provider → service, and a `summary` a home screen can render on its own.\n\n`customer` is `null` for staff (a login without a subscriber record), and for a caller who belongs to several tenants and sent no `x-tenant-id` — a customer record belongs to exactly one operator, so there is no single right answer."
+            "description": "The signed-in user, the session, and every tenant they are a member of with the role they hold there.\n\nAlso carries `customer`: the subscriber record in the **active** tenant \u2014 its primary address, every subscription joined through package \u2192 provider \u2192 service, and a `summary` a home screen can render on its own.\n\n`customer` is `null` for staff (a login without a subscriber record), and for a caller who belongs to several tenants and sent no `x-tenant-id` \u2014 a customer record belongs to exactly one operator, so there is no single right answer."
           }
         },
         {
@@ -447,15 +459,15 @@
           }
         }
       ],
-      "description": "Sign-in answers with `memberships`: every tenant this user may act in, each with `tenantId`, `tenantName` and the `roleId` they hold there.\n\nONE membership: the API infers the tenant and `X-Tenant-Id` is noise.\n\nSEVERAL: the client has to put the names in front of a human and send the chosen `X-Tenant-Id` on every request after that — without it a protected route answers 403, and `/auth/me` answers `customer: null` because there is no single right account to return."
+      "description": "Sign-in answers with `memberships`: every tenant this user may act in, each with `tenantId`, `tenantName` and the `roleId` they hold there.\n\nONE membership: the API infers the tenant and `X-Tenant-Id` is noise.\n\nSEVERAL: the client has to put the names in front of a human and send the chosen `X-Tenant-Id` on every request after that \u2014 without it a protected route answers 403, and `/auth/me` answers `customer: null` because there is no single right account to return."
     },
     {
       "name": "Locations",
-      "description": "Tenant-configured address tree (AGENTS.md §8.6).\n\n`X-Tenant-Id` is sent on every request here; it is only REQUIRED when your account belongs to more than one operator — otherwise the tenant comes from the token. Leave `tenantId` empty in the environment if you have a single membership.\n\nOrder for a fresh tenant: create categories → create a schema over them → create a root → generate the subtree.",
+      "description": "Tenant-configured address tree (AGENTS.md \u00a78.6).\n\n`X-Tenant-Id` is sent on every request here; it is only REQUIRED when your account belongs to more than one operator \u2014 otherwise the tenant comes from the token. Leave `tenantId` empty in the environment if you have a single membership.\n\nOrder for a fresh tenant: create categories \u2192 create a schema over them \u2192 create a root \u2192 generate the subtree.",
       "item": [
         {
           "name": "Configuration (admin)",
-          "description": "The hierarchy DEFINITION — needs `locations.configure`. Run these in order once per tenant.",
+          "description": "The hierarchy DEFINITION \u2014 needs `locations.configure`. Run these in order once per tenant.",
           "item": [
             {
               "name": "List categories",
@@ -476,7 +488,7 @@
                     "location-categories"
                   ]
                 },
-                "description": "The kinds of place this tenant has: Area, Building, Floor, Door — or Village, Street, House."
+                "description": "The kinds of place this tenant has: Area, Building, Floor, Door \u2014 or Village, Street, House."
               }
             },
             {
@@ -502,7 +514,7 @@
                     "location-categories"
                   ]
                 },
-                "description": "`config` is presentation only — the UI reads it. The hierarchy lives in a schema, not here.\n\nSaves `categoryId`.",
+                "description": "`config` is presentation only \u2014 the UI reads it. The hierarchy lives in a schema, not here.\n\nSaves `categoryId`.",
                 "body": {
                   "mode": "raw",
                   "raw": "{\n  \"name\": \"Building\",\n  \"slug\": \"building\",\n  \"config\": {\n    \"icon\": \"building\",\n    \"placeholder\": \"Select building\",\n    \"allowCustom\": true\n  }\n}",
@@ -610,7 +622,7 @@
               }
             },
             {
-              "name": "Create schema (Area → Building → Block → Floor → Door)",
+              "name": "Create schema (Area \u2192 Building \u2192 Block \u2192 Floor \u2192 Door)",
               "request": {
                 "method": "POST",
                 "header": [
@@ -632,7 +644,7 @@
                     "location-schemas"
                   ]
                 },
-                "description": "Levels are ordered root-first — the ORDER is the hierarchy.\n\nCreate the five categories first and set the `*CategoryId` variables, or paste ids directly.\n\nSaves `schemaId`.",
+                "description": "Levels are ordered root-first \u2014 the ORDER is the hierarchy.\n\nCreate the five categories first and set the `*CategoryId` variables, or paste ids directly.\n\nSaves `schemaId`.",
                 "body": {
                   "mode": "raw",
                   "raw": "{\n  \"name\": \"Apartment\",\n  \"slug\": \"apartment\",\n  \"description\": \"Multi-storey buildings with numbered flats\",\n  \"levels\": [\n    {\n      \"categoryId\": \"{{areaCategoryId}}\"\n    },\n    {\n      \"categoryId\": \"{{buildingCategoryId}}\"\n    },\n    {\n      \"categoryId\": \"{{blockCategoryId}}\"\n    },\n    {\n      \"categoryId\": \"{{floorCategoryId}}\"\n    },\n    {\n      \"categoryId\": \"{{doorCategoryId}}\",\n      \"isTerminal\": true\n    }\n  ]\n}",
@@ -682,7 +694,7 @@
                     "{{schemaId}}"
                   ]
                 },
-                "description": "Name/description/active only. Levels are not edited in place — nodes already reference them.",
+                "description": "Name/description/active only. Levels are not edited in place \u2014 nodes already reference them.",
                 "body": {
                   "mode": "raw",
                   "raw": "{\n  \"name\": \"Apartment complex\",\n  \"isActive\": true\n}",
@@ -718,7 +730,7 @@
               }
             },
             {
-              "name": "Generate a subtree (blocks → floors → doors)",
+              "name": "Generate a subtree (blocks \u2192 floors \u2192 doors)",
               "request": {
                 "method": "POST",
                 "header": [
@@ -742,7 +754,7 @@
                     "generate"
                   ]
                 },
-                "description": "One entry per level BELOW `parentId`, in schema order. Either `names` or `count` + a format.\n\nTokens: `{parent}`, `{parentCode}`, `{label}`, `{i}`, `{i2}`, `{i3}`, and `{name}` in `codeFormat`.\n`{parentCode}` cascades: block `A` → floor `A1` → door `A101`.\n\nThis example creates 2 blocks + 8 floors + 32 doors = 42 rows. Capped at 2000 per call.",
+                "description": "One entry per level BELOW `parentId`, in schema order. Either `names` or `count` + a format.\n\nTokens: `{parent}`, `{parentCode}`, `{label}`, `{i}`, `{i2}`, `{i3}`, and `{name}` in `codeFormat`.\n`{parentCode}` cascades: block `A` \u2192 floor `A1` \u2192 door `A101`.\n\nThis example creates 2 blocks + 8 floors + 32 doors = 42 rows. Capped at 2000 per call.",
                 "body": {
                   "mode": "raw",
                   "raw": "{\n  \"parentId\": \"{{locationId}}\",\n  \"levels\": [\n    {\n      \"names\": [\n        \"A\",\n        \"B\"\n      ],\n      \"nameFormat\": \"Block {label}\",\n      \"codeFormat\": \"{label}\"\n    },\n    {\n      \"count\": 4,\n      \"nameFormat\": \"Floor {i}\",\n      \"codeFormat\": \"{parentCode}{i}\"\n    },\n    {\n      \"count\": 4,\n      \"nameFormat\": \"{parentCode}{i2}\",\n      \"codeFormat\": \"{name}\"\n    }\n  ]\n}",
@@ -842,7 +854,7 @@
                     }
                   ]
                 },
-                "description": "`parentId=null` lists roots. There is no separate /children route — that is what this parameter is.\n\nEnable one of the disabled params for the other views:\n- `parentId={{locationId}}` — one level down.\n- `ancestorId={{locationId}}` — the whole subtree at any depth, the filter a customer dashboard uses.\n- `q=Sai` — name OR alias, so `Sai Apartments`, `SSA` and `Sri Sai Apt` all find the same building.\n- `categoryId` + `status=pending` — nodes a field operator added that nobody has approved yet."
+                "description": "`parentId=null` lists roots. There is no separate /children route \u2014 that is what this parameter is.\n\nEnable one of the disabled params for the other views:\n- `parentId={{locationId}}` \u2014 one level down.\n- `ancestorId={{locationId}}` \u2014 the whole subtree at any depth, the filter a customer dashboard uses.\n- `q=Sai` \u2014 name OR alias, so `Sai Apartments`, `SSA` and `Sri Sai Apt` all find the same building.\n- `categoryId` + `status=pending` \u2014 nodes a field operator added that nobody has approved yet."
               }
             },
             {
@@ -868,7 +880,7 @@
                     "locations"
                   ]
                 },
-                "description": "A ROOT needs `schemaId` and an unrestricted grant — it sits inside nobody’s subtree:\n\n```json\n{ \"schemaId\": \"{{schemaId}}\", \"name\": \"Mandapeta\" }\n```\n\nA CHILD (the body below) inherits schema and category: the category is whatever the schema puts at the next level, so the client never picks one.\n\n`aliases` replaces the whole set.\n\nSaves `locationId`.",
+                "description": "A ROOT needs `schemaId` and an unrestricted grant \u2014 it sits inside nobody\u2019s subtree:\n\n```json\n{ \"schemaId\": \"{{schemaId}}\", \"name\": \"Mandapeta\" }\n```\n\nA CHILD (the body below) inherits schema and category: the category is whatever the schema puts at the next level, so the client never picks one.\n\n`aliases` replaces the whole set.\n\nSaves `locationId`.",
                 "body": {
                   "mode": "raw",
                   "raw": "{\n  \"parentId\": \"{{locationId}}\",\n  \"name\": \"Sri Sai Apartments\",\n  \"aliases\": [\n    \"Sai Apartments\",\n    \"SSA\"\n  ],\n  \"latitude\": 16.8702,\n  \"longitude\": 81.9276\n}",
@@ -1006,7 +1018,7 @@
     },
     {
       "name": "Customers",
-      "description": "The staff view. Both routes are `customers.view`, so the SCOPE on the grant decides what comes back — an admin’s ALL is the tenant, a field operator’s LOCATION is their areas, a subscriber’s OWN is themselves.\n\nEvery LIST item carries all searchable customer, account, location and equipment values. DETAIL adds the full billing graph.",
+      "description": "The staff view. Both routes are `customers.view`, so the SCOPE on the grant decides what comes back \u2014 an admin\u2019s ALL is the tenant, a field operator\u2019s LOCATION is their areas, a subscriber\u2019s OWN is themselves.\n\nEvery LIST item carries all searchable customer, account, location and equipment values. DETAIL adds the full billing graph.",
       "item": [
         {
           "name": "List customers",
@@ -1106,14 +1118,14 @@
                 "{{customerId}}"
               ]
             },
-            "description": "Everything a details page draws, in one response: the customer, the breadcrumb, every subscription with its service, provider and package expanded, the equipment on loan, the last 20 ledger lines and a summary.\n\nA customer id is a handle onto a graph. Walking it over the public endpoints would be six or more calls per page; this resolves it server-side where the joins are indexed.\n\nOut of your area answers 404, not 403 — whether a customer exists elsewhere is not something the caller should learn."
+            "description": "Everything a details page draws, in one response: the customer, the breadcrumb, every subscription with its service, provider and package expanded, the equipment on loan, the last 20 ledger lines and a summary.\n\nA customer id is a handle onto a graph. Walking it over the public endpoints would be six or more calls per page; this resolves it server-side where the joins are indexed.\n\nOut of your area answers 404, not 403 \u2014 whether a customer exists elsewhere is not something the caller should learn."
           }
         }
       ]
     },
     {
       "name": "Catalogue",
-      "description": "Services → providers → packages, and where each is sold (docs/services-providers-packages.md).\n\nOrder for a fresh tenant: create a service → add its providers → add packages to a provider → set coverage → check availability at a location.",
+      "description": "Services \u2192 providers \u2192 packages, and where each is sold (docs/services-providers-packages.md).\n\nOrder for a fresh tenant: create a service \u2192 add its providers \u2192 add packages to a provider \u2192 set coverage \u2192 check availability at a location.",
       "item": [
         {
           "name": "Services & providers",
@@ -1152,7 +1164,7 @@
                     }
                   ]
                 },
-                "description": "Each row carries `providerCount` — how many active suppliers deliver it."
+                "description": "Each row carries `providerCount` \u2014 how many active suppliers deliver it."
               }
             },
             {
@@ -1178,7 +1190,7 @@
                     "services"
                   ]
                 },
-                "description": "Name it for what it is — `Cable TV`, not `ACT Cable TV`. The brand belongs on the provider.\n\nSaves `serviceId`.",
+                "description": "Name it for what it is \u2014 `Cable TV`, not `ACT Cable TV`. The brand belongs on the provider.\n\nSaves `serviceId`.",
                 "body": {
                   "mode": "raw",
                   "raw": "{\n  \"name\": \"Cable TV\",\n  \"slug\": \"cable-tv\",\n  \"icon\": \"tv\",\n  \"description\": \"Digital cable television\"\n}",
@@ -1224,7 +1236,7 @@
                     "{{serviceId}}"
                   ]
                 },
-                "description": "One service, with how many active providers deliver it.\n\n404 RESOURCE_NOT_FOUND for a service of another tenant — the same answer as missing, on purpose (AGENTS.md §4.5)."
+                "description": "One service, with how many active providers deliver it.\n\n404 RESOURCE_NOT_FOUND for a service of another tenant \u2014 the same answer as missing, on purpose (AGENTS.md \u00a74.5)."
               }
             },
             {
@@ -1251,7 +1263,7 @@
                     "{{serviceId}}"
                   ]
                 },
-                "description": "`slug` and `serviceType` are fixed — both are referenced by what already sells.",
+                "description": "`slug` and `serviceType` are fixed \u2014 both are referenced by what already sells.",
                 "body": {
                   "mode": "raw",
                   "raw": "{\n  \"description\": \"Digital cable, 250+ channels\"\n}",
@@ -1422,7 +1434,7 @@
                     "{{serviceProviderId}}"
                   ]
                 },
-                "description": "`serviceId` is not patchable — moving a provider would take its packages and every subscription with it.",
+                "description": "`serviceId` is not patchable \u2014 moving a provider would take its packages and every subscription with it.",
                 "body": {
                   "mode": "raw",
                   "raw": "{\n  \"isDefault\": true\n}",
@@ -1609,7 +1621,7 @@
                     "coverage"
                   ]
                 },
-                "description": "The narrowest level there is — it beats the provider and the service row at this node.\n\n`{ \"entries\": [] }` hands the package back to its provider’s reach.",
+                "description": "The narrowest level there is \u2014 it beats the provider and the service row at this node.\n\n`{ \"entries\": [] }` hands the package back to its provider\u2019s reach.",
                 "body": {
                   "mode": "raw",
                   "raw": "{\n  \"entries\": [\n    {\n      \"locationId\": \"{{locationId}}\"\n    }\n  ]\n}",
@@ -1666,7 +1678,7 @@
                     "available-services"
                   ]
                 },
-                "description": "The add-customer wizard call: services → providers that reach this node → their active packages, already filtered. One request instead of three plus client-side guessing."
+                "description": "The add-customer wizard call: services \u2192 providers that reach this node \u2192 their active packages, already filtered. One request instead of three plus client-side guessing."
               }
             }
           ]
@@ -1728,7 +1740,7 @@
                     }
                   ]
                 },
-                "description": "`?serviceId=` also works — it filters by joining through the provider."
+                "description": "`?serviceId=` also works \u2014 it filters by joining through the provider."
               }
             },
             {
@@ -1826,7 +1838,7 @@
                     "{{packageId}}"
                   ]
                 },
-                "description": "The provider is fixed — re-pointing a package rewrites what every subscriber is on.",
+                "description": "The provider is fixed \u2014 re-pointing a package rewrites what every subscriber is on.",
                 "body": {
                   "mode": "raw",
                   "raw": "{\n  \"price\": \"399.00\"\n}",
@@ -1920,7 +1932,7 @@
                     }
                   ]
                 },
-                "description": "A provider’s own lineup. Two MSOs may both number a channel 101."
+                "description": "A provider\u2019s own lineup. Two MSOs may both number a channel 101."
               }
             },
             {
@@ -1948,7 +1960,7 @@
                     "channels"
                   ]
                 },
-                "description": "Replaces the bouquet. Every channel must belong to this package’s provider; `[]` clears it.",
+                "description": "Replaces the bouquet. Every channel must belong to this package\u2019s provider; `[]` clears it.",
                 "body": {
                   "mode": "raw",
                   "raw": "{\n  \"channels\": [\n    {\n      \"channelId\": \"{{channelId}}\",\n      \"isMandatory\": true\n    }\n  ]\n}",
@@ -2525,7 +2537,7 @@
       "name": "Remotes",
       "item": [
         {
-          "name": "List IR remotes — the shared library plus this tenant's own captures",
+          "name": "List IR remotes \u2014 the shared library plus this tenant's own captures",
           "request": {
             "method": "GET",
             "header": [
@@ -2620,6 +2632,30 @@
             },
             "description": "Each button carries an IR command in exactly the shape the app's emitter transmits."
           }
+        },
+        {
+          "name": "Get raw IR captures for a remote handset",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/remotes/{{remoteId}}/captures",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "remotes",
+                "{{remoteId}}",
+                "captures"
+              ]
+            },
+            "description": "Returns all raw signal captures recorded for this remote handset."
+          }
         }
       ]
     },
@@ -2681,7 +2717,7 @@
                 }
               ]
             },
-            "description": "Every row carries the areas the person reaches, split into the grants held on them (`locations`) and the ones inherited from their crew (`inheritedLocations`) — so a screen can show why someone reaches an area without a second call.\n\n`locationId` asks the operational question instead: who serves this address? A grant on the node or on any ancestor of it counts, because a grant covers its whole subtree.\n\nScoped like every other list: `ALL` returns the tenant, `LOCATION` returns the staff working inside your areas, `TEAM` returns your own crew."
+            "description": "Every row carries the areas the person reaches, split into the grants held on them (`locations`) and the ones inherited from their crew (`inheritedLocations`) \u2014 so a screen can show why someone reaches an area without a second call.\n\n`locationId` asks the operational question instead: who serves this address? A grant on the node or on any ancestor of it counts, because a grant covers its whole subtree.\n\nScoped like every other list: `ALL` returns the tenant, `LOCATION` returns the staff working inside your areas, `TEAM` returns your own crew."
           }
         },
         {
@@ -2707,7 +2743,7 @@
                 "staff"
               ]
             },
-            "description": "An `email` or a `phone` is required — one of them is how the person signs in.\n\nThe account is found before it is created: somebody who already signs in as another operator’s subscriber gets a second membership, not a second login. `password` is therefore rejected when the account already exists; those people set their own.\n\n`locationIds` grants areas in the same call. You can only grant areas you hold yourself, and only a tenant-wide grant may appoint an `admin`.",
+            "description": "An `email` or a `phone` is required \u2014 one of them is how the person signs in.\n\nThe account is found before it is created: somebody who already signs in as another operator\u2019s subscriber gets a second membership, not a second login. `password` is therefore rejected when the account already exists; those people set their own.\n\n`locationIds` grants areas in the same call. You can only grant areas you hold yourself, and only a tenant-wide grant may appoint an `admin`.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"name\": \"name\",\n  \"email\": \"someone@example.com\",\n  \"phone\": \"9876543210\",\n  \"password\": \"password\",\n  \"roleId\": \"admin\",\n  \"status\": \"active\",\n  \"teamId\": \"{{teamId}}\",\n  \"locationIds\": [\n    \"{{locationId}}\"\n  ]\n}",
@@ -2777,7 +2813,7 @@
           }
         },
         {
-          "name": "End someone’s employment here",
+          "name": "End someone\u2019s employment here",
           "request": {
             "method": "DELETE",
             "header": [
@@ -2837,7 +2873,7 @@
           }
         },
         {
-          "name": "Narrow this person to part of their crew’s patch",
+          "name": "Narrow this person to part of their crew\u2019s patch",
           "request": {
             "method": "PUT",
             "header": [
@@ -2861,7 +2897,7 @@
                 "team-areas"
               ]
             },
-            "description": "An empty list widens them back to the crew’s whole patch. Every area must sit inside it.",
+            "description": "An empty list widens them back to the crew\u2019s whole patch. Every area must sit inside it.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"locationIds\": [\n    \"{{locationId}}\"\n  ]\n}",
@@ -3025,7 +3061,7 @@
                 "{{teamId}}"
               ]
             },
-            "description": "Members lose the crew’s inherited areas. Their direct grants and accounts are untouched."
+            "description": "Members lose the crew\u2019s inherited areas. Their direct grants and accounts are untouched."
           }
         },
         {
@@ -3094,7 +3130,7 @@
       "name": "Notifications",
       "item": [
         {
-          "name": "Your inbox — every notification addressed to you, newest first",
+          "name": "Your inbox \u2014 every notification addressed to you, newest first",
           "request": {
             "method": "GET",
             "header": [
@@ -3183,7 +3219,7 @@
                 "read"
               ]
             },
-            "description": "For an in-app message this doubles as \"shown\" — it is how the app stops re-presenting it."
+            "description": "For an in-app message this doubles as \"shown\" \u2014 it is how the app stops re-presenting it."
           }
         },
         {
@@ -3281,7 +3317,7 @@
                 "send"
               ]
             },
-            "description": "Covers every direction: staff → admin is `audience: \"role\", roleId: \"admin\"`, admin → everybody is `audience: \"tenant\"`, admin → one person is `audience: \"user\"`. Staff may only address admins. A signed-out device is only ever reached by `category: \"promotional\"`.",
+            "description": "Covers every direction: staff \u2192 admin is `audience: \"role\", roleId: \"admin\"`, admin \u2192 everybody is `audience: \"tenant\"`, admin \u2192 one person is `audience: \"user\"`. Staff may only address admins. A signed-out device is only ever reached by `category: \"promotional\"`.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"audience\": \"user\",\n  \"userIds\": [\n    \"{{userId}}\"\n  ],\n  \"roleId\": \"admin\",\n  \"category\": \"general\",\n  \"delivery\": \"notification\",\n  \"type\": \"type\",\n  \"title\": \"title\",\n  \"body\": \"body\",\n  \"data\": {}\n}",
@@ -3329,7 +3365,7 @@
                 }
               ]
             },
-            "description": "A `multipart/form-data` body with one `file` part. Identical bytes already stored are reused rather than uploaded twice — the response says so with `deduplicated`. The signed `url` it returns is what a notification `imageUrl` expects.",
+            "description": "A `multipart/form-data` body with one `file` part. Identical bytes already stored are reused rather than uploaded twice \u2014 the response says so with `deduplicated`. The signed `url` it returns is what a notification `imageUrl` expects.",
             "body": {
               "mode": "formdata",
               "formdata": [
@@ -3387,6 +3423,175 @@
               ]
             },
             "description": "Soft delete. The stored object is removed later by the storage cleanup job, once nothing else references those bytes."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Payments",
+      "item": [
+        {
+          "name": "List collections (scoped to what you may see)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/payments?limit=50",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "payments"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "50"
+                },
+                {
+                  "key": "cursor",
+                  "value": "",
+                  "disabled": true,
+                  "description": "From `nextCursor` of the previous page."
+                },
+                {
+                  "key": "customerId",
+                  "value": "{{customerId}}",
+                  "disabled": true
+                },
+                {
+                  "key": "locationId",
+                  "value": "{{locationId}}",
+                  "disabled": true,
+                  "description": "That node and everything under it."
+                },
+                {
+                  "key": "collectedBy",
+                  "value": "me",
+                  "disabled": true,
+                  "description": "`me`, or a user id."
+                },
+                {
+                  "key": "outcome",
+                  "value": "full",
+                  "disabled": true,
+                  "description": "full | partial | none | reversal"
+                },
+                {
+                  "key": "from",
+                  "value": "",
+                  "disabled": true,
+                  "description": "ISO date-time."
+                },
+                {
+                  "key": "to",
+                  "value": "",
+                  "disabled": true,
+                  "description": "ISO date-time."
+                }
+              ]
+            },
+            "description": "The scope on `payments.view` decides the rows: `ALL` the tenant, `LOCATION` your areas, `OWN` a subscriber's own receipts. `totals` covers the whole filter, not just the page \u2014 it is what a collector reconciles cash against."
+          }
+        },
+        {
+          "name": "Record a collection (full, part, or nothing)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/payments",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "payments"
+              ]
+            },
+            "description": "The scope held on `payments.collect` decides whose doors you may collect at: `ALL` the tenant, `LOCATION` your assigned areas. A customer outside them answers 404, not 403.\n\n`outcome` is NOT sent \u2014 the server derives `full` / `partial` / `none` from `amount` against the balance it reads under lock.\n\n`reference` is this device's id for the visit. It is `{{$guid}}` here so each send is a new visit; pin it to a fixed string and send twice to see the replay return the first receipt rather than take the money again.\n\nOptional fields not in the body above:\n- `subscriptionId` \u2014 required only when the customer has more than one line.\n- `accessories` \u2014 `[{ \"catalogId\": \"\u2026\", \"quantity\": 1, \"unitPrice\": \"150.00\" }]`, priced server-side from your own catalogue.\n- `reason` \u2014 required when `amount` is `\"0\"` (nobody home, refused, asked to call back).\n- `collectedAt` \u2014 when the visit actually happened, for a receipt queued offline.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerId\": \"{{customerId}}\",\n  \"amount\": \"100.00\",\n  \"method\": \"cash\",\n  \"notes\": \"Collected at the door\",\n  \"reference\": \"{{$guid}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Get one receipt",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/payments/{{paymentId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "payments",
+                "{{paymentId}}"
+              ]
+            },
+            "description": "Out of reach answers 404, not 403 \u2014 whether a receipt exists in an area you cannot see is not something you get to learn."
+          }
+        },
+        {
+          "name": "Reverse a receipt (the original is never edited)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-tenant-id",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/payments/{{paymentId}}/reverse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "payments",
+                "{{paymentId}}",
+                "reverse"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"Keyed 500 instead of 50\",\n  \"reference\": \"{{$guid}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Needs `payments.update` at `ALL` \u2014 a collector cannot unwind their own round.\n\nPosts the mirror image: the cash goes back out, an accessory charge comes back off, and the balance returns to what it was. The original row is untouched and the database refuses an UPDATE or DELETE on it either way (migration 0051). A receipt can be reversed once; a reversal cannot be reversed."
           }
         }
       ]

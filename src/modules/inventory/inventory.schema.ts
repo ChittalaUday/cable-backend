@@ -2,14 +2,15 @@ import type { Static } from 'typebox';
 import { Type } from 'typebox';
 import {
   CUSTOMER_EQUIPMENT_STATUSES,
+  DEPOSIT_REFUND_STATUSES,
   EQUIPMENT_OWNERSHIPS,
+  EQUIPMENT_RETURN_CONDITIONS,
   INVENTORY_LOOKUP_TYPES,
   INVENTORY_REQUEST_TYPES,
   INVENTORY_REVIEW_OUTCOMES,
   INVENTORY_STATUSES,
   STOCK_LEVEL_FILTERS,
   STOCK_MOVEMENT_TYPES,
-  TRACKING_TYPES,
 } from '@/constants/inventory';
 import { StringEnum, StringEnumWithDefault } from '@/types/typebox';
 
@@ -29,6 +30,14 @@ export const ListStockQuery = Type.Object({
   limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100, default: 50 })),
 });
 
+export const BundleComponent = Type.Object({
+  componentId: Type.String({ format: 'uuid' }),
+  name: Type.String(),
+  code: Type.Union([Type.String(), Type.Null()]),
+  quantity: Type.Integer(),
+  isOptional: Type.Boolean(),
+});
+
 export const StockItemResponse = Type.Object({
   id: Type.String({ format: 'uuid' }),
   name: Type.String(),
@@ -36,7 +45,6 @@ export const StockItemResponse = Type.Object({
   brand: Type.Union([Type.String(), Type.Null()]),
   model: Type.Union([Type.String(), Type.Null()]),
   itemType: Type.String(),
-  trackingType: StringEnum(TRACKING_TYPES),
   isBundle: Type.Boolean(),
   defaultOwnership: StringEnum(EQUIPMENT_OWNERSHIPS),
   defaultSalePrice: Type.String(),
@@ -45,6 +53,7 @@ export const StockItemResponse = Type.Object({
   isReturnable: Type.Boolean(),
   icon: Type.Union([Type.String(), Type.Null()]),
   description: Type.Union([Type.String(), Type.Null()]),
+  bundleContents: Type.Array(BundleComponent),
 
   totalStock: Type.Integer(),
   availableStock: Type.Integer(),
@@ -63,7 +72,6 @@ export const CatalogItemResponse = Type.Object({
   model: Type.Union([Type.String(), Type.Null()]),
   icon: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   description: Type.Union([Type.String(), Type.Null()]),
-  trackingType: StringEnum(TRACKING_TYPES),
   isBundle: Type.Boolean(),
   defaultOwnership: StringEnum(EQUIPMENT_OWNERSHIPS),
   defaultSalePrice: Type.String(),
@@ -124,14 +132,6 @@ export const SerializedUnit = Type.Object({
   staffName: Type.Union([Type.String(), Type.Null()]),
 });
 
-export const BundleComponent = Type.Object({
-  componentId: Type.String({ format: 'uuid' }),
-  name: Type.String(),
-  code: Type.Union([Type.String(), Type.Null()]),
-  quantity: Type.Integer(),
-  isOptional: Type.Boolean(),
-});
-
 export const ItemDetailsResponse = Type.Intersect([
   StockItemResponse,
   Type.Object({
@@ -146,7 +146,6 @@ export const CreateCatalogItemBody = Type.Object({
   brand: Type.Optional(Type.String({ maxLength: 50 })),
   model: Type.Optional(Type.String({ maxLength: 50 })),
   itemType: Type.Optional(Type.String({ default: 'other' })),
-  trackingType: Type.Optional(StringEnumWithDefault(TRACKING_TYPES, 'serialized')),
   isBundle: Type.Optional(Type.Boolean({ default: false })),
   defaultOwnership: Type.Optional(StringEnumWithDefault(EQUIPMENT_OWNERSHIPS, 'tenant_provided')),
   defaultSalePrice: Type.Optional(Type.String({ default: '0' })),
@@ -274,6 +273,8 @@ export const LookupItemResponse = Type.Object({
 
 export const CustomerEquipmentQuery = Type.Object({
   customerId: Type.Optional(Type.String({ format: 'uuid' })),
+  status: Type.Optional(Type.String()),
+  equipmentId: Type.Optional(Type.String({ format: 'uuid' })),
   limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100, default: 50 })),
 });
 
@@ -292,9 +293,33 @@ export const CustomerEquipmentItem = Type.Object({
   macAddress: Type.Union([Type.String(), Type.Null()]),
   status: Type.String(),
   ownershipType: Type.String(),
-  chargedAmount: Type.String(),
-  depositAmount: Type.String(),
   assignedAt: Type.String({ format: 'date-time' }),
+  returnedAt: Type.Optional(Type.Union([Type.String({ format: 'date-time' }), Type.Null()])),
+  returnCondition: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  returnRemarks: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  returnedToLocationId: Type.Optional(Type.Union([Type.String({ format: 'uuid' }), Type.Null()])),
+  depositRefundStatus: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  depositDeductionAmount: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+});
+
+export const ReturnCustomerEquipmentBody = Type.Object({
+  customerEquipmentId: Type.String({ format: 'uuid' }),
+  returnCondition: Type.Optional(StringEnum(EQUIPMENT_RETURN_CONDITIONS)),
+  returnRemarks: Type.Optional(Type.String()),
+  returnedToLocationId: Type.Optional(Type.String({ format: 'uuid' })),
+  depositRefundStatus: Type.Optional(StringEnum(DEPOSIT_REFUND_STATUSES)),
+  depositDeductionAmount: Type.Optional(Type.String()),
+  notes: Type.Optional(Type.String()),
+});
+
+export const ReturnCustomerEquipmentResponse = Type.Object({
+  id: Type.String({ format: 'uuid' }),
+  equipmentId: Type.String({ format: 'uuid' }),
+  customerId: Type.String({ format: 'uuid' }),
+  status: Type.String(),
+  returnedAt: Type.String({ format: 'date-time' }),
+  returnCondition: Type.Union([Type.String(), Type.Null()]),
+  equipmentStatus: Type.String(),
 });
 
 export const InwardStockBody = Type.Object({
@@ -334,5 +359,7 @@ export type LookupQuery = Static<typeof LookupQuery>;
 export type LookupItemResponse = Static<typeof LookupItemResponse>;
 export type CustomerEquipmentQuery = Static<typeof CustomerEquipmentQuery>;
 export type CustomerEquipmentItem = Static<typeof CustomerEquipmentItem>;
+export type ReturnCustomerEquipmentBody = Static<typeof ReturnCustomerEquipmentBody>;
+export type ReturnCustomerEquipmentResponse = Static<typeof ReturnCustomerEquipmentResponse>;
 export type InwardStockBody = Static<typeof InwardStockBody>;
 export type TransferStockBody = Static<typeof TransferStockBody>;

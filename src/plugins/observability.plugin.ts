@@ -16,12 +16,8 @@ import { API_PREFIX, SYSTEM_ROLES } from '@/config/constants';
 import { csv, env, exposeErrorDetail, isProduction } from '@/config/env';
 import { rolePermissions } from '@/db/schema';
 import { DomainError, ERROR_CODES } from '@/errors';
+import { isCheckViolation, isForeignKeyViolation, isUniqueViolation } from '@/errors/postgres';
 
-/**
- * Recounted at most once a minute rather than on every scrape: 30 days of
- * retention is a few thousand files, and walking them all every 15 seconds to
- * answer a gauge nobody watches that closely is not a trade worth making.
- */
 const LOG_SIZE_TTL_MS = 60_000;
 let logSize = { bytes: 0, at: 0 };
 
@@ -143,8 +139,40 @@ function grantsOf(app: FastifyInstance, roleId: string): ReadonlySet<string> {
   return granted;
 }
 
+function serverFailure(error: FastifyError): { statusCode: number; body: Record<string, unknown> } {
+  const constraint = isUniqueViolation(error)
+    ? { statusCode: 409, code: ERROR_CODES.RESOURCE_CONFLICT, message: 'That record already exists' }
+    : isForeignKeyViolation(error)
+      ? { statusCode: 409, code: ERROR_CODES.RESOURCE_IN_USE, message: 'That record is referenced by something else, or points at something that is not there' }
+      : isCheckViolation(error)
+        ? { statusCode: 400, code: ERROR_CODES.VALIDATION_FAILED, message: 'That combination of values is not allowed' }
+        : null;
+
+  if (constraint !== null) {
+    return {
+      statusCode: constraint.statusCode,
+      body: {
+        statusCode: constraint.statusCode,
+        error: STATUS_TEXT[constraint.statusCode] ?? 'Error',
+        code: constraint.code,
+        message: constraint.message,
+      },
+    };
+  }
+
+  return {
+    statusCode: 500,
+    body: {
+      statusCode: 500,
+      error: 'Internal Server Error',
+      code: ERROR_CODES.SERVER_ERROR,
+      message: exposeErrorDetail ? error.message : 'Internal server error',
+      ...(exposeErrorDetail ? { debug: debugOf(error) } : {}),
+    },
+  };
+}
+
 export default fp(async (app) => {
-  // 1. Sensible & Security headers
   await app.register(sensible);
 
   await app.register(helmet, {
@@ -186,7 +214,6 @@ export default fp(async (app) => {
     );
   });
 
-  // 2. CORS
   const origins = csv(env.CORS_ORIGINS);
   if (isProduction && origins.length === 0) {
     throw new Error('CORS_ORIGINS must be set in production — a wildcard origin is not acceptable.');
@@ -219,7 +246,6 @@ export default fp(async (app) => {
     maxAge: 86400,
   });
 
-  // 3. Rate Limit
   await app.register(rateLimit, {
     max: env.RATE_LIMIT_MAX,
     timeWindow: env.RATE_LIMIT_WINDOW,
@@ -234,14 +260,6 @@ export default fp(async (app) => {
     }),
   });
 
-  // 4. Metrics
-  //
-  // Prometheus scrapes with no credentials, and the request-context hook
-  // demands a bearer token from everything that is not marked `public`. The
-  // route belongs to fastify-metrics, so the only place to mark it is on the
-  // way past. Anyone who can reach this port can now read route timings and
-  // process stats: keep :PORT off the public interface, or let only the
-  // scraper's address through to /metrics at Nginx.
   app.addHook('onRoute', (route) => {
     if (route.url === '/metrics')
       route.config = { ...route.config, public: true };
@@ -251,19 +269,9 @@ export default fp(async (app) => {
     endpoint: '/metrics',
     defaultMetrics: { enabled: true },
     routeMetrics: { enabled: true },
-    // prom-client's registry is module-global, so a second buildApp() in the
-    // same process — which is every test file after the first — otherwise dies
-    // on "a metric with the name process_cpu_seconds_total is already
-    // registered". One app per process in production, so there is nothing to
-    // lose by clearing.
     clearRegisterOnInit: true,
   });
 
-  // 4b. Storage
-  //
-  // prom-client's defaults describe the process and nothing underneath it, and
-  // the numbers that end an outage here are all storage: the volume filling,
-  // the log directory eating it, and the database growing into it.
   const prom = app.metrics.client;
 
   const storage = [
@@ -306,7 +314,6 @@ export default fp(async (app) => {
 
   app.log.debug(`${storage.length} storage gauges added to /metrics.`);
 
-  // 5. OpenAPI Swagger
   if (!isProduction) {
     await app.register(swagger, {
       openapi: {
@@ -343,7 +350,6 @@ export default fp(async (app) => {
     });
   }
 
-  // 6. Error handling
   app.addSchema(ErrorResponse);
 
   app.setErrorHandler((error: FastifyError, request: FastifyRequest, reply: FastifyReply) => {
@@ -394,14 +400,9 @@ export default fp(async (app) => {
     }
 
     if (status >= 500) {
-      return reply.status(500).send({
-        statusCode: 500,
-        error: 'Internal Server Error',
-        code: ERROR_CODES.SERVER_ERROR,
-        message: exposeErrorDetail ? error.message : 'Internal server error',
-        requestId: request.id,
-        ...(exposeErrorDetail ? { debug: debugOf(error) } : {}),
-      });
+      const failure = serverFailure(error);
+
+      return reply.status(failure.statusCode).send({ ...failure.body, requestId: request.id });
     }
 
     return reply.status(status).send({

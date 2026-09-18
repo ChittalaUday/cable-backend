@@ -6,7 +6,7 @@ import { locationSchemas } from './location-schemas';
 export const locationSchemaLevels = geo.table('location_schema_levels', {
   id: uuid('id').primaryKey().defaultRandom(),
   schemaId: uuid('schema_id').notNull().references(() => locationSchemas.id, { onDelete: 'cascade' }),
-  categoryId: uuid('category_id').notNull().references(() => locationCategories.id, { onDelete: 'no action' }),
+  categoryId: uuid('category_id').notNull().references(() => locationCategories.id, { onDelete: 'cascade' }),
 
   depth: integer('depth').notNull(),
 

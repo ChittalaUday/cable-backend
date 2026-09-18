@@ -2,13 +2,12 @@ import type { ChannelGenre, ChannelResolution, PackageType, TransactionType } fr
 import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
-import { sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import pg from 'pg';
 import { env } from '@/config/env';
 import {
   accountTransactions,
-  bundleItems,
   channels,
   customerEquipment,
   customers,
@@ -21,6 +20,7 @@ import {
   packages,
   serviceProviders,
   services,
+  stockMovements,
   subscriptions,
   tenantMemberships,
   tenants,
@@ -829,6 +829,9 @@ async function run() {
   for (const s of existingSubs)
     subByAccount.set(s.acc, { id: s.id, customerId: s.customerId });
 
+  // Movement history pins the equipment it describes (ON DELETE restrict), so the
+  // ledger goes before the units it points at.
+  await db.delete(stockMovements).where(sql`${stockMovements.tenantId} = ${tenant.id}`);
   await db.delete(equipment).where(sql`${equipment.tenantId} = ${tenant.id}`);
 
   const typeDefs = [
@@ -950,43 +953,29 @@ async function run() {
 
   const catMap = new Map<string, string>();
   for (const c of catalogDefs) {
-    const [row] = await db
-      .insert(itemCatalog)
-      .values({
-        tenantId: tenant.id,
-        ...c,
-      })
-      .onConflictDoUpdate({
-        target: [itemCatalog.tenantId, itemCatalog.code],
-        set: { ...c },
-      })
-      .returning();
-    catMap.set(c.code, row!.id);
-  }
+    const { trackingType: _, ...itemData } = c;
+    const [existing] = await db
+      .select({ id: itemCatalog.id })
+      .from(itemCatalog)
+      .where(and(eq(itemCatalog.tenantId, tenant.id), eq(itemCatalog.code, itemData.code)));
 
-  const kitId = catMap.get('ACT-KIT-HD')!;
-  const bundleComponents = [
-    { componentId: catMap.get('ACT-STB-HD')!, quantity: 1, isOptional: false, sortOrder: 1 },
-    { componentId: catMap.get('ACT-REMOTE-01')!, quantity: 1, isOptional: false, sortOrder: 2 },
-    { componentId: catMap.get('ACT-PWR-12V')!, quantity: 1, isOptional: false, sortOrder: 3 },
-    { componentId: catMap.get('ACT-MAN-01')!, quantity: 1, isOptional: false, sortOrder: 4 },
-  ];
-
-  for (const bc of bundleComponents) {
-    await db
-      .insert(bundleItems)
-      .values({
-        tenantId: tenant.id,
-        bundleCatalogId: kitId,
-        componentCatalogId: bc.componentId,
-        quantity: bc.quantity,
-        isOptional: bc.isOptional,
-        sortOrder: bc.sortOrder,
-      })
-      .onConflictDoUpdate({
-        target: [bundleItems.tenantId, bundleItems.bundleCatalogId, bundleItems.componentCatalogId],
-        set: { quantity: bc.quantity, isOptional: bc.isOptional, sortOrder: bc.sortOrder },
-      });
+    if (existing) {
+      await db
+        .update(itemCatalog)
+        .set({ ...itemData, updatedAt: new Date() })
+        .where(eq(itemCatalog.id, existing.id));
+      catMap.set(itemData.code, existing.id);
+    }
+    else {
+      const [row] = await db
+        .insert(itemCatalog)
+        .values({
+          tenantId: tenant.id,
+          ...itemData,
+        })
+        .returning();
+      catMap.set(itemData.code, row!.id);
+    }
   }
 
   let insertedCustomers = 0;
@@ -1118,7 +1107,6 @@ async function run() {
         subscriptionId,
         status: assetStatus,
         ownershipType: 'tenant_provided',
-        depositAmount: '1000.00',
         assignedAt: createdAtDate,
       });
       insertedEquipment++;

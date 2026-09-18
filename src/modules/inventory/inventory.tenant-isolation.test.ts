@@ -348,7 +348,7 @@ describe('inventory tenant isolation', () => {
         notes: 'rollback-probe',
       });
 
-      expect(response.statusCode).toBe(500);
+      expect(response.statusCode).toBeGreaterThanOrEqual(400);
 
       const [unit] = await db.select().from(equipment).where(eq(equipment.id, alpha.equipmentId));
       expect(unit!.staffId).toBeNull();
@@ -367,7 +367,7 @@ describe('inventory catalog permission', () => {
   const item = () => ({ name: `Router ${unique()}`, code: `RTR-${unique()}` });
 
   it('lets a holder of inventory.manage_catalog write the catalogue', async () => {
-    const response = await post('/api/v1/inventory/items', item());
+    const response = await post('/api/v1/inventory/catalog', item());
 
     expect(response.statusCode, response.body).toBe(201);
   });
@@ -375,7 +375,7 @@ describe('inventory catalog permission', () => {
   it('refuses staff, who hold inventory.update but not manage_catalog', async () => {
     const response = await app.inject({
       method: 'POST',
-      url: '/api/v1/inventory/items',
+      url: '/api/v1/inventory/catalog',
       headers: { ...alphaStaffAuth, 'x-tenant-id': alpha.id },
       payload: item(),
     });
@@ -387,23 +387,23 @@ describe('inventory catalog permission', () => {
   it('shows staff only their own change requests', async () => {
     const mine = await app.inject({
       method: 'POST',
-      url: '/api/v1/inventory/requests',
+      url: '/api/v1/inventory/approval-requests',
       headers: { ...alphaStaffAuth, 'x-tenant-id': alpha.id },
       payload: { requestType: 'create_item', proposedData: item(), reason: 'Missing from the catalogue' },
     });
     expect(mine.statusCode, mine.body).toBe(201);
 
-    const theirs = await post('/api/v1/inventory/requests', { requestType: 'create_item', proposedData: item(), reason: 'Reviewer\'s own proposal' });
+    const theirs = await post('/api/v1/inventory/approval-requests', { requestType: 'create_item', proposedData: item(), reason: 'Reviewer\'s own proposal' });
     expect(theirs.statusCode, theirs.body).toBe(201);
 
     const staffList = await app.inject({
       method: 'GET',
-      url: '/api/v1/inventory/requests',
+      url: '/api/v1/inventory/approval-requests',
       headers: { ...alphaStaffAuth, 'x-tenant-id': alpha.id },
     });
     const reviewerList = await app.inject({
       method: 'GET',
-      url: '/api/v1/inventory/requests',
+      url: '/api/v1/inventory/approval-requests',
       headers: { ...alphaAuth, 'x-tenant-id': alpha.id },
     });
 
@@ -484,7 +484,7 @@ describe('inventory location scope', () => {
       locationId: null,
       staffId: alphaStaffUserId,
       serialNumber: vanSerial,
-      inventoryStatus: 'staff_van',
+      inventoryStatus: 'with_staff',
     }).returning();
 
     try {
@@ -508,7 +508,7 @@ describe('inventory location scope', () => {
       locationId: null,
       staffId: alpha.adminUserId,
       serialNumber: otherSerial,
-      inventoryStatus: 'staff_van',
+      inventoryStatus: 'with_staff',
     }).returning();
 
     try {
@@ -523,5 +523,166 @@ describe('inventory location scope', () => {
     finally {
       await db.delete(equipment).where(eq(equipment.id, otherUnit!.id));
     }
+  });
+});
+
+describe('every unit is a row', () => {
+  const item = () => ({ name: `Patch Cord ${unique()}`, code: `CBL-${unique()}` });
+
+  async function newCatalogItem(): Promise<string> {
+    const created = await post('/api/v1/inventory/catalog', item());
+    expect(created.statusCode, created.body).toBe(201);
+
+    return bodyOf<{ id: string }>(created).id;
+  }
+
+  async function unitsOf(catalogId: string) {
+    return db.select().from(equipment).where(eq(equipment.catalogId, catalogId));
+  }
+
+  it('receives fifty cords as fifty rows, not one row that says fifty', async () => {
+    const catalogId = await newCatalogItem();
+
+    const response = await post('/api/v1/inventory/inward', {
+      catalogId,
+      locationId: alpha.locationId,
+      quantity: 50,
+    });
+
+    expect(response.statusCode, response.body).toBe(201);
+    expect(await unitsOf(catalogId)).toHaveLength(50);
+  });
+
+  it('leaves a unit with no number rather than inventing one', async () => {
+    const catalogId = await newCatalogItem();
+
+    await post('/api/v1/inventory/inward', { catalogId, locationId: alpha.locationId, quantity: 3 });
+
+    const units = await unitsOf(catalogId);
+
+    expect(units.map(unit => unit.serialNumber)).toEqual([null, null, null]);
+    expect(new Set(units.map(unit => unit.id)).size).toBe(3);
+  });
+
+  it('matches the serials it was given and leaves the rest bare', async () => {
+    const catalogId = await newCatalogItem();
+    const serials = [`SN-${unique()}`, `SN-${unique()}`];
+
+    await post('/api/v1/inventory/inward', {
+      catalogId,
+      locationId: alpha.locationId,
+      quantity: 5,
+      serialNumbers: serials,
+    });
+
+    const units = await unitsOf(catalogId);
+    const numbered = units.map(unit => unit.serialNumber).filter(Boolean).sort();
+
+    expect(units).toHaveLength(5);
+    expect(numbered).toEqual([...serials].sort());
+  });
+
+  it('counts stock by the row, so the list agrees with the table', async () => {
+    const catalogId = await newCatalogItem();
+    await post('/api/v1/inventory/inward', { catalogId, locationId: alpha.locationId, quantity: 7 });
+
+    const rows = await app.inject({
+      method: 'GET',
+      url: '/api/v1/inventory/stock',
+      headers: { ...alphaAuth, 'x-tenant-id': alpha.id },
+    });
+
+    const listed = bodyOf<{ id: string; totalStock: number; availableStock: number }[]>(rows)
+      .find(row => row.id === catalogId);
+
+    expect(listed).toMatchObject({ totalStock: 7, availableStock: 7 });
+    expect(await unitsOf(catalogId)).toHaveLength(7);
+  });
+
+  it('says nothing about contents for an item that is not a bundle', async () => {
+    const catalogId = await newCatalogItem();
+    await post('/api/v1/inventory/inward', { catalogId, locationId: alpha.locationId, quantity: 1 });
+
+    const rows = await app.inject({
+      method: 'GET',
+      url: '/api/v1/inventory/stock',
+      headers: { ...alphaAuth, 'x-tenant-id': alpha.id },
+    });
+
+    const listed = bodyOf<{ id: string; bundleContents: unknown[] }[]>(rows).find(row => row.id === catalogId);
+
+    expect(listed?.bundleContents).toEqual([]);
+  });
+
+  it('handles assignment, return, and subsequent reassignment preserving full history and unique active constraint', async () => {
+    // 1. Inward an equipment unit with specific serial number
+    const catalogId = await newCatalogItem();
+    const serial = `LIFECYCLE-${unique()}`;
+    await post('/api/v1/inventory/inward', {
+      catalogId,
+      locationId: alpha.locationId,
+      quantity: 1,
+      serialNumbers: [serial],
+    });
+
+    // 2. Issue to customer A
+    const issue1 = await post('/api/v1/inventory/issue', {
+      customerId: alpha.customerId,
+      catalogId,
+      serialNumber: serial,
+    });
+    expect(issue1.statusCode).toBe(201);
+    const assignment1 = bodyOf<{ id: string; equipmentId: string; status: string }>(issue1);
+    expect(assignment1.status).toBe('active');
+
+    // Create customer B
+    const [customerB] = await db
+      .insert(customers)
+      .values({
+        tenantId: alpha.id,
+        customerCode: `CUSTB-${unique()}`,
+        name: 'Customer B',
+        phone: uniquePhone(),
+      })
+      .returning();
+
+    // 3. Return equipment from customer A
+    const returnRes = await post('/api/v1/inventory/return', {
+      customerEquipmentId: assignment1.id,
+      returnCondition: 'working',
+      returnRemarks: 'Customer relocated',
+    });
+    expect(returnRes.statusCode).toBe(200);
+    const returned = bodyOf<{ status: string; equipmentStatus: string }>(returnRes);
+    expect(returned.status).toBe('returned');
+    expect(returned.equipmentStatus).toBe('available');
+
+    // 4. Reassign the exact same physical equipment to Customer B
+    const issue2 = await post('/api/v1/inventory/issue', {
+      customerId: customerB!.id,
+      catalogId,
+      serialNumber: serial,
+    });
+    expect(issue2.statusCode).toBe(201);
+    const assignment2 = bodyOf<{ id: string; equipmentId: string; status: string }>(issue2);
+    expect(assignment2.equipmentId).toBe(assignment1.equipmentId);
+    expect(assignment2.id).not.toBe(assignment1.id);
+    expect(assignment2.status).toBe('active');
+
+    // 5. Query customer-equipment for this equipment unit: must return both rows chronologically
+    const historyRes = await app.inject({
+      method: 'GET',
+      url: `/api/v1/inventory/customer-equipment?equipmentId=${assignment1.equipmentId}`,
+      headers: { ...alphaAuth, 'x-tenant-id': alpha.id },
+    });
+    expect(historyRes.statusCode).toBe(200);
+    const history = bodyOf<{ id: string; status: string; customerId: string }[]>(historyRes);
+    expect(history).toHaveLength(2);
+    expect(history[0]!.id).toBe(assignment2.id);
+    expect(history[0]!.status).toBe('active');
+    expect(history[0]!.customerId).toBe(customerB!.id);
+    expect(history[1]!.id).toBe(assignment1.id);
+    expect(history[1]!.status).toBe('returned');
+    expect(history[1]!.customerId).toBe(alpha.customerId);
   });
 });

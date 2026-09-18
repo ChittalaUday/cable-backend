@@ -136,10 +136,6 @@ describe('staff and teams', () => {
     expect(first.statusCode, first.body).toBe(201);
     expect(bodyOf<Staff>(first).email).toBe(address.toLowerCase());
 
-    // The job ends, the account survives (§6.4) — so re-hiring has to find that
-    // account whatever case the form is filled in this time. Failing to find it
-    // is not a new account, it is a unique violation on an address that is
-    // already taken, and the hire fails for a reason nobody can act on.
     const ended = await app.inject({ method: 'DELETE', url: `/api/v1/staff/${bodyOf<Staff>(first).id}`, headers: adminAuth });
     expect(ended.statusCode).toBe(204);
 
@@ -447,7 +443,6 @@ describe('staff and teams', () => {
     expect((await appointLeader(one.id, outsider.id)).statusCode).toBe(400);
     expect((await appointLeader(one.id, member.id)).statusCode).toBe(200);
 
-    // Already leads `one`, and is not on `two` either way.
     expect((await appointLeader(two.id, member.id)).statusCode).toBe(400);
 
     expect((await appointLeader(one.id, null)).statusCode).toBe(200);
@@ -470,15 +465,6 @@ describe('staff and teams', () => {
   });
 });
 
-/**
- * `staffReach` and `teamReach` at `LOCATION` — the branch nothing exercised.
- *
- * Testing it means granting `staff.view` to the `staff` role, and the role
- * table only accepts the three system ids (`roles_known_id`), so there is no
- * private role to hang it on. The grant therefore lives and dies inside this
- * block: the earlier "closed to the staff role" test has already run, no other
- * file calls these routes, and `afterAll` puts the role back.
- */
 describe('what an area lead sees of the people and crews below them', () => {
   let leadAuth: { 'authorization': string; 'x-tenant-id': string };
   let nomadAuth: { 'authorization': string; 'x-tenant-id': string };
@@ -509,7 +495,6 @@ describe('what an area lead sees of the people and crews below them', () => {
       .onConflictDoUpdate({ target: [rolePermissions.roleId, rolePermissions.permissionKey], set: { scope: 'LOCATION' } });
     app.access.invalidate();
 
-    // A grant reaches down the tree, so the areas need a level below them.
     const named = (prefix: string) => `${prefix}-${randomUUID().slice(0, 8)}`;
     const categoryOf = async (name: string) => bodyOf<{ id: string }>(await app.inject({
       method: 'POST',

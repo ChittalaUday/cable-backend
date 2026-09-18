@@ -14,9 +14,6 @@ export const DEFAULT_ITEM_TYPES = [
   { code: 'accessory', name: 'General Accessory', icon: 'package', isSerialized: false, isReturnable: true },
 ] as const;
 
-export const TRACKING_TYPES = ['serialized', 'quantity'] as const;
-export type TrackingType = (typeof TRACKING_TYPES)[number];
-
 export const EQUIPMENT_OWNERSHIPS = [
   'tenant_provided',
   'customer_owned',
@@ -27,7 +24,7 @@ export type EquipmentOwnership = (typeof EQUIPMENT_OWNERSHIPS)[number];
 
 export const INVENTORY_STATUSES = [
   'available',
-  'staff_van',
+  'with_staff',
   'allocated',
   'faulty',
   'under_repair',
@@ -55,6 +52,15 @@ export const EQUIPMENT_RETURN_CONDITIONS = [
   'faulty',
 ] as const;
 export type EquipmentReturnCondition = (typeof EQUIPMENT_RETURN_CONDITIONS)[number];
+
+export const DEPOSIT_REFUND_STATUSES = [
+  'not_applicable',
+  'pending',
+  'refunded',
+  'forfeited',
+  'adjusted_against_dues',
+] as const;
+export type DepositRefundStatus = (typeof DEPOSIT_REFUND_STATUSES)[number];
 
 export const STOCK_MOVEMENT_TYPES = [
   'inward',
@@ -88,7 +94,8 @@ export type InventoryLookupType = (typeof INVENTORY_LOOKUP_TYPES)[number];
 
 export const INVENTORY_STATUS = {
   AVAILABLE: 'available',
-  STAFF_VAN: 'staff_van',
+  WITH_STAFF: 'with_staff',
+  STAFF_VAN: 'with_staff',
   ALLOCATED: 'allocated',
   FAULTY: 'faulty',
   UNDER_REPAIR: 'under_repair',
@@ -106,6 +113,21 @@ export const CUSTOMER_EQUIPMENT_STATUS = {
   LOST_UNRETURNED: 'lost_unreturned',
   WRITTEN_OFF: 'written_off',
 } as const satisfies Record<string, CustomerEquipmentStatus>;
+
+export const EQUIPMENT_RETURN_CONDITION = {
+  WORKING: 'working',
+  DAMAGED: 'damaged',
+  MISSING_ACCESSORIES: 'missing_accessories',
+  FAULTY: 'faulty',
+} as const satisfies Record<string, EquipmentReturnCondition>;
+
+export const DEPOSIT_REFUND_STATUS = {
+  NOT_APPLICABLE: 'not_applicable',
+  PENDING: 'pending',
+  REFUNDED: 'refunded',
+  FORFEITED: 'forfeited',
+  ADJUSTED_AGAINST_DUES: 'adjusted_against_dues',
+} as const satisfies Record<string, DepositRefundStatus>;
 
 export const STOCK_MOVEMENT_TYPE = {
   INWARD: 'inward',
@@ -127,11 +149,6 @@ export const EQUIPMENT_OWNERSHIP = {
   RENTAL: 'rental',
   DEPOSIT: 'deposit',
 } as const satisfies Record<string, EquipmentOwnership>;
-
-export const TRACKING_TYPE = {
-  SERIALIZED: 'serialized',
-  QUANTITY: 'quantity',
-} as const satisfies Record<string, TrackingType>;
 
 export const INVENTORY_REQUEST_TYPE = {
   CREATE_ITEM: 'create_item',

@@ -1,7 +1,5 @@
 import type { NotificationCategory, NotificationDelivery } from '@/constants/notify';
 
-// The vocabulary lives in `@/constants/notify` (mirrored by the app); only the
-// row shape comes from the schema.
 export type {
   NotificationCategory,
   NotificationChannel,
@@ -25,7 +23,6 @@ export interface NotifyInput {
   sensitive?: boolean;
 }
 
-/** Who a broadcast is aimed at. Resolved to device tokens at send time. */
 export type Audience
   = | { kind: 'user'; userIds: readonly string[] }
     | { kind: 'role'; roleId: 'admin' | 'staff' | 'customer' }
@@ -69,7 +66,6 @@ export interface RegisterTokenInput {
   tenantId?: string | null;
 }
 
-/** One live push target: a device token plus the user signed in on it, if any. */
 export interface PushTarget {
   deviceId: string;
   token: string;

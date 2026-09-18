@@ -11,19 +11,6 @@ export interface CoverageTarget {
 
 const NIL = sql`NULL::uuid`;
 
-/**
- * Does this catalogue entry sell anywhere the caller was granted?
- *
- * Availability only changes at a node that carries a coverage row, so probing
- * the granted nodes themselves plus every served node inside their subtrees
- * asks about every distinct region a grant contains — exactly, and without
- * walking the tree. `crm.coverage_allows` stays the single answer to "is this
- * sold here" (docs/services-providers-packages.md §5); this only chooses the
- * places to ask about.
- *
- * An entry nobody has configured coverage for sells everywhere, so it passes —
- * otherwise a tenant that configured nothing would show its staff nothing.
- */
 export function coverageReachesGrant(target: CoverageTarget, nodeIds: readonly string[]): SQL {
   if (nodeIds.length === 0)
     return sql`false`;

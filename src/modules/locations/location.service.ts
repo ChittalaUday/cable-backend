@@ -532,12 +532,6 @@ export class LocationsService {
     await audit.deleted(this.db, access.audit, { entityType: AUDIT_ENTITIES.LOCATION, entityId: id, before: before! });
   }
 
-  /**
-   * A write that names a node has to clear both bars: the node belongs to this
-   * tenant, and the caller's grant reaches it. `assertOwned` alone answers the
-   * first only, which let an area manager book stock into a depot they do not
-   * hold (§5, stage 2).
-   */
   async assertWithinReach(access: RequestAccess, key: PermissionKey, ids: readonly string[]): Promise<void> {
     await this.assertOwned(access, ids);
 
@@ -721,7 +715,7 @@ export class LocationsService {
     if (aliases === undefined)
       return;
 
-    await tx.delete(locationAliases).where(eq(locationAliases.locationId, locationId));
+    await tx.delete(locationAliases).where(and(eq(locationAliases.tenantId, tenantId), eq(locationAliases.locationId, locationId)));
 
     if (aliases.length > 0) {
       await tx.insert(locationAliases).values(

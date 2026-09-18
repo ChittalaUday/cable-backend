@@ -95,7 +95,6 @@ function INACTIVE() {
   );
 }
 
-/** Replies to each call in turn, so a restart-then-retry can be told apart. */
 function scriptFetch(replies: ((url: string) => Response)[]) {
   let call = 0;
   const spy = vi.fn(async (url: string) => {
@@ -110,16 +109,15 @@ function scriptFetch(replies: ((url: string) => Response)[]) {
 describe('openWA session recovery', () => {
   it('restarts a dormant session and sends the message it was holding', async () => {
     const fetchSpy = scriptFetch([
-      INACTIVE, // send-text
-      () => Response.json({ ok: true }), // start
-      () => Response.json({ status: 'ready' }), // status poll
-      () => Response.json({ id: 'msg-after-restart' }, { status: 201 }), // retried send
+      INACTIVE,
+      () => Response.json({ ok: true }),
+      () => Response.json({ status: 'ready' }),
+      () => Response.json({ id: 'msg-after-restart' }, { status: 201 }),
     ]);
 
     const provider = createOpenWaProvider(config);
     const result = await provider.send({ to: '918309154716', text: 'code', channel: 'whatsapp' });
 
-    // The caller never sees the outage: one OTP arrives late rather than not at all.
     expect(result).toEqual({ providerMessageId: 'msg-after-restart' });
 
     const paths = fetchSpy.mock.calls.map(([url]) => String(url).replace('http://openwa.test/api/sessions/session-1', ''));
@@ -140,8 +138,6 @@ describe('openWA session recovery', () => {
       .rejects
       .toMatchObject({ code: ERROR_CODES.OTP_DELIVERY_FAILED });
 
-    // No amount of restarting fixes a session waiting to be scanned, so it must
-    // not be polled until the deadline — somebody has to be told immediately.
     expect(alerts).toHaveLength(1);
     expect(alerts[0]?.status).toBe('qr_ready');
   });
@@ -177,7 +173,6 @@ describe('openWA session recovery', () => {
       .rejects
       .toMatchObject({ code: ERROR_CODES.OTP_DELIVERY_FAILED });
 
-    // A 400 that is not about the session must not restart anything.
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(alerts).toEqual([]);
   });

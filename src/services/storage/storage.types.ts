@@ -42,9 +42,7 @@ export interface ObjectPage {
 }
 
 export interface OrphanSweepOptions {
-  /** Nothing is removed unless this is explicitly false. */
   dryRun?: boolean;
-  /** Never touch an object younger than this; an upload may still be settling. */
   minimumAgeMinutes?: number;
 }
 
@@ -136,7 +134,6 @@ export interface StorageProvider {
   createUploadUrl: (key: string, contentType: string, expiresInSeconds: number) => Promise<SignedUrl>;
   createDownloadUrl: (key: string, expiresInSeconds: number) => Promise<SignedUrl>;
   head: (key: string) => Promise<ObjectHead | null>;
-  /** One page of the bucket's contents, for reconciling it against the database. */
   list: (continuationToken?: string) => Promise<ObjectPage>;
   put: (object: PutObject) => Promise<void>;
   remove: (key: string) => Promise<void>;

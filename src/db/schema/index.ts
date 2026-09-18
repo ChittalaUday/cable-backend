@@ -1,6 +1,7 @@
 export * from './analytics';
 export * from './audit';
 export * from './auth';
+export * from './billing';
 export * from './crm';
 export * from './functions';
 export * from './geo';

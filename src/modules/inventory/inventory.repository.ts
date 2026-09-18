@@ -1,6 +1,6 @@
 import type { SQL } from 'drizzle-orm';
 import type { Database, Transaction } from '@/db/client';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, isNull } from 'drizzle-orm';
 import {
   approvalRequests,
   customerEquipment,
@@ -22,7 +22,7 @@ export class InventoryRepository {
     return this.db
       .select()
       .from(itemCatalog)
-      .where(eq(itemCatalog.tenantId, tenantId))
+      .where(and(eq(itemCatalog.tenantId, tenantId), isNull(itemCatalog.deletedAt)))
       .orderBy(desc(itemCatalog.createdAt));
   }
 
@@ -30,7 +30,7 @@ export class InventoryRepository {
     const [item] = await this.db
       .select()
       .from(itemCatalog)
-      .where(and(eq(itemCatalog.tenantId, tenantId), eq(itemCatalog.id, id)));
+      .where(and(eq(itemCatalog.tenantId, tenantId), eq(itemCatalog.id, id), isNull(itemCatalog.deletedAt)));
     return item ?? null;
   }
 
@@ -45,15 +45,16 @@ export class InventoryRepository {
     const [updated] = await client
       .update(itemCatalog)
       .set({ ...data, updatedAt: new Date() })
-      .where(and(eq(itemCatalog.tenantId, tenantId), eq(itemCatalog.id, id)))
+      .where(and(eq(itemCatalog.tenantId, tenantId), eq(itemCatalog.id, id), isNull(itemCatalog.deletedAt)))
       .returning();
     return updated ?? null;
   }
 
   async deleteCatalogItem(tenantId: string, id: string) {
     return this.db
-      .delete(itemCatalog)
-      .where(and(eq(itemCatalog.tenantId, tenantId), eq(itemCatalog.id, id)));
+      .update(itemCatalog)
+      .set({ deletedAt: new Date(), updatedAt: new Date() })
+      .where(and(eq(itemCatalog.tenantId, tenantId), eq(itemCatalog.id, id), isNull(itemCatalog.deletedAt)));
   }
 
   async findEquipmentByTenant(tenantId: string, conditions: SQL[] = []) {

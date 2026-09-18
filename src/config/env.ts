@@ -26,7 +26,6 @@ export const EnvSchema = Type.Object({
     Type.Literal('debug'),
     Type.Literal('trace'),
   ], { default: 'info' }),
-  /** What reaches the files on disk. The console still gets LOG_LEVEL. */
   LOG_FILE_LEVEL: Type.Union([
     Type.Literal('fatal'),
     Type.Literal('error'),

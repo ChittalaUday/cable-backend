@@ -6,6 +6,8 @@ export const auth = pgSchema('auth');
 
 export const iam = pgSchema('iam');
 
+export const billing = pgSchema('billing');
+
 export const crm = pgSchema('crm');
 
 export const geo = pgSchema('geo');

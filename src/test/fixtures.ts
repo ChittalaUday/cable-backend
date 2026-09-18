@@ -12,8 +12,6 @@ export function uniquePhone(): string {
 }
 
 export function uniqueEmail(prefix = 'user'): string {
-  // Canonical, because the column will not take anything else — a `prefix`
-  // with a capital in it used to make an address nothing could sign in as.
   return normaliseEmail(`${prefix}-${randomUUID()}@test.local`)!;
 }
 

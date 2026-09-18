@@ -9,16 +9,16 @@ export const approvalRequests = inventory.table('approval_requests', {
   id: uuid('id').primaryKey().defaultRandom(),
   tenantId: uuid('tenant_id').notNull().references(() => tenants.id, { onDelete: 'cascade' }),
 
-  requestedBy: uuid('requested_by').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  requestedBy: uuid('requested_by').notNull().references(() => users.id, { onDelete: 'restrict' }),
   requestType: text('request_type', { enum: INVENTORY_REQUEST_TYPES }).notNull(),
-  targetItemId: uuid('target_item_id').references(() => itemCatalog.id, { onDelete: 'set null' }),
+  targetItemId: uuid('target_item_id').references(() => itemCatalog.id, { onDelete: 'restrict' }),
 
   proposedData: jsonb('proposed_data').$type<Record<string, unknown>>(),
   reason: text('reason').notNull(),
 
   status: text('status', { enum: INVENTORY_REQUEST_STATUSES }).notNull().default('pending'),
 
-  reviewedBy: uuid('reviewed_by').references(() => users.id, { onDelete: 'set null' }),
+  reviewedBy: uuid('reviewed_by').references(() => users.id, { onDelete: 'restrict' }),
   reviewedAt: timestamp('reviewed_at', { withTimezone: true }),
   reviewNotes: text('review_notes'),
 

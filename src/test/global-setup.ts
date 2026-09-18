@@ -12,6 +12,7 @@ const OWNED_SCHEMAS = [
   'auth',
   'iam',
   'crm',
+  'billing',
   'geo',
   'notify',
   'media',
@@ -42,7 +43,7 @@ async function resetSchemas(pool: pg.Pool): Promise<void> {
 export async function setup(): Promise<void> {
   if (process.env.DATABASE_URL_TEST == null || process.env.DATABASE_URL_TEST === '') {
     try {
-      container = await new PostgreSqlContainer('postgres:18-alpine')
+      container = await new PostgreSqlContainer('postgis/postgis:18-3.6-alpine')
         .withDatabase('cable_test')
         .withUsername('cable')
         .withPassword('cable')

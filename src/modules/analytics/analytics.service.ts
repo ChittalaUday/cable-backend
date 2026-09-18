@@ -20,6 +20,20 @@ const iso = (value: Date | string) => new Date(value instanceof Date ? value.get
 const share = (count: number, total: number) => total > 0 ? Math.round((count / total) * 1000) / 10 : 0;
 const growth = (current: number, previous: number) => previous > 0 ? ((current - previous) / previous) * 100 : null;
 
+const CASH_MOVEMENTS = ['deposit', 'reversal'];
+
+function cashTaken(prefix: SQL): SQL {
+  return sql`(${prefix}credit - ${prefix}debit)`;
+}
+
+function receipt(prefix: SQL): SQL {
+  return sql`CASE WHEN ${prefix}transaction_type = 'reversal' THEN -1 ELSE 1 END`;
+}
+
+function isCash(prefix: SQL): SQL {
+  return sql`${prefix}transaction_type = ANY(${sql.param(CASH_MOVEMENTS)}::text[])`;
+}
+
 function boundaries(now: Date) {
   const day = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const week = new Date(day);
@@ -33,10 +47,6 @@ export class AnalyticsService {
   constructor(private readonly db: Database) {}
 
   async adminDashboard(access: RequestAccess, now = new Date()): Promise<AdminDashboard> {
-    // Which dashboard you get is decided by the reach you hold, not by the
-    // name of your role: a tenant that defines its own roles still gets the
-    // right answer, and an `admin` narrowed to two areas no longer reads the
-    // whole tenant back out of a chart (§5).
     if (requireScope(access, PERMISSIONS.REPORTS_VIEW) !== 'ALL')
       throw forbidden(ERROR_CODES.PERM_SCOPE_DENIED, 'The tenant-wide dashboard needs reports.view at ALL');
 
@@ -185,14 +195,14 @@ export class AnalyticsService {
     const prefix = alias ? sql.raw(`${alias}.`) : sql.empty();
     const result = await this.db.execute<CountRow>(sql`
       SELECT
-        coalesce(sum(${prefix}credit) FILTER (WHERE ${prefix}transaction_date >= ${periods.day}), 0) "today",
-        coalesce(sum(${prefix}credit) FILTER (WHERE ${prefix}transaction_date >= ${periods.week}), 0) "week",
-        coalesce(sum(${prefix}credit) FILTER (WHERE ${prefix}transaction_date >= ${periods.month}), 0) "month",
-        count(*) FILTER (WHERE ${prefix}transaction_date >= ${periods.day})::int "today_receipts",
-        count(*) FILTER (WHERE ${prefix}transaction_date >= ${periods.week})::int "week_receipts",
-        count(*) FILTER (WHERE ${prefix}transaction_date >= ${periods.month})::int "month_receipts"
+        coalesce(sum(${cashTaken(prefix)}) FILTER (WHERE ${prefix}transaction_date >= ${periods.day}), 0) "today",
+        coalesce(sum(${cashTaken(prefix)}) FILTER (WHERE ${prefix}transaction_date >= ${periods.week}), 0) "week",
+        coalesce(sum(${cashTaken(prefix)}) FILTER (WHERE ${prefix}transaction_date >= ${periods.month}), 0) "month",
+        coalesce(sum(${receipt(prefix)}) FILTER (WHERE ${prefix}transaction_date >= ${periods.day}), 0)::int "today_receipts",
+        coalesce(sum(${receipt(prefix)}) FILTER (WHERE ${prefix}transaction_date >= ${periods.week}), 0)::int "week_receipts",
+        coalesce(sum(${receipt(prefix)}) FILTER (WHERE ${prefix}transaction_date >= ${periods.month}), 0)::int "month_receipts"
       FROM crm.account_transactions ${alias ? sql.raw(alias) : sql.empty()}
-      WHERE ${filter} AND ${prefix}transaction_type = 'deposit' AND ${prefix}credit > 0
+      WHERE ${filter} AND ${isCash(prefix)}
     `);
     const row = result.rows[0] ?? {};
     return {
@@ -216,9 +226,9 @@ export class AnalyticsService {
         ) bucket
       )
       SELECT to_char(bucket, 'YYYY-MM-DD') key, to_char(bucket, ${format}) label,
-        coalesce(sum(t.credit), 0)::numeric(12,2)::text value
+        coalesce(sum(t.credit - t.debit), 0)::numeric(12,2)::text value
       FROM buckets LEFT JOIN crm.account_transactions t
-        ON t.tenant_id = ${tenantId} AND t.transaction_type = 'deposit' AND t.credit > 0
+        ON t.tenant_id = ${tenantId} AND ${isCash(sql`t.`)}
         AND t.transaction_date >= bucket AND t.transaction_date < bucket + '1 ${sql.raw(unit)}'::interval
       GROUP BY bucket ORDER BY bucket
     `);

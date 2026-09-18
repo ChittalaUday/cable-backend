@@ -64,6 +64,16 @@ function groupByCustomer<T extends { customerId: string }>(rows: T[]): Map<strin
   return grouped;
 }
 
+function placeOf(
+  person: LocatedCustomer,
+  line: LocatedLine | null,
+): { locationId: string | null; locationPath: string | null } {
+  if (person.locationId !== null && person.locationPath !== null)
+    return { locationId: person.locationId, locationPath: person.locationPath };
+
+  return { locationId: line?.locationId ?? null, locationPath: line?.locationPath ?? null };
+}
+
 function searchLocations(
   person: LocatedCustomer,
   lines: LocatedLine[],
@@ -386,6 +396,7 @@ export async function hydrateCustomerItems(
 
     const serviceAccounts = linesById.get(person.id) ?? [];
     const activeLines = serviceAccounts.filter(line => line.status === 'active');
+    const place = placeOf(person, activeLines[0] ?? serviceAccounts[0] ?? null);
     const searchMetadata = rank.score === undefined
       ? {}
       : {
@@ -402,8 +413,8 @@ export async function hydrateCustomerItems(
       status: person.status,
       address: person.address,
       outstandingBalance: person.outstandingBalance,
-      locationId: person.locationId,
-      locationPath: person.locationPath,
+      locationId: place.locationId,
+      locationPath: place.locationPath,
       subscriptions: serviceAccounts.length,
       activeSubscriptions: activeLines.length,
       services: [...new Set(activeLines.map(line => line.service))].sort(),

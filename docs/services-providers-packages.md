@@ -265,13 +265,13 @@ carries the breadcrumbs so a list of two identical names still reads apart.
 | `GET` `PUT` | `/service-providers/:id/coverage` | `services.view` / `services.update` |
 | `GET` `PUT` | `/services/:id/coverage` | `services.view` / `services.update` |
 | `GET` `PUT` | `/packages/:id/coverage` | `packages.view` / `packages.update` |
-| `GET` | `/locations/:id/availability` | `services.view` |
+| `GET` | `/locations/:id/available-services` | `services.view` |
 
 `PUT /service-providers/:id/coverage` replaces the whole set for that provider
 in one call — coverage is edited as a list in the UI, and a diff of
 `POST`/`DELETE` calls is three round trips and a half-applied state.
 
-`GET /locations/:id/availability` is §5's query: services → providers →
+`GET /locations/:id/available-services` is §5's query: services → providers →
 packages, already filtered. One call for the wizard instead of three plus
 client-side filtering that will not match the server's rules.
 
@@ -336,7 +336,7 @@ does sell only some tiers in some buildings.
 | 1 | Schema, migrations `0021`–`0023`, backfill, seed rewrite | **done** |
 | 2 | `modules/services` — services + providers CRUD | **done** |
 | 3 | `modules/packages` — packages CRUD, channel lineups | **done** |
-| 4 | Coverage + `GET /locations/:id/availability` | **done** |
+| 4 | Coverage + `GET /locations/:id/available-services` | **done** |
 | 5 | Subscription creation enforcing availability | **blocked** — see below |
 
 **Slice 5 is waiting on a module that does not exist.** There is no

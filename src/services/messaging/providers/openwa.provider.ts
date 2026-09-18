@@ -7,13 +7,7 @@ export interface OpenWaConfig {
   apiKey: string;
   sessionId: string;
   timeoutMs: number;
-  /** How long to wait for a restarted session to come back before giving up. */
   recoveryTimeoutMs?: number;
-  /**
-   * Called when the session cannot be recovered without a person — it needs a
-   * QR scan, or it failed outright. Fire-and-forget: delivery has already
-   * failed by this point and the alert must not delay the response further.
-   */
   onSessionUnrecoverable?: (detail: { status: string; reason: string }) => void;
 }
 
@@ -22,7 +16,6 @@ interface OpenWaResponse {
   messageId?: string;
 }
 
-/** Only `ready` can send. The rest are either in transit or need a human. */
 type SessionStatus
   = 'created' | 'initializing' | 'qr_ready' | 'authenticating' | 'ready' | 'disconnected' | 'failed';
 
@@ -57,21 +50,11 @@ export function createOpenWaProvider(config: OpenWaConfig): MessagingProvider {
     }
   }
 
-  /**
-   * Starts a dormant session and waits for it to come back.
-   *
-   * A WhatsApp session drops on its own — the phone loses network, the host
-   * restarts — and the only thing needed is a restart. Doing that here means
-   * one OTP arrives a few seconds late instead of not at all. It gives up
-   * immediately on a state no restart can fix: `qr_ready` wants somebody to
-   * scan a code, and `failed` wants somebody to look.
-   */
   async function recover(): Promise<boolean> {
     try {
       await post('/start');
     }
     catch {
-      // The session may already be starting; the poll below decides.
     }
 
     const deadline = Date.now() + recoveryTimeoutMs;
@@ -144,7 +127,6 @@ export function createOpenWaProvider(config: OpenWaConfig): MessagingProvider {
   };
 }
 
-/** Reads the body without consuming it for the error path that may follow. */
 async function peek(response: Response): Promise<string> {
   if (response.ok)
     return '';

@@ -9,30 +9,34 @@ export function createFcmProvider(messaging: Messaging): MessagingProvider {
     channels: ['push'],
     configured: true,
 
-    async send({ to, text, subject, category, data, imageUrl }: OutboundMessage): Promise<SendResult> {
+    async send({ to, text, subject, category, data, imageUrl, silent }: OutboundMessage): Promise<SendResult> {
       try {
-        // A `notification` payload, never data-only: the OS then shows this in
-        // the tray when the app is backgrounded and stays silent when it is
-        // foregrounded, which is exactly the one-or-the-other rule we want.
-        const id = await messaging.send({
-          token: to,
-          notification: {
-            title: subject ?? 'Satya Cable',
-            body: text,
-            // Platform-independent: FCM maps this to Android's big-picture
-            // style and to the iOS attachment. iOS only renders it when the
-            // app ships a Notification Service Extension.
-            ...(imageUrl != null && imageUrl !== '' ? { imageUrl } : {}),
-          },
-          data: stringValues(data),
-          android: {
-            priority: category === 'alert' ? 'high' : 'normal',
-            notification: { channelId: category ?? 'general' },
-          },
-          ...(category === 'alert'
-            ? { apns: { payload: { aps: { sound: 'default' } } } }
-            : {}),
-        });
+        const id = await messaging.send(silent === true
+          ? {
+              token: to,
+              data: stringValues(data),
+              android: { priority: 'high' },
+              apns: {
+                headers: { 'apns-priority': '5', 'apns-push-type': 'background' },
+                payload: { aps: { 'content-available': 1 } },
+              },
+            }
+          : {
+              token: to,
+              notification: {
+                title: subject ?? 'Satya Cable',
+                body: text,
+                ...(imageUrl != null && imageUrl !== '' ? { imageUrl } : {}),
+              },
+              data: stringValues(data),
+              android: {
+                priority: category === 'alert' ? 'high' : 'normal',
+                notification: { channelId: category ?? 'general' },
+              },
+              ...(category === 'alert'
+                ? { apns: { payload: { aps: { sound: 'default' } } } }
+                : {}),
+            });
 
         return { providerMessageId: id };
       }
@@ -47,7 +51,6 @@ export function createFcmProvider(messaging: Messaging): MessagingProvider {
   };
 }
 
-/** FCM data payloads are string-to-string; anything else is dropped silently. */
 function stringValues(data: Record<string, unknown> | null | undefined): Record<string, string> {
   if (data == null)
     return {};

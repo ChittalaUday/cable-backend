@@ -34,7 +34,6 @@ export default fp(async (app) => {
   app.decorateRequest('auditContext');
   app.decorateRequest('access');
 
-  // Tenant resolution onRequest
   app.addHook('onRequest', async (request: FastifyRequest) => {
     if (request.method === 'OPTIONS' || request.routeOptions.config.public === true || request.url.startsWith('/docs'))
       return;
@@ -58,12 +57,10 @@ export default fp(async (app) => {
     request.log = request.log.child({ tenantId: request.tenantId });
   });
 
-  // Audit context preHandler
   app.addHook('preHandler', async (request: FastifyRequest) => {
     request.auditContext = auditContextFor(request);
   });
 
-  // RBAC permission hook decorator
   app.decorate('requirePermission', (key: PermissionKey): preHandlerAsyncHookHandler => {
     const guard: preHandlerAsyncHookHandler = async (request: FastifyRequest) => {
       if (request.tenantId === undefined) {

@@ -10,37 +10,22 @@ import { env } from '@/config/env';
 import { CacheService } from '@/utils/cache/cache.service';
 
 export interface RouteCache {
-  /** Namespace this route's entries live in. A write invalidates by tag. */
   tag: string;
-  /**
-   * `user` (the default) when the body is filtered by the caller's location
-   * scope — which is every list that calls `locationScopeFor`. `tenant` only
-   * when the handler reads nothing off `access` but `tenantId`.
-   */
   scope?: 'tenant' | 'user';
 }
 
 declare module 'fastify' {
   interface FastifyInstance {
     cache: CacheService;
-    /** Empties this backend's keyspace and answers how many keys went. */
     clearCache: () => Promise<number>;
   }
 
   interface FastifyContextConfig {
-    /** Opt this GET into the response cache. Absent means never cached. */
     cache?: RouteCache;
-    /** Tags this write drops on a 2xx. */
     invalidates?: readonly string[];
   }
 }
 
-/**
- * Every list filters by the caller's granted nodes, so the key carries who is
- * asking *and* what they were granted: re-scoping a staff member changes the
- * fingerprint, and their old rows are unreachable without any write having to
- * name every tag they might have touched.
- */
 function scopeIdFor(access: RequestAccess): string {
   const grants = [
     access.roleId,
@@ -57,8 +42,6 @@ function partsFor(request: FastifyRequest): CacheKeyParts | null {
   if (config === undefined)
     return null;
 
-  // `request.access` is only set once `requirePermission` has run; without it
-  // there is no caller to key on, so nothing is cached.
   const access = request.access as RequestAccess | undefined;
   if (access === undefined)
     return null;
@@ -79,7 +62,6 @@ export default fp(async (app) => {
       enableOfflineQueue: false,
     });
 
-    // Reconnect storms would otherwise crash the process on an unhandled 'error'.
     redis.on('error', () => {});
 
     await redis.connect().catch((error: unknown) => {
@@ -91,9 +73,6 @@ export default fp(async (app) => {
       ttlSeconds: env.CACHE_TTL_SECONDS,
     });
 
-    // Called from `server.ts`, not here: `buildApp()` also runs for `verify.ts`
-    // and for every test file, and none of those should empty the cache a
-    // running server is using.
     app.decorate('clearCache', async () => {
       const removed = await cache.clear().catch((error: unknown) => {
         app.log.warn(`Cache not cleared: ${error instanceof Error ? error.message : String(error)}`);
@@ -121,9 +100,6 @@ export default fp(async (app) => {
       return reply.header('x-cache', 'HIT').type('application/json').send(hit);
     };
 
-    // The lookup is appended to the route's own preHandler chain, so it runs
-    // *after* `requirePermission` — a caller who lost the permission gets the
-    // 403, not the body someone cached while they still had it.
     app.addHook('onRoute', (route) => {
       if (route.config?.cache === undefined || route.method !== 'GET')
         return;
@@ -135,9 +111,6 @@ export default fp(async (app) => {
       route.preHandler = [...existing, lookup];
     });
 
-    // Storing has to see the JSON string, so it sits on an instance-level
-    // onSend: route-level hooks run after these, and by then compress has
-    // turned the payload into a stream.
     app.addHook('onSend', async (request, reply, payload) => {
       if (reply.getHeader('x-cache') === 'HIT')
         return payload;
@@ -150,7 +123,6 @@ export default fp(async (app) => {
         return payload;
       }
 
-      // 200 only — an error body is never worth five minutes.
       if (reply.statusCode !== 200 || typeof payload !== 'string')
         return payload;
 
@@ -169,8 +141,6 @@ export default fp(async (app) => {
     app.log.warn('Cache disabled — every read hits Postgres.');
   }
 
-  // Tenant data must never land in a shared proxy; `max-age=0` still lets the
-  // client revalidate with If-None-Match, which is what makes the ETag pay off.
   app.addHook('onSend', async (request, reply) => {
     if (reply.hasHeader('cache-control'))
       return;
@@ -183,9 +153,6 @@ export default fp(async (app) => {
     );
   });
 
-  // Order matters: both hook onSend, so they must register after the hooks
-  // above — compress replaces the payload with a stream, and anything that
-  // needs the raw JSON (the cache write, the ETag) has to run first.
   await app.register(etag, { weak: true });
   await app.register(compress, { threshold: 1024 });
 }, { name: 'cache', dependencies: ['db', 'request-context'] });

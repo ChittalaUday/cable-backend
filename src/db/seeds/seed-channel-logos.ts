@@ -241,7 +241,7 @@ async function seedChannelLogos(db: Database, force: boolean): Promise<void> {
         stream: Readable.from(image.bytes),
       });
 
-      const logoUrl = publicUrlFor(result.file.storageKey)!;
+      const logoUrl = result.file.publicUrl ?? (result.file.storageKey !== null ? publicUrlFor(result.file.storageKey)! : image.url);
       await db.update(channels).set({ logoUrl, updatedAt: new Date() }).where(eq(channels.id, channel.id));
 
       if (result.deduplicated)

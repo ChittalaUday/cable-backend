@@ -112,7 +112,7 @@ afterAll(async () => {
 
 describe('analytics dashboards', () => {
   it('returns tenant-wide admin values from live records', async () => {
-    const response = await app.inject({ method: 'GET', url: '/api/v1/analytics/admin-dashboard', headers: auth });
+    const response = await app.inject({ method: 'GET', url: '/api/v1/analytics/dashboard/admin', headers: auth });
 
     expect(response.statusCode, response.body).toBe(200);
     expect(bodyOf(response)).toMatchObject({
@@ -125,12 +125,12 @@ describe('analytics dashboards', () => {
   });
 
   it('does not expose the staff dashboard to an admin', async () => {
-    const response = await app.inject({ method: 'GET', url: '/api/v1/analytics/staff-dashboard', headers: auth });
+    const response = await app.inject({ method: 'GET', url: '/api/v1/analytics/dashboard/staff', headers: auth });
     expect(response.statusCode).toBe(403);
   });
 
   it('does not expose the admin dashboard to staff', async () => {
-    const response = await app.inject({ method: 'GET', url: '/api/v1/analytics/admin-dashboard', headers: staffAuth });
+    const response = await app.inject({ method: 'GET', url: '/api/v1/analytics/dashboard/admin', headers: staffAuth });
     expect(response.statusCode).toBe(403);
   });
 
@@ -148,7 +148,7 @@ describe('analytics dashboards', () => {
     const countBoth = async () => {
       await settleCache();
 
-      const dashboard = await app.inject({ method: 'GET', url: '/api/v1/analytics/staff-dashboard', headers: staffAuth });
+      const dashboard = await app.inject({ method: 'GET', url: '/api/v1/analytics/dashboard/staff', headers: staffAuth });
       const list = await app.inject({ method: 'GET', url: '/api/v1/customers?limit=100', headers: staffAuth });
 
       expect(dashboard.statusCode, dashboard.body).toBe(200);
@@ -194,7 +194,7 @@ describe('analytics dashboards', () => {
   });
 
   it('separates personal collection status from team status', async () => {
-    const response = await app.inject({ method: 'GET', url: '/api/v1/analytics/staff-dashboard', headers: staffAuth });
+    const response = await app.inject({ method: 'GET', url: '/api/v1/analytics/dashboard/staff', headers: staffAuth });
     expect(response.statusCode, response.body).toBe(200);
     expect(bodyOf(response)).toMatchObject({
       personal: { today: '500.00', month: '500.00', todayReceipts: 1 },

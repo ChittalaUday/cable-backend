@@ -69,8 +69,6 @@ describe('the seeded library', () => {
   it('marks only the hand-checked handsets verified', async () => {
     const remotes = await list();
 
-    // Set-top boxes are reference layouts, and the imported television library
-    // is community data — only the three handsets we checked ourselves pass.
     expect(remotes.filter(r => r.deviceType === 'stb').every(r => !r.verified)).toBe(true);
     expect(remotes.filter(r => r.verified).map(r => r.brand).sort()).toEqual(['LG', 'Samsung', 'Sony']);
   });

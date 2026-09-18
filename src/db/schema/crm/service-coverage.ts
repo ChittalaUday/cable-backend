@@ -13,7 +13,7 @@ export const serviceCoverage = crm.table('service_coverage', {
   serviceId: uuid('service_id').notNull().references(() => services.id, { onDelete: 'cascade' }),
   serviceProviderId: uuid('service_provider_id').references(() => serviceProviders.id, { onDelete: 'cascade' }),
   packageId: uuid('package_id').references(() => packages.id, { onDelete: 'cascade' }),
-  locationId: uuid('location_id').notNull().references(() => locations.id, { onDelete: 'cascade' }),
+  locationId: uuid('location_id').notNull().references(() => locations.id, { onDelete: 'restrict' }),
   isAvailable: boolean('is_available').notNull().default(true),
   note: text('note'),
   createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),

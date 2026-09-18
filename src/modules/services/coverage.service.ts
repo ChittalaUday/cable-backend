@@ -39,7 +39,6 @@ interface AvailabilityRow extends Record<string, unknown> {
 export class CoverageService {
   constructor(private readonly db: Db, private readonly locations: LocationsService) {}
 
-  /** The coverage rows that have anything to say about the areas the caller holds. */
   private rowsInReach(access: RequestAccess, key: PermissionKey): SQL[] {
     const reach = locationScopeFor(access, key);
 

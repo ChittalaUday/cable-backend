@@ -1,6 +1,5 @@
-import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
-import { boolean, index, integer, jsonb, numeric, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { boolean, index, jsonb, numeric, text, timestamp, uuid } from 'drizzle-orm/pg-core';
 import {
   EQUIPMENT_OWNERSHIPS,
   INVENTORY_STATUSES,
@@ -14,30 +13,19 @@ import { itemCatalog } from './item-catalog';
 export const equipment = inventory.table('equipment', {
   id: uuid('id').primaryKey().defaultRandom(),
   tenantId: uuid('tenant_id').notNull().references(() => tenants.id, { onDelete: 'cascade' }),
-  catalogId: uuid('catalog_id').references(() => itemCatalog.id, { onDelete: 'set null' }),
-
-  parentEquipmentId: uuid('parent_equipment_id').references((): AnyPgColumn => equipment.id, { onDelete: 'set null' }),
-
-  locationId: uuid('location_id').references(() => locations.id, { onDelete: 'set null' }),
-  staffId: uuid('staff_id').references(() => users.id, { onDelete: 'set null' }),
-
+  catalogId: uuid('catalog_id').references(() => itemCatalog.id, { onDelete: 'restrict' }),
+  locationId: uuid('location_id').references(() => locations.id, { onDelete: 'restrict' }),
+  staffId: uuid('staff_id').references(() => users.id, { onDelete: 'restrict' }),
   serialNumber: text('serial_number'),
   vcNumber: text('vc_number'),
   macAddress: text('mac_address'),
   barcode: text('barcode'),
-
-  quantity: integer('quantity').notNull().default(1),
-
   ownershipType: text('ownership_type', { enum: EQUIPMENT_OWNERSHIPS }).notNull().default('tenant_provided'),
   depositAmount: numeric('deposit_amount', { precision: 12, scale: 2 }).notNull().default('0'),
   costPrice: numeric('cost_price', { precision: 12, scale: 2 }).notNull().default('0'),
-
   isReturnable: boolean('is_returnable').notNull().default(true),
-
   inventoryStatus: text('inventory_status', { enum: INVENTORY_STATUSES }).notNull().default('available'),
-
   metadata: jsonb('metadata'),
-
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, table => [
@@ -47,7 +35,6 @@ export const equipment = inventory.table('equipment', {
   index('equipment_tenant_inv_status_idx').on(table.tenantId, table.inventoryStatus),
   index('equipment_tenant_location_idx').on(table.tenantId, table.locationId),
   index('equipment_tenant_staff_idx').on(table.tenantId, table.staffId),
-  index('equipment_tenant_parent_idx').on(table.tenantId, table.parentEquipmentId),
   index('equipment_tenant_catalog_idx').on(table.tenantId, table.catalogId),
   index('equipment_search_trgm_idx').using('gin', sql`(
     coalesce(${table.serialNumber}, '') || ' ' || coalesce(${table.vcNumber}, '') || ' ' ||

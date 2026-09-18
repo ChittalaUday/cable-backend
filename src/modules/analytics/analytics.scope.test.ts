@@ -7,13 +7,6 @@ import { DomainError, ERROR_CODES } from '@/errors';
 import { PERMISSIONS } from '@/security/permissions';
 import { AnalyticsService as Analytics } from './analytics.service';
 
-/**
- * Both dashboards used to ask `roleId === 'admin' | 'staff'`, which is a
- * different question from the one the grant answers: a role the tenant names
- * itself matched neither, and an `admin` narrowed to two areas still read the
- * whole tenant. Both now gate on the scope held for `reports.view`, so these
- * refusals happen before any query runs — no database needed to prove it.
- */
 function noQuery(): never {
   throw new Error('the refusal must happen before any query runs');
 }

@@ -29,13 +29,6 @@ export interface IssuedSession {
   refreshToken: string;
 }
 
-/**
- * The device characteristics a fingerprint is built from.
- *
- * A field the client did not send is left as it was rather than nulled: an
- * endpoint that carries fewer headers than another must not erase what a
- * richer request already recorded.
- */
 function fingerprintOf(info: DeviceInfo) {
   return {
     ...(info.osVersion != null ? { osVersion: info.osVersion } : {}),

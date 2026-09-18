@@ -2,9 +2,6 @@ import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 import { index, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
 import { ENTITY_STATUSES } from '@/constants/crm';
 import { tenancy } from '../schemas';
-// Circular by nature: a crew names its leader, a membership names its crew.
-// Safe because this side is a lazy, explicitly typed thunk — it breaks both the
-// module-evaluation cycle and the type-inference cycle.
 import { tenantMemberships } from './tenant-memberships';
 import { tenants } from './tenants';
 
@@ -28,7 +25,6 @@ export const teams = tenancy.table('teams', {
 
   unique('teams_tenant_id_uq').on(table.tenantId, table.id),
 
-  // One membership leads at most one crew.
   unique('teams_leader_membership_uq').on(table.leaderMembershipId),
 
   index('teams_tenant_status_idx').on(table.tenantId, table.status),

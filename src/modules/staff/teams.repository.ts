@@ -21,11 +21,9 @@ const MEMBER_COUNT = sql<number>`(
   SELECT count(*)::int FROM tenancy.tenant_memberships m WHERE m.team_id = tenancy.teams.id
 )`;
 
-/** Every read here is scoped to one tenant's live (not disbanded) crews. */
 export class TeamsRepository {
   constructor(private readonly db: Database) {}
 
-  /** For the shared grant helpers, which build their own SQL. */
   get database(): Database {
     return this.db;
   }
@@ -61,7 +59,6 @@ export class TeamsRepository {
     return row === undefined ? null : { ...row.team, memberCount: row.memberCount };
   }
 
-  /** The id back only if the caller's reach covers this crew. */
   async findIdWithin(tenantId: string, id: string, conditions: SQL[]): Promise<string | null> {
     const [row] = await this.db
       .select({ id: teams.id })
@@ -72,7 +69,6 @@ export class TeamsRepository {
     return row?.id ?? null;
   }
 
-  /** Disbanded crews keep their slug, so this spans them too. */
   async takenSlugs(tenantId: string): Promise<string[]> {
     const rows = await this.db.select({ slug: teams.slug }).from(teams).where(eq(teams.tenantId, tenantId));
 
@@ -125,7 +121,11 @@ export class TeamsRepository {
       })
       .from(tenantMemberships)
       .innerJoin(users, eq(users.id, tenantMemberships.userId))
-      .where(and(eq(tenantMemberships.tenantId, tenantId), eq(tenantMemberships.teamId, teamId)))
+      .where(and(
+        eq(tenantMemberships.tenantId, tenantId),
+        eq(tenantMemberships.teamId, teamId),
+        isNull(tenantMemberships.deletedAt),
+      ))
       .orderBy(asc(users.name), asc(tenantMemberships.id));
   }
 
@@ -133,7 +133,11 @@ export class TeamsRepository {
     const rows = await this.db
       .select({ userId: tenantMemberships.userId })
       .from(tenantMemberships)
-      .where(and(eq(tenantMemberships.tenantId, tenantId), eq(tenantMemberships.teamId, teamId)));
+      .where(and(
+        eq(tenantMemberships.tenantId, tenantId),
+        eq(tenantMemberships.teamId, teamId),
+        isNull(tenantMemberships.deletedAt),
+      ));
 
     return rows.map(row => row.userId);
   }
@@ -146,6 +150,7 @@ export class TeamsRepository {
         eq(tenantMemberships.tenantId, tenantId),
         eq(tenantMemberships.id, membershipId),
         eq(tenantMemberships.teamId, teamId),
+        isNull(tenantMemberships.deletedAt),
       ))
       .limit(1);
 
@@ -159,7 +164,11 @@ export class TeamsRepository {
     const rows = await this.db
       .select({ userId: tenantMemberships.userId })
       .from(tenantMemberships)
-      .where(and(eq(tenantMemberships.tenantId, tenantId), inArray(tenantMemberships.id, [...membershipIds])));
+      .where(and(
+        eq(tenantMemberships.tenantId, tenantId),
+        inArray(tenantMemberships.id, [...membershipIds]),
+        isNull(tenantMemberships.deletedAt),
+      ));
 
     return rows.map(row => row.userId);
   }

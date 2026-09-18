@@ -1,9 +1,7 @@
 import { sql } from 'drizzle-orm';
-import { boolean, index, jsonb, numeric, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
-import {
-  EQUIPMENT_OWNERSHIPS,
-  TRACKING_TYPES,
-} from '@/constants/inventory';
+import { boolean, index, jsonb, numeric, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
+import { EQUIPMENT_OWNERSHIPS } from '@/constants/inventory';
+import { files } from '../media/files';
 import { inventory } from '../schemas';
 import { tenants } from '../tenancy/tenants';
 import { itemTypes } from './item-types';
@@ -11,16 +9,17 @@ import { itemTypes } from './item-types';
 export const itemCatalog = inventory.table('item_catalog', {
   id: uuid('id').primaryKey().defaultRandom(),
   tenantId: uuid('tenant_id').notNull().references(() => tenants.id, { onDelete: 'cascade' }),
-  itemTypeId: uuid('item_type_id').references(() => itemTypes.id, { onDelete: 'set null' }),
+  itemTypeId: uuid('item_type_id').references(() => itemTypes.id, { onDelete: 'restrict' }),
 
   name: text('name').notNull(),
   code: text('code'),
   brand: text('brand'),
   model: text('model'),
   icon: text('icon'),
+  photoUrl: text('photo_url'),
+  photoFileId: uuid('photo_file_id').references(() => files.id, { onDelete: 'set null' }),
   description: text('description'),
 
-  trackingType: text('tracking_type', { enum: TRACKING_TYPES }).notNull().default('serialized'),
   isBundle: boolean('is_bundle').notNull().default(false),
 
   defaultOwnership: text('default_ownership', { enum: EQUIPMENT_OWNERSHIPS }).notNull().default('tenant_provided'),
@@ -34,10 +33,14 @@ export const itemCatalog = inventory.table('item_catalog', {
 
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  deletedAt: timestamp('deleted_at', { withTimezone: true }),
 }, table => [
-  unique('item_catalog_tenant_code_uq').on(table.tenantId, table.code).nullsNotDistinct(),
+  uniqueIndex('item_catalog_tenant_code_uq')
+    .on(table.tenantId, sql`coalesce(${table.code}, '')`)
+    .where(sql`${table.deletedAt} IS NULL`),
   index('item_catalog_tenant_idx').on(table.tenantId),
   index('item_catalog_tenant_type_idx').on(table.tenantId, table.itemTypeId),
+  index('item_catalog_tenant_photo_file_idx').on(table.tenantId, table.photoFileId),
   index('item_catalog_search_trgm_idx').using('gin', sql`(
     coalesce(${table.name}, '') || ' ' || coalesce(${table.code}, '') || ' ' ||
     coalesce(${table.brand}, '') || ' ' || coalesce(${table.model}, '')

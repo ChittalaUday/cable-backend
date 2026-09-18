@@ -43,8 +43,6 @@ const GRANTS: Record<SystemRoleId, Array<[PermissionKey, PermissionScope]>> = {
     [PERMISSIONS.REPORTS_VIEW, 'LOCATION'],
     [PERMISSIONS.REMOTES_VIEW, 'ALL'],
     [PERMISSIONS.REMOTES_MANAGE, 'ALL'],
-    // Staff raise things with their admins; the route itself refuses any other
-    // audience, so the grant does not need a narrower scope to be safe.
     [PERMISSIONS.NOTIFICATIONS_SEND, 'ALL'],
   ],
 

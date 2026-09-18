@@ -45,14 +45,17 @@ export const AUDITED_ROUTES: Readonly<Record<string, readonly AuditAction[]>> = 
   'DELETE /api/v1/packages/:id': [auditAction(AUDIT_ENTITIES.PACKAGE, AUDIT_VERBS.DELETED)],
   'PUT /api/v1/packages/:id/channels': [auditAction(AUDIT_ENTITIES.PACKAGE_CHANNELS, AUDIT_VERBS.UPDATED)],
 
-  'POST /api/v1/inventory/items': [auditAction(AUDIT_ENTITIES.INVENTORY_ITEM, AUDIT_VERBS.CREATED)],
-  'PATCH /api/v1/inventory/items/:id': [auditAction(AUDIT_ENTITIES.INVENTORY_ITEM, AUDIT_VERBS.UPDATED)],
-  'DELETE /api/v1/inventory/items/:id': [auditAction(AUDIT_ENTITIES.INVENTORY_ITEM, AUDIT_VERBS.DELETED)],
+  'POST /api/v1/inventory/catalog': [auditAction(AUDIT_ENTITIES.INVENTORY_ITEM, AUDIT_VERBS.CREATED)],
+  'PUT /api/v1/inventory/catalog/:id': [auditAction(AUDIT_ENTITIES.INVENTORY_ITEM, AUDIT_VERBS.UPDATED)],
+  'DELETE /api/v1/inventory/catalog/:id': [auditAction(AUDIT_ENTITIES.INVENTORY_ITEM, AUDIT_VERBS.DELETED)],
   'POST /api/v1/inventory/issue': [auditAction(AUDIT_ENTITIES.INVENTORY_CUSTOMER_EQUIPMENT, AUDIT_VERBS.CREATED)],
   'POST /api/v1/inventory/inward': [auditAction(AUDIT_ENTITIES.INVENTORY_STOCK_MOVEMENT, AUDIT_VERBS.CREATED)],
   'POST /api/v1/inventory/transfer': [auditAction(AUDIT_ENTITIES.INVENTORY_STOCK_MOVEMENT, AUDIT_VERBS.CREATED)],
-  'POST /api/v1/inventory/requests': [auditAction(AUDIT_ENTITIES.INVENTORY_APPROVAL_REQUEST, AUDIT_VERBS.CREATED)],
-  'POST /api/v1/inventory/requests/:id/review': [auditAction(AUDIT_ENTITIES.INVENTORY_APPROVAL_REQUEST, AUDIT_VERBS.UPDATED)],
+  'POST /api/v1/inventory/approval-requests': [auditAction(AUDIT_ENTITIES.INVENTORY_APPROVAL_REQUEST, AUDIT_VERBS.CREATED)],
+  'PATCH /api/v1/inventory/approval-requests/:id': [auditAction(AUDIT_ENTITIES.INVENTORY_APPROVAL_REQUEST, AUDIT_VERBS.UPDATED)],
+
+  'POST /api/v1/payments': [auditAction(AUDIT_ENTITIES.PAYMENT_COLLECTION, AUDIT_VERBS.CREATED)],
+  'POST /api/v1/payments/:id/reverse': [auditAction(AUDIT_ENTITIES.PAYMENT_COLLECTION, AUDIT_VERBS.CREATED)],
 
   'POST /api/v1/remotes': [auditAction(AUDIT_ENTITIES.REMOTE, AUDIT_VERBS.CREATED)],
 

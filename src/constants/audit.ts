@@ -19,6 +19,7 @@ export const AUDIT_ENTITIES = {
   INVENTORY_CUSTOMER_EQUIPMENT: 'inventory_customer_equipment',
   INVENTORY_STOCK_MOVEMENT: 'inventory_stock_movement',
   INVENTORY_APPROVAL_REQUEST: 'inventory_approval_request',
+  PAYMENT_COLLECTION: 'payment_collection',
   REMOTE: 'remote',
   NOTIFICATION: 'notification',
 } as const;

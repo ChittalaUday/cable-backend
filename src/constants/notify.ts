@@ -23,13 +23,8 @@ export const NOTIFICATION_STATUS = {
   FAILED: 'failed',
 } as const satisfies Record<string, NotificationStatus>;
 
-/**
- * The only category a signed-out device may receive. Everything else is tied to
- * somebody's account, so it needs a live session on that device to be targeted.
- */
 export const SIGNED_OUT_CATEGORY: NotificationCategory = 'promotional';
 
-/** What `delivery` a category gets when the caller does not pick one. */
 export const DEFAULT_DELIVERY: Record<NotificationCategory, NotificationDelivery> = {
   general: 'notification',
   alert: 'both',
@@ -39,7 +34,6 @@ export const DEFAULT_DELIVERY: Record<NotificationCategory, NotificationDelivery
   staff: 'notification',
 };
 
-/** `in_app` never leaves the database — the app pulls it on focus. */
 export function sendsPush(delivery: NotificationDelivery): boolean {
   return delivery !== 'in_app';
 }

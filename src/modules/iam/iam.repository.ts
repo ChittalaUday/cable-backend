@@ -1,14 +1,13 @@
 import type { Database } from '@/db/client';
 import type { PermissionKey, PermissionScope } from '@/security/permissions';
-import { and, eq } from 'drizzle-orm';
-import { membershipLocations, rolePermissions, teamLocations, teamMemberLocations, teams, tenantMemberships } from '@/db/schema';
+import { and, eq, isNull } from 'drizzle-orm';
+import { membershipLocations, rolePermissions, teamLocations, teamMemberLocations, teams, tenantMemberships, users } from '@/db/schema';
 
 export interface MembershipRecord {
   id: string;
   roleId: string;
   status: string;
   teamId: string | null;
-  /** The crew this membership leads, if any — a membership leads at most one. */
   ledTeamId: string | null;
 }
 
@@ -30,8 +29,14 @@ export class IamRepository {
         ledTeamId: teams.id,
       })
       .from(tenantMemberships)
-      .leftJoin(teams, eq(teams.leaderMembershipId, tenantMemberships.id))
-      .where(and(eq(tenantMemberships.userId, userId), eq(tenantMemberships.tenantId, tenantId)))
+      .innerJoin(users, eq(users.id, tenantMemberships.userId))
+      .leftJoin(teams, and(eq(teams.leaderMembershipId, tenantMemberships.id), isNull(teams.deletedAt)))
+      .where(and(
+        eq(tenantMemberships.userId, userId),
+        eq(tenantMemberships.tenantId, tenantId),
+        isNull(tenantMemberships.deletedAt),
+        isNull(users.deletedAt),
+      ))
       .limit(1);
 
     return row ?? null;

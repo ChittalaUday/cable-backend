@@ -73,3 +73,11 @@ export const BILLING_CYCLE = {
   SEMI_ANNUAL: 'semi_annual',
   ANNUAL: 'annual',
 } as const satisfies Record<string, BillingCycle>;
+
+export const TRANSACTION_TYPE = {
+  DEDUCTION: 'deduction',
+  DEPOSIT: 'deposit',
+  REVERSAL: 'reversal',
+  ADJUSTMENT: 'adjustment',
+  OTHER: 'other',
+} as const satisfies Record<string, TransactionType>;

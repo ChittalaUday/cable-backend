@@ -7,7 +7,7 @@ import type { AuditContext } from '@/modules/audit/audit.types';
 import type { AccessTokenClaims, TokenSigner } from '@/security/tokens';
 import type { MessagingService } from '@/services/messaging/messaging.service';
 import { randomUUID } from 'node:crypto';
-import { and, desc, eq, isNull, or, sql } from 'drizzle-orm';
+import { and, desc, eq, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import { SYSTEM_ROLES } from '@/config/constants';
 import { AUDIT_ACTIONS, AUDIT_ENTITIES } from '@/constants/audit';
 import { customers, otpCodes, tenantMemberships, tenants, users } from '@/db/schema';
@@ -100,7 +100,7 @@ export class AuthService {
   }
 
   async userById(id: string): Promise<PublicUser> {
-    const [user] = await this.db.select().from(users).where(eq(users.id, id));
+    const [user] = await this.db.select().from(users).where(and(eq(users.id, id), isNull(users.deletedAt)));
     if (!user)
       throw unauthorized(ERROR_CODES.AUTH_TOKEN_INVALID, 'Account no longer exists');
 
@@ -344,6 +344,9 @@ export class AuthService {
   }
 
   private assertUsable(user: User): void {
+    if (user.deletedAt !== null)
+      throw unauthorized(ERROR_CODES.AUTH_TOKEN_INVALID, 'Account no longer exists');
+
     if (user.disabledAt !== null)
       throw forbidden(ERROR_CODES.AUTH_ACCOUNT_DISABLED, 'This account has been disabled');
   }
@@ -411,10 +414,16 @@ export class AuthService {
     if (owned.length === 0)
       return;
 
+    // A subscriber whose membership was removed still owns the account rows above, so
+    // signing in again restores it; DO NOTHING would leave them without one.
     await this.db
       .insert(tenantMemberships)
       .values(owned.map(row => ({ userId: user.id, tenantId: row.tenantId, roleId: SYSTEM_ROLES.CUSTOMER })))
-      .onConflictDoNothing({ target: [tenantMemberships.userId, tenantMemberships.tenantId] });
+      .onConflictDoUpdate({
+        target: [tenantMemberships.userId, tenantMemberships.tenantId],
+        set: { deletedAt: null, updatedAt: new Date() },
+        setWhere: isNotNull(tenantMemberships.deletedAt),
+      });
   }
 
   private async findOrCreateByPhone(phone: string): Promise<User> {

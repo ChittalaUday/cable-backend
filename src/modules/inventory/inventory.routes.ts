@@ -21,6 +21,8 @@ import {
   LocationQuery,
   LookupItemResponse,
   LookupQuery,
+  ReturnCustomerEquipmentBody,
+  ReturnCustomerEquipmentResponse,
   ReviewApprovalRequestBody,
   StockItemResponse,
   StockMovementResponse,
@@ -136,6 +138,19 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   }, async (request, reply) => {
     const result = await request.server.inventory.issueEquipment(request.access, request.body);
     return reply.status(201).send(result);
+  });
+
+  app.post('/inventory/return', {
+    config: { invalidates: ['analytics', 'customers', 'inventory'] },
+    preHandler: app.requirePermission(PERMISSIONS.INVENTORY_ISSUE),
+    schema: {
+      tags: ['inventory'],
+      summary: 'Record return of customer equipment and update inventory stock status',
+      body: ReturnCustomerEquipmentBody,
+      response: { 200: ReturnCustomerEquipmentResponse, ...errors },
+    },
+  }, async (request) => {
+    return request.server.inventory.returnCustomerEquipment(request.access, request.body);
   });
 
   app.get('/inventory/customer-equipment', {

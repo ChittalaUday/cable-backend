@@ -18,7 +18,7 @@ export interface PreflightResult {
   failed: boolean;
 }
 
-const REQUIRED_SCHEMAS = ['tenancy', 'auth', 'iam', 'crm', 'geo', 'notify', 'media', 'analytics', 'audit', 'inventory'];
+const REQUIRED_SCHEMAS = ['tenancy', 'auth', 'iam', 'crm', 'billing', 'geo', 'notify', 'media', 'analytics', 'audit', 'inventory'];
 const MIGRATIONS_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'db', 'migrations');
 
 const ok = (name: string, detail: string): Check => ({ name, status: 'ok', detail });
@@ -89,8 +89,26 @@ async function databaseChecks(app: BuiltApp): Promise<Check[]> {
     checks.push(fail('database schemas', message(error)));
   }
 
+  checks.push(await extensionsCheck(app));
   checks.push(await migrationsCheck(app));
   return checks;
+}
+
+async function extensionsCheck(app: BuiltApp): Promise<Check> {
+  const name = 'database extensions';
+
+  try {
+    const found = await app.db.execute<{ extname: string }>(
+      sql`SELECT extname FROM pg_extension WHERE extname = 'postgis'`,
+    );
+
+    return found.rows.length > 0
+      ? ok(name, 'postgis')
+      : fail(name, 'postgis is not installed — run pnpm db:migrate against a PostGIS-capable server');
+  }
+  catch (error) {
+    return fail(name, message(error));
+  }
 }
 
 async function migrationsCheck(app: BuiltApp): Promise<Check> {

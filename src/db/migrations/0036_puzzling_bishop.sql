@@ -1,3 +1,0 @@
-ALTER TABLE "crm"."account_transactions" ADD COLUMN "collected_by" uuid;--> statement-breakpoint
-ALTER TABLE "crm"."account_transactions" ADD CONSTRAINT "account_transactions_collector_membership_fk" FOREIGN KEY ("tenant_id","collected_by") REFERENCES "tenancy"."tenant_memberships"("tenant_id","user_id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
-CREATE INDEX "account_tx_tenant_collector_date_idx" ON "crm"."account_transactions" USING btree ("tenant_id","collected_by","transaction_date" DESC NULLS LAST);

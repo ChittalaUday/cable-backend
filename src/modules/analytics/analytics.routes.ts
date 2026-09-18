@@ -30,7 +30,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
 
   app.get('/analytics/dashboard/staff', {
     config: { cache: { tag: 'analytics' } },
-    preHandler: app.requirePermission(PERMISSIONS.STAFF_VIEW),
+    preHandler: app.requirePermission(PERMISSIONS.REPORTS_VIEW),
     schema: {
       tags: ['analytics'],
       summary: 'Operational and territory telemetry for field agents and managers',

@@ -29,7 +29,6 @@ describe('flipper-irdb tv library', () => {
     const powerless = library
       .filter(remote => !remote.buttons.some(button => button.key === 'power'))
       .map(remote => `${remote.brand} ${remote.model}`);
-    // The power-off blaster carries one power code per brand instead.
     expect(powerless).toEqual(['Universal Power off blaster (all brands)']);
   });
 
@@ -37,11 +36,8 @@ describe('flipper-irdb tv library', () => {
     const power = (brand: string) =>
       library.find(remote => remote.brand === brand)?.buttons.find(button => button.key === 'power')?.command;
 
-    // Flipper stores Samsung as `address: 07 00 00 00`; the emitter sends both
-    // address bytes, so the import has to widen it to 0x0707.
     expect(power('Samsung')).toEqual({ protocol: 'samsung', address: 0x0707, command: 0x02 });
     expect(power('LG')).toEqual({ protocol: 'nec', address: 0x04, command: 0x08 });
-    // SIRC is LSB first, so device 1 with command 0x15 packs to (1 << 7) | 0x15.
     expect(power('Sony')).toEqual({ protocol: 'sony-sirc', bits: 12, data: 0x95, repeatCount: 2 });
   });
 });

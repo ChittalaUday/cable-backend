@@ -28,14 +28,6 @@ import { createTestDb } from '@/test/db';
 import { seedAuthData, TEST_PASSWORD, uniqueEmail, uniquePhone } from '@/test/fixtures';
 import { as, bodyOf, signIn } from '@/test/http';
 
-/**
- * One tenant, two areas, and the same data in both. Every list a
- * LOCATION-scoped staff member can reach has to come back holding the north
- * half only — and the same person with no grant at all has to come back empty,
- * never tenant-wide. §5 of CLAUDE.md is the contract; this file is the sweep
- * that says each module actually keeps it.
- */
-
 const { db, close } = createTestDb();
 const unique = () => randomUUID().slice(0, 8);
 
@@ -51,7 +43,6 @@ const north = { id: '', blockId: '', customerId: '', customerName: '', serial: '
 const south = { id: '', customerId: '', customerName: '', serial: '' };
 let catalogId: string;
 
-/** Three catalogue entries: one sold north, one sold south, one nobody configured. */
 interface Catalogue { serviceId: string; providerId: string; packageId: string; channelId: string }
 let northSold: Catalogue;
 let southSold: Catalogue;
@@ -88,8 +79,6 @@ beforeAll(async () => {
   tenantId = data.tenantA.id;
   adminAuth = as(await signIn(app, data.active.email), tenantId);
 
-  // The role table only accepts the three system ids, so the sweep works with
-  // the shared `staff` role and grants it exactly what the seed grants it.
   await db.insert(rolePermissions).values([
     { roleId: SYSTEM_ROLES.STAFF, permissionKey: PERMISSIONS.CUSTOMERS_VIEW, scope: 'LOCATION' as const },
     { roleId: SYSTEM_ROLES.STAFF, permissionKey: PERMISSIONS.LOCATIONS_VIEW, scope: 'LOCATION' as const },
@@ -294,7 +283,7 @@ describe('an area grant narrows every list that hangs off the location tree', ()
   });
 
   it('adds up the staff dashboard over the grant, not the tenant', async () => {
-    const response = await get('/api/v1/analytics/staff-dashboard', areaAuth);
+    const response = await get('/api/v1/analytics/dashboard/staff', areaAuth);
 
     expect(response.statusCode, response.body).toBe(200);
     expect(bodyOf<{ workload: { customers: number; activeConnections: number } }>(response).workload)
@@ -359,8 +348,8 @@ describe('the catalogue separates itself by coverage, without a second endpoint'
   });
 
   it('answers availability inside the grant and refuses it outside', async () => {
-    const inside = await get(`/api/v1/locations/${north.blockId}/availability`, areaAuth);
-    const outside = await get(`/api/v1/locations/${south.id}/availability`, areaAuth);
+    const inside = await get(`/api/v1/locations/${north.blockId}/available-services`, areaAuth);
+    const outside = await get(`/api/v1/locations/${south.id}/available-services`, areaAuth);
 
     expect(inside.statusCode, inside.body).toBe(200);
     const offered = bodyOf<{ services: { id: string }[] }>(inside).services.map(row => row.id);
@@ -443,7 +432,7 @@ describe('a staff member holding no area reaches nothing, never everything', () 
   });
 
   it('reports a zeroed dashboard instead of the tenant total', async () => {
-    const response = await get('/api/v1/analytics/staff-dashboard', nowhereAuth);
+    const response = await get('/api/v1/analytics/dashboard/staff', nowhereAuth);
 
     expect(response.statusCode, response.body).toBe(200);
     expect(bodyOf<{ workload: Record<string, unknown> }>(response).workload)

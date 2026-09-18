@@ -146,6 +146,7 @@ export class CustomerService {
       endDate: line.subscription.endDate?.toISOString() ?? null,
       billingCycle: line.subscription.billingCycle,
       price: line.subscription.price,
+      outstandingBalance: line.subscription.outstandingBalance,
       locationId: line.subscription.installationLocationId,
       installationAddress: line.subscription.installationAddress,
       service: { id: line.serviceId, name: line.serviceName, slug: line.serviceSlug, icon: line.serviceIcon },
@@ -155,7 +156,6 @@ export class CustomerService {
   }
 }
 
-// Backward-compatibility alias
 export { CustomerService as CustomersService };
 
 function sumMoney(values: string[]): string {

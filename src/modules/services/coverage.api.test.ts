@@ -51,7 +51,7 @@ async function setCoverage(url: string, entries: Record<string, unknown>[]) {
 async function availableAt(locationId: string): Promise<Availability> {
   const response = await app.inject({
     method: 'GET',
-    url: `/api/v1/locations/${locationId}/availability`,
+    url: `/api/v1/locations/${locationId}/available-services`,
     headers: auth,
   });
 

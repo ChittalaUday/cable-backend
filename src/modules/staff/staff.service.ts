@@ -18,6 +18,7 @@ import type { Page, PaginationQuery } from '@/utils/pagination';
 import { and, count, desc, eq, ilike, inArray, isNull, or, sql } from 'drizzle-orm';
 import { SYSTEM_ROLES } from '@/config/constants';
 import { AUDIT_ENTITIES } from '@/constants/audit';
+import { MEMBERSHIP_STATUS } from '@/constants/tenancy';
 import {
   membershipLocations,
   teamLocations,
@@ -74,6 +75,7 @@ export class StaffService {
 
     const filters: (SQL | undefined)[] = [
       eq(tenantMemberships.tenantId, access.tenantId),
+      isNull(tenantMemberships.deletedAt),
       inArray(tenantMemberships.roleId, [SYSTEM_ROLES.ADMIN, SYSTEM_ROLES.STAFF]),
       ...reach,
     ];
@@ -105,7 +107,7 @@ export class StaffService {
       this.db
         .select({ total: count() })
         .from(tenantMemberships)
-        .innerJoin(users, eq(users.id, tenantMemberships.userId))
+        .innerJoin(users, and(eq(users.id, tenantMemberships.userId), isNull(users.deletedAt)))
         .leftJoin(teams, eq(teams.id, tenantMemberships.teamId))
         .where(where),
     ]);
@@ -140,25 +142,30 @@ export class StaffService {
     const id = await this.db.transaction(async (tx) => {
       const userId = await this.resolveUser(tx, { ...input, email });
 
-      const [duplicate] = await tx
-        .select({ id: tenantMemberships.id })
+      const [existing] = await tx
+        .select({ id: tenantMemberships.id, deletedAt: tenantMemberships.deletedAt })
         .from(tenantMemberships)
         .where(and(eq(tenantMemberships.userId, userId), eq(tenantMemberships.tenantId, access.tenantId)))
         .limit(1);
 
-      if (duplicate !== undefined)
+      if (existing !== undefined && existing.deletedAt === null)
         throw conflict('This person is already a member of this tenant');
 
-      const [membership] = await tx
-        .insert(tenantMemberships)
-        .values({
-          userId,
-          tenantId: access.tenantId,
-          roleId,
-          status: input.status ?? 'active',
-          teamId: input.teamId ?? null,
-        })
-        .returning({ id: tenantMemberships.id });
+      const values = {
+        userId,
+        tenantId: access.tenantId,
+        roleId,
+        status: input.status ?? 'active' as const,
+        teamId: input.teamId ?? null,
+      };
+
+      const [membership] = existing === undefined
+        ? await tx.insert(tenantMemberships).values(values).returning({ id: tenantMemberships.id })
+        : await tx
+            .update(tenantMemberships)
+            .set({ ...values, deletedAt: null, updatedAt: new Date() })
+            .where(eq(tenantMemberships.id, existing.id))
+            .returning({ id: tenantMemberships.id });
 
       if (input.locationIds !== undefined && input.locationIds.length > 0) {
         await tx.insert(membershipLocations).values(
@@ -192,7 +199,11 @@ export class StaffService {
         await tx
           .update(tenantMemberships)
           .set({ ...membership, updatedAt: new Date() })
-          .where(and(eq(tenantMemberships.tenantId, access.tenantId), eq(tenantMemberships.id, id)));
+          .where(and(
+            eq(tenantMemberships.tenantId, access.tenantId),
+            eq(tenantMemberships.id, id),
+            isNull(tenantMemberships.deletedAt),
+          ));
       }
 
       if (leavesTeam) {
@@ -218,7 +229,11 @@ export class StaffService {
     const [existing] = await this.db
       .select({ id: tenantMemberships.id })
       .from(tenantMemberships)
-      .where(and(eq(tenantMemberships.tenantId, access.tenantId), eq(tenantMemberships.id, id)))
+      .where(and(
+        eq(tenantMemberships.tenantId, access.tenantId),
+        eq(tenantMemberships.id, id),
+        isNull(tenantMemberships.deletedAt),
+      ))
       .limit(1);
 
     if (existing === undefined)
@@ -229,9 +244,25 @@ export class StaffService {
     if (before.userId === access.userId)
       throw conflict('You cannot remove your own membership');
 
-    await this.db
-      .delete(tenantMemberships)
-      .where(and(eq(tenantMemberships.tenantId, access.tenantId), eq(tenantMemberships.id, id)));
+    await this.db.transaction(async (tx) => {
+      await tx
+        .update(tenantMemberships)
+        .set({ deletedAt: new Date(), status: MEMBERSHIP_STATUS.SUSPENDED, teamId: null, updatedAt: new Date() })
+        .where(and(
+          eq(tenantMemberships.tenantId, access.tenantId),
+          eq(tenantMemberships.id, id),
+          isNull(tenantMemberships.deletedAt),
+        ));
+
+      // The grants went with the membership when this was a hard delete; they still do,
+      // so taking the person back on does not silently restore last year's areas.
+      await tx.delete(membershipLocations).where(eq(membershipLocations.membershipId, id));
+      await tx.delete(teamMemberLocations).where(eq(teamMemberLocations.membershipId, id));
+      await tx
+        .update(teams)
+        .set({ leaderMembershipId: null, updatedAt: new Date() })
+        .where(and(eq(teams.tenantId, access.tenantId), eq(teams.leaderMembershipId, id)));
+    });
 
     this.access.invalidate(before.userId, access.tenantId);
     await audit.deleted(this.db, access.audit, { entityType: AUDIT_ENTITIES.STAFF, entityId: id, before });
@@ -316,7 +347,7 @@ export class StaffService {
     const rows = await this.db
       .select({ userId: tenantMemberships.userId })
       .from(tenantMemberships)
-      .where(and(eq(tenantMemberships.tenantId, tenantId), eq(tenantMemberships.teamId, teamId)));
+      .where(and(eq(tenantMemberships.tenantId, tenantId), eq(tenantMemberships.teamId, teamId), isNull(tenantMemberships.deletedAt)));
 
     return rows.map(row => row.userId);
   }
@@ -340,14 +371,14 @@ export class StaffService {
         teamSlug: teams.slug,
       })
       .from(tenantMemberships)
-      .innerJoin(users, eq(users.id, tenantMemberships.userId))
+      .innerJoin(users, and(eq(users.id, tenantMemberships.userId), isNull(users.deletedAt)))
       .leftJoin(teams, eq(teams.id, tenantMemberships.teamId))
       .$dynamic();
   }
 
   private async byId(tenantId: string, id: string): Promise<StaffResponse> {
     const [row] = await this.selectStaff()
-      .where(and(eq(tenantMemberships.tenantId, tenantId), eq(tenantMemberships.id, id)))
+      .where(and(eq(tenantMemberships.tenantId, tenantId), eq(tenantMemberships.id, id), isNull(tenantMemberships.deletedAt)))
       .limit(1);
 
     if (row === undefined)
@@ -362,7 +393,7 @@ export class StaffService {
       throw notFound('Staff member');
 
     const [row] = await this.selectStaff()
-      .where(and(eq(tenantMemberships.tenantId, access.tenantId), eq(tenantMemberships.id, id), ...reach))
+      .where(and(eq(tenantMemberships.tenantId, access.tenantId), eq(tenantMemberships.id, id), isNull(tenantMemberships.deletedAt), ...reach))
       .limit(1);
 
     if (row === undefined)
@@ -420,9 +451,17 @@ export class StaffService {
       input.phone === undefined ? undefined : eq(users.phone, input.phone),
     ].filter(clause => clause !== undefined);
 
-    const [existing] = await tx.select({ id: users.id, name: users.name }).from(users).where(or(...matches)).limit(1);
+    const [existing] = await tx
+      .select({ id: users.id, name: users.name, deletedAt: users.deletedAt })
+      .from(users)
+      .where(or(...matches))
+      .limit(1);
 
     if (existing !== undefined) {
+      // The row still holds the email/phone, so it must be restored rather than re-created.
+      if (existing.deletedAt !== null)
+        throw conflict('This email or phone belongs to a removed account; restore it first');
+
       if (input.password !== undefined)
         throw conflict('This person already has an account; they set their own password');
 

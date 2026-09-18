@@ -15,9 +15,6 @@ if (preflight.failed) {
   process.exit(1);
 }
 
-// Before the first request, never in `buildApp()`: a deploy can change a
-// response shape, and a body cached by the previous build is then wrong in a way
-// no invalidation tag would catch.
 await app.clearCache();
 
 closeWithGrace({ delay: 10_000 }, async ({ err, signal }) => {

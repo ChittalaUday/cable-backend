@@ -24,10 +24,6 @@ import { devices, notifications, sessions, tenantMemberships } from '@/db/schema
 import { notFound } from '@/errors/domain-error';
 import { REDACTED_BODY } from './notifications.types';
 
-/**
- * What the app's inbox shows. A WhatsApp or SMS notification is a record that
- * we messaged somebody's phone, not something to read back inside the app.
- */
 const READABLE_CHANNELS = ['in_app', 'push'] as const;
 
 export class NotificationService {
@@ -50,8 +46,6 @@ export class NotificationService {
     if (isTransport)
       return this.deliver(row, input.body);
 
-    // in_app rows are pulled by the app on focus; push rows go out now unless
-    // their delivery mode says they are in-app only.
     if (row.channel === 'push' && sendsPush(row.delivery) && row.userId != null && row.tenantId != null) {
       const targets = await this.resolveTargets(
         row.tenantId,
@@ -92,16 +86,9 @@ export class NotificationService {
     }
   }
 
-  // ---------------------------------------------------------------- broadcast
-
   async broadcast(input: BroadcastInput): Promise<BroadcastResult> {
     const delivery = input.delivery ?? DEFAULT_DELIVERY[input.category];
 
-    // Who is addressed and who can be pushed to are different sets. Membership
-    // decides the first, so somebody who never granted notification permission
-    // still finds the message in their inbox; a device token decides the
-    // second. Deriving the inbox from the push targets would silently drop
-    // everyone without a registered token.
     const [userIds, targets] = await Promise.all([
       this.recipientsFor(input.tenantId, input.audience),
       this.resolveTargets(input.tenantId, input.audience, input.category),
@@ -140,14 +127,20 @@ export class NotificationService {
     return { notified: userIds.length, pushed, failed };
   }
 
-  /**
-   * Tells every operator's admins that something they depend on has broken.
-   *
-   * Tenant-by-tenant because an alert belongs to the operator it affects, and
-   * because that reuses the ordinary broadcast path rather than inventing a
-   * second one. Never sent over WhatsApp — the thing being reported is usually
-   * WhatsApp itself.
-   */
+  async signal(
+    tenantId: string,
+    audiences: readonly Audience[],
+    data: Record<string, unknown>,
+  ): Promise<{ pushed: number; failed: number }> {
+    const resolved = await Promise.all(audiences.map(async audience => this.signedInTargets(tenantId, audience)));
+
+    const byToken = new Map<string, PushTarget>();
+    for (const target of resolved.flat())
+      byToken.set(target.token, target);
+
+    return this.pushSilently([...byToken.values()], data);
+  }
+
   async alertAdmins(input: { type: string; title: string; body: string }): Promise<BroadcastResult> {
     const tenants = await this.db.selectDistinct({ tenantId: tenantMemberships.tenantId })
       .from(tenantMemberships)
@@ -177,11 +170,6 @@ export class NotificationService {
     return totals;
   }
 
-  /**
-   * Everybody the broadcast is addressed to, by membership alone — no device,
-   * no session, no push token required. This is what the inbox is built from,
-   * and it is why the admin who sends a tenant-wide message receives it too.
-   */
   private async recipientsFor(tenantId: string, audience: Audience): Promise<string[]> {
     const rows = await this.db.select({ userId: tenantMemberships.userId })
       .from(tenantMemberships)
@@ -197,11 +185,6 @@ export class NotificationService {
     return [...new Set(rows.map(row => row.userId))];
   }
 
-  /**
-   * The one place device tokens are chosen. A signed-out device has no live
-   * session, so it is only ever reachable by the signed-out category —
-   * enforced here rather than in each caller.
-   */
   async resolveTargets(
     tenantId: string,
     audience: Audience,
@@ -212,9 +195,6 @@ export class NotificationService {
     if (category !== SIGNED_OUT_CATEGORY)
       return signedIn;
 
-    // Promotional also reaches phones nobody is signed in on, addressed by the
-    // last tenant that device belonged to. A device targeted at one specific
-    // user is never in this set: without a session we cannot know whose it is.
     if (audience.kind === 'user')
       return signedIn;
 
@@ -274,7 +254,6 @@ export class NotificationService {
         ...(audienceWhere ? [audienceWhere] : []),
       ));
 
-    // One device can hold sessions for several accounts; one push each is wrong.
     const byToken = new Map<string, PushTarget>();
     for (const row of rows) {
       if (row.token != null && !byToken.has(row.token))
@@ -284,8 +263,6 @@ export class NotificationService {
     return [...byToken.values()];
   }
 
-  // ponytail: one FCM call per token. Fine for a user or a role; swap to
-  // sendEachForMulticast (500 tokens a call) before a tenant-wide blast.
   private async pushTo(
     targets: readonly PushTarget[],
     message: { title: string | null; body: string; category: NotificationCategory; delivery: NotificationDelivery; type: string; data: Record<string, unknown> | null; imageUrl: string | null },
@@ -299,16 +276,34 @@ export class NotificationService {
       ...(message.title != null ? { subject: message.title } : {}),
       channel: 'push',
       category: message.category,
-      // `delivery` travels with the push because it is what decides whether the
-      // app shows a banner in the foreground — the client cannot infer it.
       data: { ...message.data, category: message.category, delivery: message.delivery, type: message.type },
       ...(message.imageUrl != null ? { imageUrl: message.imageUrl } : {}),
     })));
 
     const failed = results.filter(r => r.status === 'rejected');
 
-    // A token the device no longer holds is dead weight, not an error worth
-    // failing the send over — drop it so the next broadcast is cheaper.
+    await this.dropDeadTokens(targets, results);
+
+    return { pushed: results.length - failed.length, failed: failed.length };
+  }
+
+  private async pushSilently(
+    targets: readonly PushTarget[],
+    data: Record<string, unknown>,
+  ): Promise<{ pushed: number; failed: number }> {
+    if (targets.length === 0)
+      return { pushed: 0, failed: 0 };
+
+    const results = await Promise.allSettled(targets.map(async target => this.messaging.send({
+      to: target.token,
+      text: `sync:${String(data.sync ?? 'unknown')}`,
+      channel: 'push',
+      silent: true,
+      data,
+    })));
+
+    const failed = results.filter(result => result.status === 'rejected');
+
     await this.dropDeadTokens(targets, results);
 
     return { pushed: results.length - failed.length, failed: failed.length };
@@ -332,12 +327,6 @@ export class NotificationService {
     }
   }
 
-  // ------------------------------------------------------------------ devices
-
-  /**
-   * Called on app boot, on token refresh and after login — signed in or not.
-   * `token: null` is a device that revoked notification permission.
-   */
   async registerToken(input: RegisterTokenInput, deviceId: string): Promise<void> {
     await this.db.update(devices)
       .set({
@@ -348,8 +337,6 @@ export class NotificationService {
       })
       .where(eq(devices.id, deviceId));
   }
-
-  // -------------------------------------------------------------------- inbox
 
   async inbox(query: InboxQuery): Promise<Page<Notification>> {
     const where = and(

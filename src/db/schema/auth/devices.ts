@@ -18,9 +18,6 @@ export const devices = auth.table('devices', {
   ramMb: integer('ram_mb'),
   screenResolution: text('screen_resolution'),
 
-  // Push registration lives on the device, not the session: a signed-out phone
-  // still receives promotional pushes, and lastTenantId is who to address them
-  // from once there is no live session to read the tenant off.
   pushToken: text('push_token'),
   pushTokenUpdatedAt: timestamp('push_token_updated_at', { withTimezone: true }),
   lastTenantId: uuid('last_tenant_id').references(() => tenants.id, { onDelete: 'set null' }),

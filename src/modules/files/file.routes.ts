@@ -34,21 +34,17 @@ function present({ userFile, file, deduplicated, url, urlExpiresAt }: Presented)
   };
 }
 
-/**
- * A public file gets the durable bucket URL; a private one gets a signed URL
- * that expires in minutes.
- *
- * The difference matters for anything stored and used later — a notification
- * image is fetched by FCM at delivery and again by every device that renders
- * the inbox days afterwards, so a signed URL would simply be dead by then.
- */
 async function urlFor(
   storage: { downloadUrl: (id: string, tenantId: string | null) => Promise<{ url: string; expiresAt: Date }> },
   userFile: UserFileRecord,
   file: FileRecord,
   tenantId: string | null,
 ): Promise<{ url: string | null; expiresAt: Date | null }> {
-  if (userFile.visibility === 'public') {
+  if (file.publicUrl !== null) {
+    return { url: file.publicUrl, expiresAt: null };
+  }
+
+  if (userFile.visibility === 'public' && file.storageKey !== null) {
     const url = publicUrlFor(file.storageKey);
     if (url !== null)
       return { url, expiresAt: null };
@@ -59,10 +55,6 @@ async function urlFor(
 }
 
 const routes: FastifyPluginAsyncTypebox = async (app) => {
-  // Uploading needs no permission beyond being signed in: a file belongs to the
-  // person who uploaded it, and every other route here resolves it through
-  // `findOwned`, which is scoped to the caller's tenant. It is rate limited
-  // because storage is the thing an authenticated account could otherwise burn.
   app.post('/files', {
     config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
     schema: {
@@ -89,11 +81,6 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
       ...(request.query.visibility === undefined ? {} : { visibility: request.query.visibility }),
     });
 
-    // Multipart truncates an oversized part rather than throwing, and the flag
-    // only reads true once the stream has been consumed — by which point the
-    // partial bytes are already stored. Drop them before refusing, or every
-    // oversized upload leaves a half-written object behind with a row pointing
-    // at it.
     if (part.file.truncated) {
       await request.server.storage.remove(result.userFile.id, request.tenantId ?? null);
       throw badRequest(ERROR_CODES.VALIDATION_FAILED, 'File is larger than the upload limit');
