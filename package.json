@@ -21,7 +21,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:ci": "vitest run --coverage",
-    "check-all": "pnpm run lint && pnpm run type-check && pnpm run test",
+    "check-all": "pnpm run lint && pnpm run type-check && pnpm run check-env && pnpm run test",
     "clean:comments": "tsx scripts/strip-comments.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx --env-file-if-exists=.env src/db/migrate.ts",
@@ -38,7 +38,8 @@
     "db:seed:remotes": "tsx --env-file-if-exists=.env src/db/seeds/seed-remotes-cli.ts",
     "db:up": "docker compose up -d postgres",
     "prepare": "husky",
-    "storage:orphans": "tsx --env-file-if-exists=.env scripts/sweep-orphans.ts"
+    "storage:orphans": "tsx --env-file-if-exists=.env scripts/sweep-orphans.ts",
+    "check-env": "tsx scripts/check-env-sync.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1131.0",
