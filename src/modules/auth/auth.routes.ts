@@ -4,7 +4,10 @@ import { env } from '@/config/env';
 import { perIdentifier } from './auth.ratelimit';
 import {
   DeviceHeaders,
+  GoogleSignInBody,
   LoginBody,
+  LoginConfigResponse,
+  LoginResponse,
   LogoutResponse,
   MeResponse,
   RefreshBody,
@@ -130,7 +133,8 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
       summary: 'Sign in with email or phone and a password',
       headers: DeviceHeaders,
       body: LoginBody,
-      response: { 200: SessionResponse, 400: errorRef, 401: errorRef, 403: errorRef, 429: errorRef },
+      description: 'Answers with tokens, or with `status: "otp_required"` and a challenge token when EMAIL_OTP_ENABLED is set.',
+      response: { 200: LoginResponse, 400: errorRef, 401: errorRef, 403: errorRef, 429: errorRef },
       security: [],
     },
   }, async (request, reply) => {
@@ -138,6 +142,49 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
       ...request.body,
       device: deviceFrom(request.headers),
     }, request.auditContext);
+
+    if ('status' in result)
+      return reply.status(200).send(result);
+
+    return reply.status(200).send({
+      accessToken: result.accessToken,
+      refreshToken: result.refreshToken,
+      expiresIn: result.expiresIn,
+      tokenType: 'Bearer' as const,
+      user: result.user,
+      memberships: result.memberships,
+    });
+  });
+
+  app.get('/auth/config', {
+    ...ipLimit,
+    schema: {
+      tags: ['auth'],
+      summary: 'Which sign-in methods this deployment offers',
+      description: 'Read before the login screen is drawn. Channels reflect what is answering now, not just what is configured.',
+      response: { 200: LoginConfigResponse, 429: errorRef },
+      security: [],
+    },
+  }, async (request, reply) => {
+    return reply.status(200).send(request.server.auth.loginConfig());
+  });
+
+  app.post('/auth/google', {
+    ...ipLimit,
+    schema: {
+      tags: ['auth'],
+      summary: 'Sign in with a Google ID token',
+      headers: DeviceHeaders,
+      body: GoogleSignInBody,
+      response: { 200: SessionResponse, 400: errorRef, 401: errorRef, 403: errorRef, 429: errorRef },
+      security: [],
+    },
+  }, async (request, reply) => {
+    const result = await request.server.auth.googleSignIn(
+      request.body.idToken,
+      deviceFrom(request.headers),
+      request.auditContext,
+    );
 
     return reply.status(200).send({
       accessToken: result.accessToken,

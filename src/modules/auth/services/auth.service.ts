@@ -1,3 +1,4 @@
+import type { TokenPayload } from 'google-auth-library';
 import type { MembershipPermission, PublicMembership } from '../repositories/auth.repository';
 import type { DeviceInfo, SessionsService } from './sessions.service';
 import type { AuditAction } from '@/constants/audit';
@@ -6,8 +7,10 @@ import type { Session, User } from '@/db/schema';
 import type { AuditContext } from '@/modules/audit/audit.types';
 import type { AccessTokenClaims, TokenSigner } from '@/security/tokens';
 import type { MessagingService } from '@/services/messaging/messaging.service';
+import type { MessageChannel } from '@/services/messaging/messaging.types';
 import { randomUUID } from 'node:crypto';
 import { and, desc, eq, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
+import { OAuth2Client } from 'google-auth-library';
 import { SYSTEM_ROLES } from '@/config/constants';
 import { AUDIT_ACTIONS, AUDIT_ENTITIES } from '@/constants/audit';
 import { customers, otpCodes, rolePermissions, tenantMemberships, tenants, users } from '@/db/schema';
@@ -19,6 +22,12 @@ import { hashPassword, verifyPassword } from '@/security/password';
 import { normalisePhone, to10DigitPhone } from '@/services/messaging/messaging.service';
 
 import { normaliseEmail } from '@/utils/email';
+
+type PhoneChannel = 'whatsapp' | 'sms';
+
+function isPhoneChannel(channel: MessageChannel): channel is PhoneChannel {
+  return channel === 'whatsapp' || channel === 'sms';
+}
 
 function reasonOf(error: unknown): string {
   return error instanceof DomainError ? error.code : 'UNKNOWN';
@@ -37,6 +46,12 @@ export interface AuthConfig {
   otpMaxAttempts: number;
   otpResendCooldownSeconds: number;
   defaultCountryCode: string;
+  /** A password sign-in has to be finished with an emailed code. */
+  emailOtpEnabled: boolean;
+  /** How long the proof-of-password is good for. */
+  challengeTtlSeconds: number;
+  /** Audiences a Google ID token may be issued for. Empty disables Google. */
+  googleClientIds: string[];
 }
 
 export interface AuthTokens {
@@ -69,15 +84,42 @@ export function toPublicUser(user: User): PublicUser {
   };
 }
 
+/**
+ * A code goes to a phone, or to the email of whoever holds `challengeToken`.
+ *
+ * The email side is deliberately not addressable by email: the token is proof
+ * that the account's password was just accepted, so a code can only be sent to
+ * someone who already got that far. Taking a bare email here would turn the
+ * endpoint into a way to mail anyone a code, and — paired with verify — a way
+ * past the password entirely.
+ */
 export interface RequestOtpInput {
-  phone: string;
+  phone?: string;
   channel?: 'whatsapp' | 'sms';
+  challengeToken?: string;
 }
 
 export interface VerifyOtpInput {
-  phone: string;
+  phone?: string;
+  challengeToken?: string;
   code: string;
   device: DeviceInfo;
+}
+
+/** Where a code is going, and to whom when that is already known. */
+interface OtpTarget {
+  identifier: string;
+  channel: MessageChannel;
+  userId: string | null;
+}
+
+/** A password was right, but the sign-in is not finished. */
+export interface OtpChallenge {
+  status: 'otp_required';
+  challengeToken: string;
+  channel: MessageChannel;
+  expiresInSeconds: number;
+  nextCooldownSeconds: number;
 }
 
 export type SessionResult = AuthTokens & { user: PublicUser; memberships: PublicMembership[] };
@@ -94,6 +136,40 @@ export class AuthService {
     private readonly sessions: SessionsService,
     private readonly deps: { messaging: MessagingService; tokens: TokenSigner; config: AuthConfig },
   ) {}
+
+  private readonly googleClient = new OAuth2Client();
+
+  /**
+   * What a client may offer on its login screen.
+   *
+   * The phone channels come from the messaging service's live view, so a
+   * provider that has been failing drops out here and the app stops offering
+   * it until it recovers.
+   */
+  loginConfig(): {
+    password: boolean;
+    passwordNeedsEmailOtp: boolean;
+    phoneOtp: boolean;
+    phoneOtpChannels: PhoneChannel[];
+    defaultPhoneOtpChannel: PhoneChannel | null;
+    google: boolean;
+  } {
+    const live = this.deps.messaging.liveChannels.filter(isPhoneChannel);
+    const preferred = this.deps.messaging.defaultChannel;
+    const preferredIsLive = isPhoneChannel(preferred) && live.includes(preferred);
+
+    return {
+      password: true,
+      // An emailed second step needs a configured sender, not just the flag.
+      passwordNeedsEmailOtp: this.deps.config.emailOtpEnabled && this.deps.messaging.supports('email'),
+      phoneOtp: live.length > 0,
+      phoneOtpChannels: preferredIsLive
+        ? [preferred, ...live.filter(channel => channel !== preferred)]
+        : live,
+      defaultPhoneOtpChannel: preferredIsLive ? preferred : live[0] ?? null,
+      google: this.deps.config.googleClientIds.length > 0,
+    };
+  }
 
   get otpTtlSeconds(): number {
     return this.deps.config.otpTtlSeconds;
@@ -143,9 +219,10 @@ export class AuthService {
     }));
   }
 
-  async requestOtp(input: RequestOtpInput, context: AuditContext): Promise<{ channel: 'whatsapp' | 'sms'; nextCooldownSeconds: number }> {
-    const identifier = normalisePhone(input.phone, this.deps.config.defaultCountryCode);
-    const channel = input.channel ?? 'whatsapp';
+  async requestOtp(input: RequestOtpInput, context: AuditContext): Promise<{ channel: MessageChannel; nextCooldownSeconds: number }> {
+    const target = await this.otpTarget(input);
+    const { identifier } = target;
+    let channel = target.channel;
 
     let previousAttempts = 0;
     try {
@@ -180,11 +257,16 @@ export class AuthService {
         });
       });
 
-      await this.deps.messaging.send({
+      // WhatsApp may be down and the message may have gone by SMS instead. The
+      // caller is told which, because the person has to know where to look.
+      const sent = await this.deps.messaging.send({
         to: identifier,
         channel,
+        subject: 'Your Satya Cable verification code',
         text: `${code} is your Satya Cable verification code. It expires in ${Math.round(this.deps.config.otpTtlSeconds / 60)} minutes.`,
       });
+
+      channel = sent.channel;
     }
     catch (error) {
       await this.db.update(otpCodes)
@@ -196,11 +278,12 @@ export class AuthService {
 
     await this.record(context, { action: AUDIT_ACTIONS.AUTH_OTP_REQUESTED, actorId: null, entityId: identifier, metadata: { channel } });
 
-    return { channel, nextCooldownSeconds: this.deps.config.otpResendCooldownSeconds * nextResendAttempts };
+    return { channel, nextCooldownSeconds: this.cooldownFor(nextResendAttempts) };
   }
 
   async verifyOtp(input: VerifyOtpInput, context: AuditContext): Promise<SessionResult> {
-    const identifier = normalisePhone(input.phone, this.deps.config.defaultCountryCode);
+    const target = await this.otpTarget(input);
+    const { identifier } = target;
 
     const failed = async (error: unknown): Promise<never> => {
       await this.record(context, { action: AUDIT_ACTIONS.AUTH_OTP_FAILED, actorId: null, entityId: identifier, metadata: { reason: reasonOf(error) } });
@@ -235,7 +318,12 @@ export class AuthService {
       .set({ consumedAt: new Date(), resendAttempts: 0 })
       .where(eq(otpCodes.id, record!.id));
 
-    const user = await this.findOrCreateByPhone(identifier);
+    // A phone code is the sign-up: the number is the account. An emailed one
+    // finishes a password sign-in, so the account is already known.
+    const user = target.userId === null
+      ? await this.findOrCreateByPhone(identifier)
+      : await this.userOrFail(target.userId);
+
     const session = await this.startSession(user, input.device).catch(failed);
 
     await this.record(context, { action: AUDIT_ACTIONS.AUTH_OTP_VERIFIED, actorId: user.id, entityId: user.id, metadata: { identifier, device: input.device.clientDeviceId } });
@@ -243,7 +331,7 @@ export class AuthService {
     return session;
   }
 
-  async login(input: LoginInput, context: AuditContext): Promise<SessionResult> {
+  async login(input: LoginInput, context: AuditContext): Promise<SessionResult | OtpChallenge> {
     const identifier = normaliseEmail(input.identifier) ?? '';
 
     const asPhone = identifier.includes('@')
@@ -274,6 +362,24 @@ export class AuthService {
 
     if (!await verifyPassword(input.password, user!.passwordHash!))
       await failed(unauthorized(ERROR_CODES.AUTH_CREDENTIALS_INVALID, 'Invalid credentials'));
+
+    /*
+     * With email codes on, the password is only the first half. The account
+     * needs an address to send to, so a phone-only login is let straight
+     * through rather than being locked out of a factor it cannot receive.
+     */
+    if (this.deps.config.emailOtpEnabled && user!.email !== null) {
+      const challenge = await this.challengeByEmail(user!, context);
+
+      await this.record(context, {
+        action: AUDIT_ACTIONS.AUTH_LOGIN_OTP_REQUIRED,
+        actorId: user!.id,
+        entityId: user!.id,
+        metadata: { identifier, channel: challenge.channel, device: input.device.clientDeviceId },
+      });
+
+      return challenge;
+    }
 
     const session = await this.startSession(user!, input.device).catch(failed);
 
@@ -410,6 +516,170 @@ export class AuthService {
     };
   }
 
+  /**
+   * Sign in with a Google ID token.
+   *
+   * The token is only accepted if it was minted for one of our own client ids —
+   * otherwise any app's Google token would work here.
+   */
+  async googleSignIn(idToken: string, device: DeviceInfo, context: AuditContext): Promise<SessionResult> {
+    const failed = async (error: unknown): Promise<never> => {
+      await this.record(context, {
+        action: AUDIT_ACTIONS.AUTH_LOGIN_FAILED,
+        actorId: null,
+        entityId: 'google',
+        metadata: { method: 'google', reason: reasonOf(error), device: device.clientDeviceId },
+      });
+      throw error;
+    };
+
+    if (this.deps.config.googleClientIds.length === 0)
+      await failed(forbidden(ERROR_CODES.AUTH_GOOGLE_TOKEN_INVALID, 'Google sign-in is not enabled'));
+
+    let payload: TokenPayload | undefined;
+
+    try {
+      const ticket = await this.googleClient.verifyIdToken({
+        idToken,
+        audience: this.deps.config.googleClientIds,
+      });
+      payload = ticket.getPayload();
+    }
+    catch {
+      await failed(unauthorized(ERROR_CODES.AUTH_GOOGLE_TOKEN_INVALID, 'Google token is not valid'));
+    }
+
+    // An unverified address must not be able to claim an existing account.
+    if (payload?.sub === undefined || payload.email === undefined || payload.email_verified !== true)
+      await failed(unauthorized(ERROR_CODES.AUTH_GOOGLE_TOKEN_INVALID, 'Google token is missing a verified email'));
+
+    const user = await this.findOrCreateByGoogle(payload!.sub, normaliseEmail(payload!.email)!, payload!.name ?? null, payload!.picture ?? null);
+
+    if (user.disabledAt !== null)
+      await failed(forbidden(ERROR_CODES.AUTH_ACCOUNT_DISABLED, 'This account has been disabled'));
+
+    const session = await this.startSession(user, device).catch(failed);
+
+    await this.record(context, {
+      action: AUDIT_ACTIONS.AUTH_LOGIN_SUCCEEDED,
+      actorId: user.id,
+      entityId: user.id,
+      metadata: { method: 'google', identifier: user.email, device: device.clientDeviceId },
+    });
+
+    return session;
+  }
+
+  /** Mail a code to the account and hand back proof the password was accepted. */
+  private async challengeByEmail(user: User, context: AuditContext): Promise<OtpChallenge> {
+    const { token } = await this.deps.tokens.signChallenge(user.id, this.deps.config.challengeTtlSeconds);
+
+    /*
+     * Signing in twice in quick succession must not be refused for asking too
+     * soon — the code already in their inbox is still the live one, so the
+     * cooldown is reported rather than raised.
+     */
+    const sent = await this.requestOtp({ challengeToken: token }, context).catch(async (error: unknown) => {
+      if (error instanceof DomainError && error.code === ERROR_CODES.OTP_RESEND_TOO_SOON)
+        return { channel: 'email' as MessageChannel, nextCooldownSeconds: await this.liveCooldown(user.email!) };
+
+      throw error;
+    });
+
+    return {
+      status: 'otp_required',
+      challengeToken: token,
+      channel: sent.channel,
+      expiresInSeconds: this.deps.config.otpTtlSeconds,
+      nextCooldownSeconds: sent.nextCooldownSeconds,
+    };
+  }
+
+  /**
+   * Resolve who a code is for.
+   *
+   * A challenge token names the account and pins the channel to its email; a
+   * phone number stands on its own and takes the channel the caller asked for.
+   */
+  private async otpTarget(input: RequestOtpInput | VerifyOtpInput): Promise<OtpTarget> {
+    if (input.challengeToken !== undefined && input.challengeToken !== '') {
+      if (!this.deps.config.emailOtpEnabled)
+        throw badRequest(ERROR_CODES.OTP_EMAIL_NOT_SUPPORTED, 'Email codes are not enabled');
+
+      const userId = await this.deps.tokens.verifyChallenge(input.challengeToken)
+        .catch(() => { throw unauthorized(ERROR_CODES.AUTH_TOKEN_INVALID, 'This sign-in attempt has expired. Start again.'); });
+
+      const user = await this.userOrFail(userId);
+
+      if (user.email === null)
+        throw badRequest(ERROR_CODES.OTP_EMAIL_NOT_SUPPORTED, 'This account has no email address');
+
+      return { identifier: user.email, channel: 'email', userId: user.id };
+    }
+
+    if (input.phone === undefined || input.phone === '')
+      throw badRequest(ERROR_CODES.VALIDATION_FAILED, 'A phone number is required');
+
+    return {
+      identifier: normalisePhone(input.phone, this.deps.config.defaultCountryCode),
+      channel: ('channel' in input ? input.channel : undefined) ?? this.deps.messaging.defaultChannel,
+      userId: null,
+    };
+  }
+
+  /** The escalating ladder: each unverified resend costs one more interval. */
+  private cooldownFor(resendAttempts: number): number {
+    return this.deps.config.otpResendCooldownSeconds * Math.max(1, resendAttempts);
+  }
+
+  /** What the ladder is asking for right now, without sending anything. */
+  private async liveCooldown(identifier: string): Promise<number> {
+    const [recent] = await this.db
+      .select({ resendAttempts: otpCodes.resendAttempts })
+      .from(otpCodes)
+      .where(and(eq(otpCodes.identifier, identifier), isNull(otpCodes.consumedAt), isNull(otpCodes.supersededAt)))
+      .orderBy(desc(otpCodes.createdAt))
+      .limit(1);
+
+    return this.cooldownFor(recent?.resendAttempts ?? 1);
+  }
+
+  private async userOrFail(id: string): Promise<User> {
+    const [user] = await this.db.select().from(users).where(and(eq(users.id, id), isNull(users.deletedAt)));
+
+    if (!user)
+      throw unauthorized(ERROR_CODES.AUTH_TOKEN_INVALID, 'Account no longer exists');
+
+    return user;
+  }
+
+  private async findOrCreateByGoogle(googleSub: string, email: string, name: string | null, photoUrl: string | null): Promise<User> {
+    const [bySub] = await this.db.select().from(users).where(eq(users.googleSub, googleSub));
+    if (bySub)
+      return bySub;
+
+    // A password account signing in with Google for the first time keeps its id
+    // and its memberships — linking beats creating a second account.
+    const [byEmail] = await this.db.select().from(users).where(and(eq(users.email, email), isNull(users.deletedAt)));
+
+    if (byEmail) {
+      const [linked] = await this.db.update(users)
+        .set({ googleSub, photoUrl: byEmail.photoUrl ?? photoUrl, updatedAt: new Date() })
+        .where(eq(users.id, byEmail.id))
+        .returning();
+
+      return linked ?? byEmail;
+    }
+
+    const [created] = await this.db.insert(users).values({ email, googleSub, name, photoUrl }).returning();
+
+    if (!created)
+      throw new Error('User insert returned no row');
+
+    await this.linkSubscriberMemberships(created);
+    return created;
+  }
+
   private async findLiveOtp(identifier: string) {
     const [record] = await this.db.select().from(otpCodes).where(and(
       eq(otpCodes.identifier, identifier),
@@ -428,7 +698,11 @@ export class AuthService {
         resendAttempts: otpCodes.resendAttempts,
       })
       .from(otpCodes)
-      .where(eq(otpCodes.identifier, identifier))
+      // Only a code still standing holds the ladder. A used one has done its
+      // job — the next request is a fresh sign-in, not a resend, and throttling
+      // it would leave the caller holding a challenge with no code to answer.
+      // A superseded one has a successor, which is the row this then finds.
+      .where(and(eq(otpCodes.identifier, identifier), isNull(otpCodes.consumedAt), isNull(otpCodes.supersededAt)))
       .orderBy(desc(otpCodes.createdAt))
       .limit(1);
 
@@ -436,8 +710,7 @@ export class AuthService {
       return 0;
 
     const waited = (Date.now() - recent.lastSentAt.getTime()) / 1000;
-    const effectiveMultiplier = Math.max(1, recent.resendAttempts);
-    const cooldown = this.deps.config.otpResendCooldownSeconds * effectiveMultiplier;
+    const cooldown = this.cooldownFor(recent.resendAttempts);
 
     if (waited < cooldown) {
       throw badRequest(

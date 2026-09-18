@@ -17,10 +17,19 @@ export const DeviceHeaders = Type.Object({
 
 export const PhoneField = Type.String({ minLength: 6, maxLength: 20, description: 'E.164 or national; normalised server-side' });
 
-export const RequestOtpBody = Type.Object({
-  phone: PhoneField,
-  channel: Type.Optional(StringEnum(OTP_CHANNELS)),
+export const ChallengeTokenField = Type.String({
+  minLength: 20,
+  maxLength: 2048,
+  description: 'From a login that answered otp_required. Sends the code to the account\'s email.',
 });
+
+export const RequestOtpBody = Type.Union([
+  Type.Object({
+    phone: PhoneField,
+    channel: Type.Optional(StringEnum(OTP_CHANNELS)),
+  }),
+  Type.Object({ challengeToken: ChallengeTokenField }),
+], { description: 'A phone number, or the challenge token from a password sign-in' });
 
 export const RequestOtpResponse = Type.Object({
   status: Type.Literal('accepted'),
@@ -29,9 +38,15 @@ export const RequestOtpResponse = Type.Object({
   nextCooldownSeconds: Type.Integer({ description: 'Seconds before the next OTP can be requested' }),
 });
 
-export const VerifyOtpBody = Type.Object({
-  phone: PhoneField,
-  code: Type.String({ minLength: 4, maxLength: 8, pattern: '^[0-9]+$' }),
+export const OtpCodeField = Type.String({ minLength: 4, maxLength: 8, pattern: '^[0-9]+$' });
+
+export const VerifyOtpBody = Type.Union([
+  Type.Object({ phone: PhoneField, code: OtpCodeField }),
+  Type.Object({ challengeToken: ChallengeTokenField, code: OtpCodeField }),
+]);
+
+export const GoogleSignInBody = Type.Object({
+  idToken: Type.String({ minLength: 20, maxLength: 4096, description: 'Google ID token from the mobile sign-in' }),
 });
 
 export const LoginBody = Type.Object({
@@ -81,6 +96,35 @@ export const SessionResponse = Type.Intersect([
     memberships: Type.Array(MembershipResponse),
   }),
 ]);
+
+/** A password was accepted but the sign-in needs the emailed code to finish. */
+export const OtpChallengeResponse = Type.Object({
+  status: Type.Literal('otp_required'),
+  challengeToken: Type.String(),
+  channel: Type.String(),
+  expiresInSeconds: Type.Integer(),
+  nextCooldownSeconds: Type.Integer(),
+});
+
+/**
+ * Tokens, or a challenge when EMAIL_OTP_ENABLED is on. A client tells them
+ * apart by `status`, which only the challenge carries.
+ */
+export const LoginResponse = Type.Union([SessionResponse, OtpChallengeResponse]);
+
+/**
+ * What this deployment lets a client sign in with, read before the login screen
+ * is drawn. `phoneOtpChannels` is live state, not configuration: a channel whose
+ * provider is failing drops out of it until it recovers.
+ */
+export const LoginConfigResponse = Type.Object({
+  password: Type.Boolean({ description: 'Email or phone with a password' }),
+  passwordNeedsEmailOtp: Type.Boolean({ description: 'A password sign-in is finished with an emailed code' }),
+  phoneOtp: Type.Boolean(),
+  phoneOtpChannels: Type.Array(Type.String(), { description: 'Channels answering right now, best first' }),
+  defaultPhoneOtpChannel: Type.Union([Type.String(), Type.Null()]),
+  google: Type.Boolean(),
+});
 
 export const MeResponse = Type.Object({
   user: UserResponse,

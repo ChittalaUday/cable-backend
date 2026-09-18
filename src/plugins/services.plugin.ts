@@ -21,6 +21,8 @@ import { createFcmProvider } from '@/services/messaging/providers/fcm.provider';
 import { createLogProvider } from '@/services/messaging/providers/log.provider';
 import { createOpenWaProvider } from '@/services/messaging/providers/openwa.provider';
 import { createPlaceholderProvider } from '@/services/messaging/providers/placeholder.provider';
+import { createResendProvider } from '@/services/messaging/providers/resend.provider';
+import { createTwilioProvider } from '@/services/messaging/providers/twilio.provider';
 import { NotificationService } from '@/services/notifications/notifications.service';
 import { searchService } from '@/services/search/search.service';
 import { createStorageProvider, createStorageService } from '@/services/storage/storage.service';
@@ -79,9 +81,26 @@ export default fp(async (app) => {
       onSessionUnrecoverable: alertAdminsOnce,
     }));
 
+    const twilio = createTwilioProvider({
+      accountSid: env.TWILIO_ACCOUNT_SID,
+      authToken: env.TWILIO_AUTH_TOKEN,
+      from: env.TWILIO_FROM,
+      timeoutMs: env.MESSAGING_TIMEOUT_MS,
+    });
+
+    const resend = createResendProvider({
+      apiKey: env.RESEND_API_KEY,
+      from: env.RESEND_FROM,
+      timeoutMs: env.MESSAGING_TIMEOUT_MS,
+    });
+
     providers.push(
-      createPlaceholderProvider({ channel: 'sms', requiredEnv: ['SMS_PROVIDER', 'SMS_API_KEY'] }),
-      createPlaceholderProvider({ channel: 'email', requiredEnv: ['RESEND_API_KEY'], plannedProvider: 'Resend' }),
+      twilio.configured
+        ? twilio
+        : createPlaceholderProvider({ channel: 'sms', requiredEnv: ['TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'TWILIO_FROM'], plannedProvider: 'Twilio' }),
+      resend.configured
+        ? resend
+        : createPlaceholderProvider({ channel: 'email', requiredEnv: ['RESEND_API_KEY', 'RESEND_FROM'], plannedProvider: 'Resend' }),
       env.FIREBASE_SERVICE_ACCOUNT_PATH === ''
         ? createPlaceholderProvider({
             channel: 'push',
@@ -101,6 +120,8 @@ export default fp(async (app) => {
     providers,
     defaultChannel: env.MESSAGING_DEFAULT_CHANNEL,
     defaultCountryCode: env.DEFAULT_COUNTRY_CODE,
+    breakerFailures: env.MESSAGING_BREAKER_FAILURES,
+    breakerCooldownMs: env.MESSAGING_BREAKER_COOLDOWN_SECONDS * 1000,
   });
 
   const storageProvider = createStorageProvider();

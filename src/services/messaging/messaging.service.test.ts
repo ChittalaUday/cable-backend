@@ -130,3 +130,112 @@ describe('channel routing', () => {
     expect(service.providerFor('sms')).toBe('log');
   });
 });
+
+/** Fails its first `failFirst` sends, then works. */
+function flaky(name: string, channels: MessagingProvider['channels'], failFirst: number) {
+  let attempts = 0;
+
+  const provider: MessagingProvider = {
+    name,
+    channels,
+    configured: true,
+    async send() {
+      attempts += 1;
+      if (attempts <= failFirst)
+        throw new Error(`${name} is down`);
+
+      return { providerMessageId: `${name}-${attempts}` };
+    },
+  };
+
+  return { provider, attempts: () => attempts };
+}
+
+function breakered(providers: MessagingProvider[]) {
+  return new MessagingService({
+    providers,
+    defaultChannel: 'whatsapp',
+    defaultCountryCode: '91',
+    breakerFailures: 2,
+    breakerCooldownMs: 50,
+  });
+}
+
+describe('falling back between the phone channels', () => {
+  it('carries the message on the sibling channel when the chosen one fails', async () => {
+    const result = await breakered([
+      flaky('openwa', ['whatsapp'], 1).provider,
+      flaky('twilio', ['sms'], 0).provider,
+    ]).send({ to: '8309154716', text: 'x' });
+
+    // The caller asked for WhatsApp and got SMS, and is told which — the user
+    // has to know where to go looking for the code.
+    expect(result.channel).toBe('sms');
+  });
+
+  it('raises for a channel with no provider rather than quietly using another', async () => {
+    const service = breakered([flaky('openwa', ['whatsapp'], 0).provider]);
+
+    await expect(service.send({ to: '8309154716', text: 'x', channel: 'sms' }))
+      .rejects
+      .toThrow(/No provider configured for channel "sms"/);
+  });
+
+  it('reports the failure when neither channel can send', async () => {
+    const service = breakered([
+      flaky('openwa', ['whatsapp'], 99).provider,
+      flaky('twilio', ['sms'], 99).provider,
+    ]);
+
+    await expect(service.send({ to: '8309154716', text: 'x' })).rejects.toThrow(/is down/);
+  });
+});
+
+describe('the breaker takes a dead channel out of rotation', () => {
+  it('stops offering a channel that failed its limit', async () => {
+    const wa = flaky('openwa', ['whatsapp'], 99);
+    const service = breakered([wa.provider, flaky('twilio', ['sms'], 0).provider]);
+
+    expect(service.available('whatsapp')).toBe(true);
+
+    await service.send({ to: '8309154716', text: 'x' });
+    await service.send({ to: '8309154716', text: 'x' });
+
+    // This is what the login config endpoint reads, so the app stops offering it.
+    expect(service.available('whatsapp')).toBe(false);
+    expect(service.liveChannels).toEqual(['sms']);
+
+    const attemptsBefore = wa.attempts();
+    await service.send({ to: '8309154716', text: 'x' });
+    expect(wa.attempts()).toBe(attemptsBefore);
+  });
+
+  it('lets the channel back in after the cooldown, and clears it on one success', async () => {
+    const service = breakered([
+      flaky('openwa', ['whatsapp'], 2).provider,
+      flaky('twilio', ['sms'], 0).provider,
+    ]);
+
+    await service.send({ to: '8309154716', text: 'x' });
+    await service.send({ to: '8309154716', text: 'x' });
+    expect(service.available('whatsapp')).toBe(false);
+
+    await new Promise(resolve => setTimeout(resolve, 60));
+
+    const result = await service.send({ to: '8309154716', text: 'x' });
+    expect(result.channel).toBe('whatsapp');
+    expect(service.available('whatsapp')).toBe(true);
+  });
+
+  it('still attempts a tripped channel that has no sibling', async () => {
+    const service = breakered([flaky('resend', ['email'], 99).provider]);
+    const send = async () => service.send({ to: 'a@b.test', text: 'x', channel: 'email' });
+
+    await expect(send()).rejects.toThrow();
+    await expect(send()).rejects.toThrow();
+    expect(service.available('email')).toBe(false);
+
+    // Refusing outright would only mean sending nothing at all.
+    await expect(send()).rejects.toThrow(/resend is down/);
+  });
+});

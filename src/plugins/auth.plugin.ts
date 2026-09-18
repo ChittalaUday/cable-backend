@@ -1,7 +1,7 @@
 import type { FastifyRequest } from 'fastify';
 import type { AccessTokenClaims } from '@/security/tokens';
 import fp from 'fastify-plugin';
-import { env } from '@/config/env';
+import { csv, env } from '@/config/env';
 import { ERROR_CODES } from '@/errors';
 import { unauthorized } from '@/errors/domain-error';
 import { AuthService, RevocationCache, SessionsService } from '@/modules/auth';
@@ -50,6 +50,9 @@ export default fp(async (app) => {
       otpMaxAttempts: env.OTP_MAX_ATTEMPTS,
       otpResendCooldownSeconds: env.OTP_RESEND_COOLDOWN_SECONDS,
       defaultCountryCode: env.DEFAULT_COUNTRY_CODE,
+      emailOtpEnabled: env.EMAIL_OTP_ENABLED,
+      challengeTtlSeconds: env.OTP_TTL_SECONDS,
+      googleClientIds: csv(env.GOOGLE_CLIENT_IDS),
     },
   }));
 

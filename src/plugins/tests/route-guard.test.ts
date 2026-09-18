@@ -13,6 +13,8 @@ const UNGUARDED_ROUTES: Readonly<Record<string, string>> = {
   'POST /api/v1/auth/otp/request': 'Signing in. There is no session to hold a permission yet.',
   'POST /api/v1/auth/otp/verify': 'Signing in.',
   'POST /api/v1/auth/login': 'Signing in.',
+  'POST /api/v1/auth/google': 'Signing in. The Google ID token is the authority.',
+  'GET /api/v1/auth/config': 'Read before the login screen is drawn, so by definition before there is a session. Tells a client which sign-in methods work; no account data.',
   'POST /api/v1/auth/refresh': 'Rotating a refresh token — authority is the token itself.',
 
   'POST /api/v1/auth/logout': 'Ends the caller\'s own session. Needing a permission to sign out is how someone gets stuck signed in.',

@@ -76,6 +76,26 @@ export const EnvSchema = Type.Object({
     Type.Literal('sms'),
   ], { default: 'whatsapp' }),
 
+  // ─── SMS via Twilio (the fallback for WhatsApp) ───────────────────────────
+  // Unset → the channel stays unconfigured and WhatsApp has nothing to fall
+  // back to. TWILIO_FROM takes an E.164 number or a Messaging Service SID (MG…).
+  TWILIO_ACCOUNT_SID: Type.String({ default: '' }),
+  TWILIO_AUTH_TOKEN: Type.String({ default: '' }),
+  TWILIO_FROM: Type.String({ default: '' }),
+
+  // ─── Email via Resend ────────────────────────────────────────────────────
+  RESEND_API_KEY: Type.String({ default: '' }),
+  RESEND_FROM: Type.String({ default: '' }),
+
+  // A password sign-in answers with tokens when this is false, and asks for an
+  // emailed code to finish when it is true.
+  EMAIL_OTP_ENABLED: Type.Boolean({ default: false }),
+
+  // Consecutive failures that take a channel out of rotation, and how long it
+  // stays out before one more send decides whether it is back.
+  MESSAGING_BREAKER_FAILURES: Type.Integer({ minimum: 1, maximum: 20, default: 3 }),
+  MESSAGING_BREAKER_COOLDOWN_SECONDS: Type.Integer({ minimum: 5, maximum: 3600, default: 120 }),
+
   FIREBASE_SERVICE_ACCOUNT_PATH: Type.String({ default: '' }),
 
   DEFAULT_COUNTRY_CODE: Type.String({ pattern: '^[0-9]{1,4}$', default: '91' }),

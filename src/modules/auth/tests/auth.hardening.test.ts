@@ -227,7 +227,14 @@ describe('a rotation whose answer never arrived', () => {
 });
 
 describe('refresh rotation is atomic', () => {
-  it('lets exactly one of two concurrent rotations win', async () => {
+  /*
+   * Two rotations on one token used to be settled by the count of 200s. With
+   * the retry grace that is a race: whether the second request sees the first
+   * one's commit decides whether it is refused or served as a retry, and both
+   * are correct answers. What must hold either way is that the session survives
+   * — no false theft alarm — and that exactly one refresh token is left usable.
+   */
+  it('leaves exactly one usable refresh token, and the session intact', async () => {
     const { body } = await login(data.active.email, data.password);
 
     const results = await Promise.all([
@@ -235,25 +242,17 @@ describe('refresh rotation is atomic', () => {
       refresh(body.refreshToken),
     ]);
 
-    const ok = results.filter(r => r.statusCode === 200);
-
-    expect(ok).toHaveLength(1);
-  });
-
-  it('does not leave two usable refresh tokens behind', async () => {
-    const { body } = await login(data.active.email, data.password);
-
-    const results = await Promise.all([
-      refresh(body.refreshToken),
-      refresh(body.refreshToken),
-    ]);
+    // Nobody is signed out for having asked twice.
+    expect(results.some(r => bodyOf(r).code === 'AUTH_REFRESH_REUSED')).toBe(false);
 
     const issued = results
       .filter(r => r.statusCode === 200)
       .map(r => bodyOf(r).refreshToken);
 
-    const reused = await Promise.all(issued.map(async token => (await refresh(token)).statusCode));
+    expect(issued.length).toBeGreaterThan(0);
 
-    expect(reused.filter(code => code === 200)).toHaveLength(1);
+    const stillWorks = await Promise.all(issued.map(async token => (await refresh(token)).statusCode));
+
+    expect(stillWorks.filter(code => code === 200)).toHaveLength(1);
   });
 });

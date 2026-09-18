@@ -42,6 +42,7 @@ export const AUDIT_ACTIONS = {
 
   AUTH_LOGIN_SUCCEEDED: 'auth.login.succeeded',
   AUTH_LOGIN_FAILED: 'auth.login.failed',
+  AUTH_LOGIN_OTP_REQUIRED: 'auth.login.otp_required',
 
   AUTH_TOKEN_REFRESHED: 'auth.token.refreshed',
   AUTH_TOKEN_REFRESH_FAILED: 'auth.token.refresh_failed',

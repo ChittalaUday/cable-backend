@@ -122,6 +122,12 @@ async function mintTokens(app: BuiltApp): Promise<{ admin: Token; customers: Tok
       },
     }, audit);
 
+    // The load generator drives password sign-in only. With EMAIL_OTP_ENABLED
+    // set there would be no token to drive anything with, so say so plainly
+    // rather than reading undefined off the answer.
+    if ('status' in result)
+      throw new Error('Stress runs need EMAIL_OTP_ENABLED off: login asked for an emailed code.');
+
     return {
       label: identifier,
       role,
