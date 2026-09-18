@@ -1,6 +1,6 @@
-export { AuthRepository } from './auth.repository';
 export { default as authRoutes } from './auth.routes';
 export * from './auth.schema';
-export * from './auth.service';
-export * from './revocation.service';
-export * from './sessions.service';
+export { AuthRepository } from './repositories/auth.repository';
+export * from './services/auth.service';
+export * from './services/revocation.service';
+export * from './services/sessions.service';

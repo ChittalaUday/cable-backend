@@ -44,6 +44,10 @@ export function unauthorized(code: ErrorCode, message: string): DomainError {
   return new DomainError({ code, statusCode: 401, message });
 }
 
+export function tooManyRequests(message: string): DomainError {
+  return new DomainError({ code: ERROR_CODES.RATE_LIMIT_EXCEEDED, statusCode: 429, message });
+}
+
 export function badRequest(code: ErrorCode, message: string, details?: ValidationDetail[]): DomainError {
   return new DomainError(
     details ? { code, statusCode: 400, message, details } : { code, statusCode: 400, message },

@@ -4,9 +4,7 @@ import fp from 'fastify-plugin';
 import { env } from '@/config/env';
 import { ERROR_CODES } from '@/errors';
 import { unauthorized } from '@/errors/domain-error';
-import { AuthService } from '@/modules/auth/auth.service';
-import { RevocationCache } from '@/modules/auth/revocation.service';
-import { SessionsService } from '@/modules/auth/sessions.service';
+import { AuthService, RevocationCache, SessionsService } from '@/modules/auth';
 import { createTokenSigner } from '@/security/tokens';
 
 declare module 'fastify' {
@@ -35,6 +33,7 @@ export default fp(async (app) => {
     app.db,
     {
       refreshTtlDays: env.REFRESH_TOKEN_TTL_DAYS,
+      refreshGraceSeconds: env.REFRESH_REUSE_GRACE_SECONDS,
       maxSessionsPerDevice: env.MAX_SESSIONS_PER_DEVICE,
     },
     async sessionId => revocations.publish(sessionId),

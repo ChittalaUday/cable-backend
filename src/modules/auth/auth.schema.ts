@@ -26,6 +26,7 @@ export const RequestOtpResponse = Type.Object({
   status: Type.Literal('accepted'),
   channel: Type.String(),
   expiresInSeconds: Type.Integer(),
+  nextCooldownSeconds: Type.Integer({ description: 'Seconds before the next OTP can be requested' }),
 });
 
 export const VerifyOtpBody = Type.Object({
@@ -57,10 +58,20 @@ export const TokensResponse = Type.Object({
   tokenType: Type.Literal('Bearer'),
 });
 
+const MembershipPermissionResponse = Type.Object({
+  key: Type.String({ description: 'Permission key, e.g. customers.view' }),
+  scope: Type.String({ description: 'OWN | ASSIGNED | TEAM | LOCATION | ALL' }),
+});
+
 const MembershipResponse = Type.Object({
+  membershipId: Type.String({ format: 'uuid' }),
   tenantId: Type.String({ format: 'uuid' }),
   tenantName: Type.String({ description: 'What a tenant picker shows — the id alone is a UUID' }),
   roleId: Type.String(),
+  status: Type.String({ description: 'active | suspended | invited' }),
+  teamId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
+  permissionVersion: Type.Integer({ description: 'Incremented when role permissions change — use to bust local caches' }),
+  permissions: Type.Array(MembershipPermissionResponse, { description: 'All permission grants for the user\'s role in this tenant' }),
 });
 
 export const SessionResponse = Type.Intersect([

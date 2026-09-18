@@ -23,7 +23,7 @@ import { ERROR_CODES, isUniqueViolation } from '@/errors';
 import { badRequest, conflict, inUse, orNotFound } from '@/errors/domain-error';
 import { audit } from '@/modules/audit/audit.service';
 import { locationScopeFor } from '@/modules/iam/access.service';
-import { coverageReachesGrant } from '@/modules/services/coverage.service';
+import { coverageReachesGrant } from '@/modules/services/services/coverage.service';
 import { PERMISSIONS } from '@/security/permissions';
 import { offsetOf, pageOf } from '@/utils/pagination';
 import { likeTerm } from '@/utils/search';

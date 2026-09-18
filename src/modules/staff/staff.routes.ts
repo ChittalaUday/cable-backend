@@ -3,6 +3,8 @@ import { Type } from 'typebox';
 import { LocationsService } from '@/modules/locations/location.service';
 import { PERMISSIONS } from '@/security/permissions';
 import { paginated } from '@/utils/pagination';
+import { StaffService } from './services/staff.service';
+import { TeamsService } from './services/teams.service';
 import {
   CreateStaffBody,
   IdParams,
@@ -12,9 +14,7 @@ import {
   StaffResponse,
   UpdateStaffBody,
 } from './staff.schema';
-import { StaffService } from './staff.service';
 import teamRoutes from './staff.team-routes';
-import { TeamsService } from './teams.service';
 import './staff.types';
 
 const routes: FastifyPluginAsyncTypebox = async (app) => {

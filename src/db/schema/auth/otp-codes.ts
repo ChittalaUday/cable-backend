@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { index, integer, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
+import { check, index, integer, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 import { OTP_PURPOSES } from '@/constants/auth';
 import { auth } from '../schemas';
 
@@ -14,6 +14,7 @@ export const otpCodes = auth.table('otp_codes', {
 
   attempts: integer('attempts').notNull().default(0),
   maxAttempts: integer('max_attempts').notNull(),
+  resendAttempts: integer('resend_attempts').notNull().default(0),
 
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   consumedAt: timestamp('consumed_at', { withTimezone: true }),
@@ -22,6 +23,8 @@ export const otpCodes = auth.table('otp_codes', {
   lastSentAt: timestamp('last_sent_at', { withTimezone: true }).notNull().defaultNow(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, table => [
+  check('otp_codes_resend_attempts_check', sql`${table.resendAttempts} >= 0 AND ${table.resendAttempts} <= 5`),
+  check('otp_codes_attempts_check', sql`${table.attempts} >= 0`),
   index('otp_codes_identifier_idx').on(table.identifier, table.createdAt.desc()),
   index('otp_codes_expires_at_idx').on(table.expiresAt),
   uniqueIndex('otp_codes_one_active_idx').on(table.identifier, table.purpose).where(sql`${table.consumedAt} IS NULL AND ${table.supersededAt} IS NULL`),

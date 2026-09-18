@@ -19,6 +19,7 @@ export interface AuthBody {
   version: string;
   channel: string;
   expiresInSeconds: number;
+  nextCooldownSeconds: number;
   code: string;
   message: string;
 }

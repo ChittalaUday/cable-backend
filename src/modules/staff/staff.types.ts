@@ -1,5 +1,5 @@
-import type { StaffService } from './staff.service';
-import type { TeamsService } from './teams.service';
+import type { StaffService } from './services/staff.service';
+import type { TeamsService } from './services/teams.service';
 
 declare module 'fastify' {
   interface FastifyInstance {

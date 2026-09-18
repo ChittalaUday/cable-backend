@@ -1,8 +1,8 @@
 import type { FastifyPluginAsyncTypebox } from '@fastify/type-provider-typebox';
 import { LocationsService } from '@/modules/locations/location.service';
-import { CoverageService } from './coverage.service';
 import routeFiles from './routes';
-import { ServicesService } from './service.service';
+import { CoverageService } from './services/coverage.service';
+import { ServicesService } from './services/service.service';
 
 const routes: FastifyPluginAsyncTypebox = async (app) => {
   app.decorate('services', new ServicesService(app.db));

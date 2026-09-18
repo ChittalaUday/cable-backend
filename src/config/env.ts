@@ -52,6 +52,7 @@ export const EnvSchema = Type.Object({
   JWT_SECRET: Type.String({ minLength: 32 }),
   ACCESS_TOKEN_TTL_SECONDS: Type.Integer({ minimum: 60, maximum: 3600, default: 900 }),
   REFRESH_TOKEN_TTL_DAYS: Type.Integer({ minimum: 1, maximum: 365, default: 30 }),
+  REFRESH_REUSE_GRACE_SECONDS: Type.Integer({ minimum: 0, maximum: 300, default: 60 }),
   MAX_SESSIONS_PER_DEVICE: Type.Integer({ minimum: 1, maximum: 50, default: 5 }),
 
   GOOGLE_CLIENT_IDS: Type.String({ default: '' }),
@@ -61,6 +62,9 @@ export const EnvSchema = Type.Object({
   RATE_LIMIT_MAX: Type.Integer({ minimum: 1, default: 300 }),
   RATE_LIMIT_WINDOW: Type.String({ default: '1 minute' }),
   SIGN_IN_RATE_LIMIT_MAX: Type.Integer({ minimum: 1, default: 10 }),
+  OTP_VERIFY_RATE_LIMIT_MAX: Type.Integer({ minimum: 1, default: 5 }),
+  OTP_REQUEST_RATE_LIMIT_MAX: Type.Integer({ minimum: 1, default: 3 }),
+  LOGIN_RATE_LIMIT_MAX: Type.Integer({ minimum: 1, default: 10 }),
 
   MESSAGING_ENABLED: Type.Boolean({ default: false }),
   MESSAGING_BASE_URL: Type.String({ default: '' }),
@@ -81,6 +85,14 @@ export const EnvSchema = Type.Object({
   OTP_MAX_ATTEMPTS: Type.Integer({ minimum: 1, maximum: 10, default: 5 }),
   OTP_RESEND_COOLDOWN_SECONDS: Type.Integer({ minimum: 15, maximum: 600, default: 60 }),
 
+  // ─── Tests & local test db ────────────────────────────────────────────────
+  DATABASE_URL_TEST: Type.String({ default: '' }),
+
+  // ─── Bootstrap super admin ────────────────────────────────────────────────
+  SUPER_ADMIN_EMAIL: Type.String({ default: '' }),
+  SUPER_ADMIN_PASSWORD: Type.String({ default: '' }),
+  SUPER_ADMIN_NAME: Type.String({ default: 'Super Admin' }),
+
   CACHE_ENABLED: Type.Boolean({ default: true }),
   REDIS_URL: Type.String({ default: 'redis://127.0.0.1:6379/2' }),
   CACHE_TTL_SECONDS: Type.Integer({ minimum: 1, maximum: 86_400, default: 300 }),
@@ -93,6 +105,7 @@ export const EnvSchema = Type.Object({
   R2_SECRET_ACCESS_KEY: Type.String({ default: '' }),
   R2_BUCKET: Type.String({ default: '' }),
   R2_PUBLIC_BASE_URL: Type.String({ default: '' }),
+  CLOUDFLARE_R2_TOKEN: Type.String({ default: '' }),
 
   UPLOAD_URL_TTL_SECONDS: Type.Integer({ minimum: 60, maximum: 3600, default: 900 }),
   DOWNLOAD_URL_TTL_SECONDS: Type.Integer({ minimum: 60, maximum: 86_400, default: 300 }),

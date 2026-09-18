@@ -1,0 +1,3 @@
+ALTER TABLE "auth"."otp_codes" ADD COLUMN "resend_attempts" integer DEFAULT 0 NOT NULL;--> statement-breakpoint
+ALTER TABLE "auth"."otp_codes" ADD CONSTRAINT "otp_codes_resend_attempts_check" CHECK ("auth"."otp_codes"."resend_attempts" >= 0 AND "auth"."otp_codes"."resend_attempts" <= 5);--> statement-breakpoint
+ALTER TABLE "auth"."otp_codes" ADD CONSTRAINT "otp_codes_attempts_check" CHECK ("auth"."otp_codes"."attempts" >= 0);

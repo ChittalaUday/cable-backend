@@ -1,6 +1,7 @@
 import type { FastifyPluginAsyncTypebox } from '@fastify/type-provider-typebox';
-import type { DeviceInfo } from './sessions.service';
+import type { DeviceInfo } from './services/sessions.service';
 import { env } from '@/config/env';
+import { perIdentifier } from './auth.ratelimit';
 import {
   DeviceHeaders,
   LoginBody,
@@ -32,15 +33,52 @@ function deviceFrom(headers: DeviceHeaders): DeviceInfo {
 const routes: FastifyPluginAsyncTypebox = async (app) => {
   const errorRef = { $ref: 'ErrorResponse#' };
 
-  const signInLimit = {
+  const ipLimit = {
     config: {
       rateLimit: { max: env.SIGN_IN_RATE_LIMIT_MAX, timeWindow: '1 minute' },
       public: true,
     },
   };
 
+  const otpWindowMs = env.OTP_RESEND_COOLDOWN_SECONDS * 1000;
+
+  const otpRequestLimit = {
+    ...ipLimit,
+    preValidation: perIdentifier(app, {
+      prefix: 'otp-request',
+      field: 'phone',
+      max: env.OTP_REQUEST_RATE_LIMIT_MAX,
+      timeWindow: otpWindowMs,
+      message: 'Too many OTP requests.',
+    }),
+  };
+
+  const otpVerifyLimit = {
+    ...ipLimit,
+    preValidation: perIdentifier(app, {
+      prefix: 'otp-verify',
+      field: 'phone',
+      max: env.OTP_VERIFY_RATE_LIMIT_MAX,
+      timeWindow: otpWindowMs,
+      message: 'Too many OTP verification attempts.',
+    }),
+  };
+
+  const loginLimit = {
+    ...ipLimit,
+    preValidation: perIdentifier(app, {
+      prefix: 'login',
+      field: 'identifier',
+      max: env.LOGIN_RATE_LIMIT_MAX,
+      timeWindow: '1 minute',
+      message: 'Too many login attempts.',
+    }),
+  };
+
+  const refreshLimit = ipLimit;
+
   app.post('/auth/otp/request', {
-    ...signInLimit,
+    ...otpRequestLimit,
     schema: {
       tags: ['auth'],
       summary: 'Send a one-time code to a phone number',
@@ -50,16 +88,17 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
       security: [],
     },
   }, async (request, reply) => {
-    const { channel } = await request.server.auth.requestOtp(request.body, request.auditContext);
+    const { channel, nextCooldownSeconds } = await request.server.auth.requestOtp(request.body, request.auditContext);
     return reply.status(202).send({
       status: 'accepted' as const,
       channel,
       expiresInSeconds: request.server.auth.otpTtlSeconds,
+      nextCooldownSeconds,
     });
   });
 
   app.post('/auth/otp/verify', {
-    ...signInLimit,
+    ...otpVerifyLimit,
     schema: {
       tags: ['auth'],
       summary: 'Exchange a one-time code for tokens',
@@ -85,7 +124,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.post('/auth/login', {
-    ...signInLimit,
+    ...loginLimit,
     schema: {
       tags: ['auth'],
       summary: 'Sign in with email or phone and a password',
@@ -111,7 +150,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.post('/auth/refresh', {
-    ...signInLimit,
+    ...refreshLimit,
     schema: {
       tags: ['auth'],
       summary: 'Rotate a refresh token',

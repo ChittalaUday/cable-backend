@@ -1,5 +1,5 @@
-import type { CoverageService } from './coverage.service';
-import type { ServicesService } from './service.service';
+import type { CoverageService } from './services/coverage.service';
+import type { ServicesService } from './services/service.service';
 
 declare module 'fastify' {
   interface FastifyInstance {
