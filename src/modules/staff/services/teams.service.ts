@@ -14,9 +14,7 @@ import type { AccessService, RequestAccess } from '@/modules/iam/access.service'
 import type { LocationsService } from '@/modules/locations/location.service';
 import type { PermissionKey } from '@/security/permissions';
 import type { Page, PaginationQuery } from '@/utils/pagination';
-import { eq, ilike } from 'drizzle-orm';
 import { AUDIT_ENTITIES } from '@/constants/audit';
-import { teams } from '@/db/schema';
 import { ERROR_CODES, isUniqueViolation } from '@/errors';
 import { badRequest, conflict, inUse, notFound } from '@/errors/domain-error';
 import { audit } from '@/modules/audit/audit.service';
@@ -24,7 +22,7 @@ import { PERMISSIONS } from '@/security/permissions';
 import { offsetOf } from '@/utils/pagination';
 import { uniqueSlug } from '@/utils/slug';
 import { TeamsRepository } from '../repositories/teams.repository';
-import { areaGrantsFor, assertWithinGrant, teamReach } from '../staff.grants';
+import { assertWithinGrant, teamReach } from '../staff.grants';
 
 export class TeamsService {
   private readonly repo: TeamsRepository;
@@ -45,9 +43,9 @@ export class TeamsService {
     const filters: SQL[] = [...reach];
 
     if (query.status !== undefined)
-      filters.push(eq(teams.status, query.status));
+      filters.push(this.repo.matchesStatus(query.status));
     if (query.q !== undefined)
-      filters.push(ilike(teams.name, `%${query.q}%`));
+      filters.push(this.repo.nameMatches(query.q));
 
     const [rows, total] = await Promise.all([
       this.repo.list(access.tenantId, filters, { limit: query.limit, offset: offsetOf(query as PaginationQuery) }),
@@ -156,7 +154,7 @@ export class TeamsService {
     if (rows.length === 0)
       return [];
 
-    const { own: ownBy, narrowed: narrowedBy } = await areaGrantsFor(this.repo.database, {
+    const { own: ownBy, narrowed: narrowedBy } = await this.repo.areaGrants({
       membershipIds: rows.map(row => row.id),
     });
 
@@ -204,14 +202,14 @@ export class TeamsService {
   }
 
   private async grantsFor(ids: readonly string[]): Promise<Map<string, LocationRef[]>> {
-    const { team } = await areaGrantsFor(this.repo.database, { teamIds: ids });
+    const { team } = await this.repo.areaGrants({ teamIds: ids });
 
     return team;
   }
 
   private async assertGrantable(access: RequestAccess, ids: readonly string[], key: PermissionKey): Promise<void> {
     await this.locations.assertOwned(access, ids);
-    await assertWithinGrant(this.repo.database, access, { ids, key });
+    await assertWithinGrant(this.repo, access, { ids, key });
   }
 }
 

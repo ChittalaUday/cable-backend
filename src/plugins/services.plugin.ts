@@ -2,20 +2,20 @@ import type { MessagingProvider } from '@/services/messaging/messaging.types';
 import type { SearchService } from '@/services/search/search.service';
 import type { StorageService } from '@/services/storage/storage.service';
 import fp from 'fastify-plugin';
-import { cert, getApps, initializeApp } from 'firebase-admin/app';
 import { getMessaging } from 'firebase-admin/messaging';
 import { env, isTest } from '@/config/env';
 import { AnalyticsService } from '@/modules/analytics/analytics.service';
 import { CustomerRepository } from '@/modules/customers/customer.repository';
 import { CustomerService } from '@/modules/customers/customer.service';
-import { AccessService } from '@/modules/iam/access.service';
 import { InventoryService } from '@/modules/inventory/inventory.service';
+import { LocationRepository } from '@/modules/locations/location.repository';
 import { LocationsService } from '@/modules/locations/location.service';
 import { PackagesService } from '@/modules/packages/package.service';
 import { PaymentService } from '@/modules/payments/payment.service';
 import { RemotesService } from '@/modules/remotes/remote.service';
 import { CoverageService, ServicesService } from '@/modules/services';
 import { StaffService, TeamsService } from '@/modules/staff';
+import { firebaseApp } from '@/services/firebase';
 import { MessagingService } from '@/services/messaging/messaging.service';
 import { createFcmProvider } from '@/services/messaging/providers/fcm.provider';
 import { createLogProvider } from '@/services/messaging/providers/log.provider';
@@ -94,6 +94,8 @@ export default fp(async (app) => {
       timeoutMs: env.MESSAGING_TIMEOUT_MS,
     });
 
+    const firebase = firebaseApp();
+
     providers.push(
       twilio.configured
         ? twilio
@@ -101,15 +103,13 @@ export default fp(async (app) => {
       resend.configured
         ? resend
         : createPlaceholderProvider({ channel: 'email', requiredEnv: ['RESEND_API_KEY', 'RESEND_FROM'], plannedProvider: 'Resend' }),
-      env.FIREBASE_SERVICE_ACCOUNT_PATH === ''
+      firebase === null
         ? createPlaceholderProvider({
             channel: 'push',
             requiredEnv: ['FIREBASE_SERVICE_ACCOUNT_PATH'],
             plannedProvider: 'Firebase Cloud Messaging',
           })
-        : createFcmProvider(getMessaging(
-            getApps()[0] ?? initializeApp({ credential: cert(env.FIREBASE_SERVICE_ACCOUNT_PATH) }),
-          )),
+        : createFcmProvider(getMessaging(firebase)),
     );
   }
   else {
@@ -132,10 +132,12 @@ export default fp(async (app) => {
   notifications = new NotificationService(app.db, messaging);
 
   const customerRepo = new CustomerRepository(app.db);
-  const locations = new LocationsService(app.db);
+  const locationRepo = new LocationRepository(app.db);
+  const locations = new LocationsService(locationRepo);
   const customers = new CustomerService(customerRepo);
   const inventory = new InventoryService(app.db, locations);
-  const access = new AccessService(app.db);
+  // The one the request guard resolves against — see plugins/iam.plugin.ts.
+  const access = app.access;
   const staff = new StaffService(app.db, locations, access);
   const teams = new TeamsService(app.db, locations, access);
   const packages = new PackagesService(app.db);
@@ -178,4 +180,4 @@ export default fp(async (app) => {
   app.decorate('coverage', coverage);
   app.decorate('remotes', remotes);
   app.decorate('analytics', analytics);
-}, { name: 'services', dependencies: ['db'] });
+}, { name: 'services', dependencies: ['db', 'iam'] });

@@ -143,11 +143,15 @@ describe('cache tenant namespace', () => {
     expect(after.cache).toBe('MISS');
     expect(after.names).toContain(added);
   });
+  // `packages` used to stand in for "an unrelated tag" here, but a package
+  // renders the path of every area it covers, so a location write does reach
+  // it. `remotes` is the honest example: the IR library has nothing to do with
+  // the location tree.
   it('leaves another tag alone when a write drops one', async () => {
-    const packages = async () => app.inject({ method: 'GET', url: '/api/v1/packages?limit=10', headers: soloAuth });
+    const remotes = async () => app.inject({ method: 'GET', url: '/api/v1/remotes', headers: soloAuth });
 
-    expect((await packages()).headers['x-cache']).toBe('MISS');
-    expect((await packages()).headers['x-cache']).toBe('HIT');
+    expect((await remotes()).headers['x-cache']).toBe('MISS');
+    expect((await remotes()).headers['x-cache']).toBe('HIT');
 
     const created = await app.inject({
       method: 'POST',
@@ -158,7 +162,7 @@ describe('cache tenant namespace', () => {
     expect(created.statusCode, created.body).toBe(201);
 
     expect((await listAsSolo()).cache).toBe('MISS');
-    expect((await packages()).headers['x-cache']).toBe('HIT');
+    expect((await remotes()).headers['x-cache']).toBe('HIT');
   });
 
   it('never caches an error', async () => {

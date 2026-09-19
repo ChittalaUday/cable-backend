@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { RemoteButtonSchema } from '@/types/remotes';
 
 const library = JSON.parse(
-  fs.readFileSync(path.resolve(import.meta.dirname, 'data/tv-remotes.json'), 'utf8'),
+  fs.readFileSync(path.resolve(import.meta.dirname, '..', 'data', 'tv-remotes.json'), 'utf8'),
 ) as { brand: string; model: string; buttons: { key: string; command: unknown }[] }[];
 
 describe('flipper-irdb tv library', () => {

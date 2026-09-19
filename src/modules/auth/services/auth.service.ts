@@ -1,5 +1,5 @@
 import type { TokenPayload } from 'google-auth-library';
-import type { MembershipPermission, PublicMembership } from '../repositories/auth.repository';
+import type { PublicMembership } from '../repositories/auth.repository';
 import type { DeviceInfo, SessionsService } from './sessions.service';
 import type { AuditAction } from '@/constants/audit';
 import type { Database } from '@/db/client';
@@ -9,11 +9,8 @@ import type { AccessTokenClaims, TokenSigner } from '@/security/tokens';
 import type { MessagingService } from '@/services/messaging/messaging.service';
 import type { MessageChannel } from '@/services/messaging/messaging.types';
 import { randomUUID } from 'node:crypto';
-import { and, desc, eq, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import { OAuth2Client } from 'google-auth-library';
-import { SYSTEM_ROLES } from '@/config/constants';
 import { AUDIT_ACTIONS, AUDIT_ENTITIES } from '@/constants/audit';
-import { customers, otpCodes, rolePermissions, tenantMemberships, tenants, users } from '@/db/schema';
 import { ERROR_CODES } from '@/errors';
 import { badRequest, DomainError, forbidden, unauthorized } from '@/errors/domain-error';
 import { audit } from '@/modules/audit/audit.service';
@@ -22,6 +19,7 @@ import { hashPassword, verifyPassword } from '@/security/password';
 import { normalisePhone, to10DigitPhone } from '@/services/messaging/messaging.service';
 
 import { normaliseEmail } from '@/utils/email';
+import { AuthRepository } from '../repositories/auth.repository';
 
 type PhoneChannel = 'whatsapp' | 'sms';
 
@@ -131,11 +129,19 @@ export interface LoginInput {
 }
 
 export class AuthService {
+  private readonly repo: AuthRepository;
+
   constructor(
-    private readonly db: Database,
+    repoOrDb: AuthRepository | Database,
     private readonly sessions: SessionsService,
-    private readonly deps: { messaging: MessagingService; tokens: TokenSigner; config: AuthConfig },
-  ) {}
+    private readonly deps: {
+      messaging: MessagingService;
+      tokens: TokenSigner;
+      config: AuthConfig;
+    },
+  ) {
+    this.repo = repoOrDb instanceof AuthRepository ? repoOrDb : new AuthRepository(repoOrDb);
+  }
 
   private readonly googleClient = new OAuth2Client();
 
@@ -176,47 +182,11 @@ export class AuthService {
   }
 
   async userById(id: string): Promise<PublicUser> {
-    const [user] = await this.db.select().from(users).where(and(eq(users.id, id), isNull(users.deletedAt)));
-    if (!user)
-      throw unauthorized(ERROR_CODES.AUTH_TOKEN_INVALID, 'Account no longer exists');
-
-    return toPublicUser(user);
+    return toPublicUser(await this.userOrFail(id));
   }
 
   async membershipsFor(userId: string): Promise<PublicMembership[]> {
-    const rows = await this.db.select({
-      membershipId: tenantMemberships.id,
-      tenantId: tenantMemberships.tenantId,
-      tenantName: tenants.name,
-      roleId: tenantMemberships.roleId,
-      status: tenantMemberships.status,
-      teamId: tenantMemberships.teamId,
-      permissionVersion: tenantMemberships.permissionVersion,
-    })
-      .from(tenantMemberships)
-      .innerJoin(tenants, eq(tenants.id, tenantMemberships.tenantId))
-      .where(and(eq(tenantMemberships.userId, userId), isNull(tenantMemberships.deletedAt), eq(tenantMemberships.status, 'active')));
-
-    if (rows.length === 0)
-      return [];
-
-    const roleIds = [...new Set(rows.map(r => r.roleId))];
-    const grants = await this.db
-      .select({ roleId: rolePermissions.roleId, key: rolePermissions.permissionKey, scope: rolePermissions.scope })
-      .from(rolePermissions)
-      .where(inArray(rolePermissions.roleId, roleIds));
-
-    const grantsByRole = new Map<string, MembershipPermission[]>();
-    for (const g of grants) {
-      const list = grantsByRole.get(g.roleId) ?? [];
-      list.push({ key: g.key as MembershipPermission['key'], scope: g.scope });
-      grantsByRole.set(g.roleId, list);
-    }
-
-    return rows.map(row => ({
-      ...row,
-      permissions: grantsByRole.get(row.roleId) ?? [],
-    }));
+    return this.repo.findMembershipsFor(userId);
   }
 
   async requestOtp(input: RequestOtpInput, context: AuditContext): Promise<{ channel: MessageChannel; nextCooldownSeconds: number }> {
@@ -237,26 +207,16 @@ export class AuthService {
     const code = generateOtp(this.deps.config.otpLength);
     const expiresAt = new Date(Date.now() + this.deps.config.otpTtlSeconds * 1000);
 
+    const otpId = await this.repo.supersedeAndCreateOtp({
+      identifier,
+      channel,
+      codeHash: hashOtp(code, identifier),
+      maxAttempts: this.deps.config.otpMaxAttempts,
+      resendAttempts: nextResendAttempts,
+      expiresAt,
+    });
+
     try {
-      await this.db.transaction(async (tx) => {
-        await tx.update(otpCodes)
-          .set({ supersededAt: new Date() })
-          .where(and(
-            eq(otpCodes.identifier, identifier),
-            isNull(otpCodes.consumedAt),
-            isNull(otpCodes.supersededAt),
-          ));
-
-        await tx.insert(otpCodes).values({
-          identifier,
-          channel,
-          codeHash: hashOtp(code, identifier),
-          maxAttempts: this.deps.config.otpMaxAttempts,
-          resendAttempts: nextResendAttempts,
-          expiresAt,
-        });
-      });
-
       // WhatsApp may be down and the message may have gone by SMS instead. The
       // caller is told which, because the person has to know where to look.
       const sent = await this.deps.messaging.send({
@@ -269,10 +229,9 @@ export class AuthService {
       channel = sent.channel;
     }
     catch (error) {
-      await this.db.update(otpCodes)
-        .set({ resendAttempts: 0 })
-        .where(eq(otpCodes.identifier, identifier))
-        .catch(() => {});
+      // Our failure to deliver must not cost the caller a rung on the ladder,
+      // and it must not reset rows other than the one just written.
+      await this.repo.resetResendAttempts(otpId).catch(() => {});
       throw error;
     }
 
@@ -290,7 +249,7 @@ export class AuthService {
       throw error;
     };
 
-    const record = await this.findLiveOtp(identifier);
+    const record = await this.repo.findLiveOtp(identifier);
 
     if (!record)
       await failed(unauthorized(ERROR_CODES.OTP_EXPIRED, 'No active code for this number'));
@@ -300,9 +259,7 @@ export class AuthService {
 
     if (!otpMatches(hashOtp(input.code, identifier), record!.codeHash)) {
       const nextAttempts = record!.attempts + 1;
-      await this.db.update(otpCodes)
-        .set({ attempts: sql`${otpCodes.attempts} + 1` })
-        .where(eq(otpCodes.id, record!.id));
+      await this.repo.countOtpAttempt(record!.id);
 
       if (nextAttempts >= record!.maxAttempts)
         await failed(badRequest(ERROR_CODES.OTP_TOO_MANY_ATTEMPTS, 'Too many attempts. Request a new code.'));
@@ -314,9 +271,7 @@ export class AuthService {
       ));
     }
 
-    await this.db.update(otpCodes)
-      .set({ consumedAt: new Date(), resendAttempts: 0 })
-      .where(eq(otpCodes.id, record!.id));
+    await this.repo.consumeOtp(record!.id);
 
     // A phone code is the sign-up: the number is the account. An emailed one
     // finishes a password sign-in, so the account is already known.
@@ -338,9 +293,7 @@ export class AuthService {
       ? null
       : to10DigitPhone(identifier);
 
-    const [user] = await this.db.select().from(users).where(
-      asPhone === null ? eq(users.email, identifier) : or(eq(users.email, identifier), eq(users.phone, asPhone)),
-    ).limit(1);
+    const user = await this.repo.findUserByLogin(identifier, asPhone);
 
     const failed = async (error: unknown): Promise<never> => {
       await this.record(context, {
@@ -412,8 +365,8 @@ export class AuthService {
       userId = session.userId;
       sessionId = session.id;
 
-      const [user] = await this.db.select().from(users).where(eq(users.id, session.userId));
-      if (!user)
+      const user = await this.repo.findUserById(session.userId);
+      if (user === null)
         throw unauthorized(ERROR_CODES.AUTH_REFRESH_INVALID, 'Refresh token is not valid');
 
       this.assertUsable(user);
@@ -453,7 +406,7 @@ export class AuthService {
     context: AuditContext,
     event: { action: AuditAction; actorId: string | null; entityId: string; metadata?: Record<string, unknown> },
   ): Promise<void> {
-    await audit.log(this.db, { ...context, actorId: event.actorId }, {
+    await audit.log(this.repo.database, { ...context, actorId: event.actorId }, {
       action: event.action,
       entityType: AUDIT_ENTITIES.AUTH,
       entityId: event.entityId,
@@ -503,10 +456,7 @@ export class AuthService {
   }
 
   private async claimsFor(user: User, sessionId: string, deviceId: string): Promise<AccessTokenClaims> {
-    const rows = await this.db.select({
-      tenantId: tenantMemberships.tenantId,
-      roleId: tenantMemberships.roleId,
-    }).from(tenantMemberships).where(and(eq(tenantMemberships.userId, user.id), eq(tenantMemberships.status, 'active')));
+    const rows = await this.repo.findClaimMemberships(user.id);
 
     return {
       sub: user.id,
@@ -634,79 +584,46 @@ export class AuthService {
 
   /** What the ladder is asking for right now, without sending anything. */
   private async liveCooldown(identifier: string): Promise<number> {
-    const [recent] = await this.db
-      .select({ resendAttempts: otpCodes.resendAttempts })
-      .from(otpCodes)
-      .where(and(eq(otpCodes.identifier, identifier), isNull(otpCodes.consumedAt), isNull(otpCodes.supersededAt)))
-      .orderBy(desc(otpCodes.createdAt))
-      .limit(1);
+    const recent = await this.repo.findStandingOtp(identifier);
 
     return this.cooldownFor(recent?.resendAttempts ?? 1);
   }
 
   private async userOrFail(id: string): Promise<User> {
-    const [user] = await this.db.select().from(users).where(and(eq(users.id, id), isNull(users.deletedAt)));
+    const user = await this.repo.findLiveUserById(id);
 
-    if (!user)
+    if (user === null)
       throw unauthorized(ERROR_CODES.AUTH_TOKEN_INVALID, 'Account no longer exists');
 
     return user;
   }
 
   private async findOrCreateByGoogle(googleSub: string, email: string, name: string | null, photoUrl: string | null): Promise<User> {
-    const [bySub] = await this.db.select().from(users).where(eq(users.googleSub, googleSub));
-    if (bySub)
+    const bySub = await this.repo.findUserByGoogleSub(googleSub);
+    if (bySub !== null)
       return bySub;
 
     // A password account signing in with Google for the first time keeps its id
     // and its memberships — linking beats creating a second account.
-    const [byEmail] = await this.db.select().from(users).where(and(eq(users.email, email), isNull(users.deletedAt)));
+    const byEmail = await this.repo.findLiveUserByEmail(email);
 
-    if (byEmail) {
-      const [linked] = await this.db.update(users)
-        .set({ googleSub, photoUrl: byEmail.photoUrl ?? photoUrl, updatedAt: new Date() })
-        .where(eq(users.id, byEmail.id))
-        .returning();
+    if (byEmail !== null)
+      return await this.repo.linkGoogleSub(byEmail.id, googleSub, byEmail.photoUrl ?? photoUrl) ?? byEmail;
 
-      return linked ?? byEmail;
-    }
-
-    const [created] = await this.db.insert(users).values({ email, googleSub, name, photoUrl }).returning();
-
-    if (!created)
-      throw new Error('User insert returned no row');
+    const created = await this.repo.createUser({ email, googleSub, name, photoUrl });
 
     await this.linkSubscriberMemberships(created);
     return created;
   }
 
-  private async findLiveOtp(identifier: string) {
-    const [record] = await this.db.select().from(otpCodes).where(and(
-      eq(otpCodes.identifier, identifier),
-      isNull(otpCodes.consumedAt),
-      isNull(otpCodes.supersededAt),
-      sql`${otpCodes.expiresAt} > now()`,
-    )).orderBy(desc(otpCodes.createdAt)).limit(1);
-
-    return record ?? null;
-  }
-
   private async assertNotResendingTooSoon(identifier: string): Promise<number> {
-    const [recent] = await this.db
-      .select({
-        lastSentAt: otpCodes.lastSentAt,
-        resendAttempts: otpCodes.resendAttempts,
-      })
-      .from(otpCodes)
-      // Only a code still standing holds the ladder. A used one has done its
-      // job — the next request is a fresh sign-in, not a resend, and throttling
-      // it would leave the caller holding a challenge with no code to answer.
-      // A superseded one has a successor, which is the row this then finds.
-      .where(and(eq(otpCodes.identifier, identifier), isNull(otpCodes.consumedAt), isNull(otpCodes.supersededAt)))
-      .orderBy(desc(otpCodes.createdAt))
-      .limit(1);
+    // Only a code still standing holds the ladder. A used one has done its job —
+    // the next request is a fresh sign-in, not a resend, and throttling it would
+    // leave the caller holding a challenge with no code to answer. A superseded
+    // one has a successor, which is the row this then finds.
+    const recent = await this.repo.findStandingOtp(identifier);
 
-    if (recent === undefined)
+    if (recent === null)
       return 0;
 
     const waited = (Date.now() - recent.lastSentAt.getTime()) / 1000;
@@ -726,45 +643,14 @@ export class AuthService {
     if (user.phone === null)
       return;
 
-    await this.db
-      .update(customers)
-      .set({ userId: user.id, updatedAt: new Date() })
-      .where(and(
-        eq(customers.phone, user.phone),
-        isNull(customers.userId),
-        isNull(customers.deletedAt),
-      ));
-
-    const owned = await this.db
-      .selectDistinct({ tenantId: customers.tenantId })
-      .from(customers)
-      .where(and(eq(customers.userId, user.id), isNull(customers.deletedAt)));
-
-    if (owned.length === 0)
-      return;
-
-    // A subscriber whose membership was removed still owns the account rows above, so
-    // signing in again restores it; DO NOTHING would leave them without one.
-    await this.db
-      .insert(tenantMemberships)
-      .values(owned.map(row => ({ userId: user.id, tenantId: row.tenantId, roleId: SYSTEM_ROLES.CUSTOMER })))
-      .onConflictDoUpdate({
-        target: [tenantMemberships.userId, tenantMemberships.tenantId],
-        set: { deletedAt: null, updatedAt: new Date() },
-        setWhere: isNotNull(tenantMemberships.deletedAt),
-      });
+    const tenantIds = await this.repo.claimCustomerRecords(user.id, user.phone);
+    await this.repo.restoreSubscriberMemberships(user.id, tenantIds);
   }
 
   private async findOrCreateByPhone(phone: string): Promise<User> {
     const nationalPhone = to10DigitPhone(phone);
-    const [existing] = await this.db.select().from(users).where(eq(users.phone, nationalPhone));
-    if (existing)
-      return existing;
+    const existing = await this.repo.findUserByPhone(nationalPhone);
 
-    const [created] = await this.db.insert(users).values({ phone: nationalPhone }).returning();
-    if (!created)
-      throw new Error('User insert returned no row');
-
-    return created;
+    return existing ?? this.repo.createUser({ phone: nationalPhone });
   }
 }

@@ -7,7 +7,6 @@ import { TENANT_HEADER } from '@/config/constants';
 import { ERROR_CODES } from '@/errors';
 import { badRequest, forbidden } from '@/errors/domain-error';
 import { auditContextFor } from '@/hooks/audit.hook';
-import { AccessService } from '@/modules/iam/access.service';
 
 declare module 'fastify' {
   interface FastifyContextConfig {
@@ -15,7 +14,6 @@ declare module 'fastify' {
   }
 
   interface FastifyInstance {
-    access: AccessService;
     requirePermission: (key: PermissionKey) => preHandlerAsyncHookHandler;
   }
 
@@ -27,8 +25,7 @@ declare module 'fastify' {
 }
 
 export default fp(async (app) => {
-  const access = new AccessService(app.db);
-  app.decorate('access', access);
+  const { access } = app;
 
   app.decorateRequest('tenantId');
   app.decorateRequest('auditContext');
@@ -83,4 +80,4 @@ export default fp(async (app) => {
 
     return Object.assign(guard, { permission: key });
   });
-}, { name: 'request-context', dependencies: ['db', 'auth'] });
+}, { name: 'request-context', dependencies: ['db', 'auth', 'iam'] });

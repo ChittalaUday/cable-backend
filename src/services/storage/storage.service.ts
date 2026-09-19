@@ -22,17 +22,16 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
-import { and, count, eq, inArray, isNotNull, isNull, lte, ne } from 'drizzle-orm';
 import { csv, env } from '@/config/env';
 import { AUDIT_ACTIONS, AUDIT_ENTITIES } from '@/constants/audit';
 import { FILE_STATUS } from '@/constants/media';
-import { files, userFiles } from '@/db/schema';
 import { ERROR_CODES } from '@/errors';
 import { DomainError, notFound } from '@/errors/domain-error';
 import { audit } from '@/modules/audit/audit.service';
 import { systemAuditContext } from '@/modules/audit/audit.types';
 import { createR2Provider } from './providers/r2.provider';
 import { createUnconfiguredStorage } from './providers/unconfigured.provider';
+import { StorageRepository } from './storage.repository';
 
 export interface StorageServiceOptions {
   provider: StorageProvider;
@@ -42,11 +41,30 @@ export interface StorageServiceOptions {
   allowedContentTypes: string[];
 }
 
+function userFileRow(
+  input: { tenantId: string | null; uploadedBy: string | null; originalName: string; kind?: string | undefined; visibility?: string | undefined; metadata?: unknown },
+  fileId: string,
+) {
+  return {
+    tenantId: input.tenantId,
+    uploadedBy: input.uploadedBy,
+    fileId,
+    originalName: input.originalName,
+    kind: input.kind ?? 'upload',
+    visibility: input.visibility ?? 'private',
+    metadata: input.metadata,
+  } as typeof import('@/db/schema').userFiles.$inferInsert;
+}
+
 export class StorageService {
+  private readonly repo: StorageRepository;
+
   constructor(
-    private readonly db: Database,
+    repoOrDb: StorageRepository | Database,
     private readonly options: StorageServiceOptions,
-  ) {}
+  ) {
+    this.repo = repoOrDb instanceof StorageRepository ? repoOrDb : new StorageRepository(repoOrDb);
+  }
 
   get configured(): boolean {
     return this.options.provider.configured;
@@ -73,25 +91,10 @@ export class StorageService {
     try {
       const { checksum, sizeBytes } = await this.stageStreamToDisk(input, tempFilePath);
 
-      const [existingReadyFile] = await this.db.select().from(files).where(and(
-        eq(files.checksum, checksum),
-        eq(files.status, 'ready'),
-        isNull(files.deletedAt),
-      )).limit(1);
+      const existingReadyFile = await this.repo.findReadyByChecksum(checksum);
 
-      if (existingReadyFile) {
-        const [userFile] = await this.db.insert(userFiles).values({
-          tenantId: input.tenantId,
-          uploadedBy: input.uploadedBy,
-          fileId: existingReadyFile.id,
-          originalName: input.originalName,
-          kind: input.kind ?? 'upload',
-          visibility: input.visibility ?? 'private',
-          metadata: input.metadata,
-        }).returning();
-
-        if (!userFile)
-          throw new Error('UserFile insert returned no row');
+      if (existingReadyFile !== null) {
+        const userFile = await this.repo.insertUserFile(userFileRow(input, existingReadyFile.id));
 
         return { deduplicated: true, userFile, file: existingReadyFile };
       }
@@ -105,30 +108,16 @@ export class StorageService {
         contentType: input.contentType,
       });
 
-      const [newFile] = await this.db.insert(files).values({
+      const newFile = await this.repo.insertFile({
         storageKey,
         bucket: this.options.provider.bucket,
         contentType: input.contentType,
         sizeBytes,
         checksum,
         status: FILE_STATUS.READY,
-      }).returning();
+      });
 
-      if (!newFile)
-        throw new Error('File insert returned no row');
-
-      const [userFile] = await this.db.insert(userFiles).values({
-        tenantId: input.tenantId,
-        uploadedBy: input.uploadedBy,
-        fileId: newFile.id,
-        originalName: input.originalName,
-        kind: input.kind ?? 'upload',
-        visibility: input.visibility ?? 'private',
-        metadata: input.metadata,
-      }).returning();
-
-      if (!userFile)
-        throw new Error('UserFile insert returned no row');
+      const userFile = await this.repo.insertUserFile(userFileRow(input, newFile.id));
 
       return { deduplicated: false, userFile, file: newFile };
     }
@@ -174,30 +163,16 @@ export class StorageService {
 
     const storageKey = buildStorageKey(input);
 
-    const [file] = await this.db.insert(files).values({
+    const file = await this.repo.insertFile({
       storageKey,
       bucket: this.options.provider.bucket,
       contentType: input.contentType,
       sizeBytes: input.sizeBytes ?? null,
       checksum: input.checksum ?? null,
       status: FILE_STATUS.PENDING,
-    }).returning();
+    });
 
-    if (!file)
-      throw new Error('File insert returned no row');
-
-    const [userFile] = await this.db.insert(userFiles).values({
-      tenantId: input.tenantId,
-      uploadedBy: input.uploadedBy,
-      fileId: file.id,
-      originalName: input.originalName,
-      kind: input.kind ?? 'upload',
-      visibility: input.visibility ?? 'private',
-      metadata: input.metadata,
-    }).returning();
-
-    if (!userFile)
-      throw new Error('UserFile insert returned no row');
+    const userFile = await this.repo.insertUserFile(userFileRow(input, file.id));
 
     const signed = await this.options.provider.createUploadUrl(
       storageKey,
@@ -218,29 +193,12 @@ export class StorageService {
     if (input.checksum == null || input.checksum === '')
       return null;
 
-    const [existingFile] = await this.db.select().from(files).where(and(
-      eq(files.checksum, input.checksum),
-      eq(files.status, 'ready'),
-      isNull(files.deletedAt),
-    )).limit(1);
+    const existingFile = await this.repo.findReadyByChecksum(input.checksum);
 
-    if (!existingFile)
+    if (existingFile === null)
       return null;
 
-    const [userFile] = await this.db.insert(userFiles).values({
-      tenantId: input.tenantId,
-      uploadedBy: input.uploadedBy,
-      fileId: existingFile.id,
-      originalName: input.originalName,
-      kind: input.kind ?? 'upload',
-      visibility: input.visibility ?? 'private',
-      metadata: input.metadata,
-    }).returning();
-
-    if (!userFile)
-      throw new Error('UserFile insert returned no row');
-
-    return { userFile, file: existingFile };
+    return { userFile: await this.repo.insertUserFile(userFileRow(input, existingFile.id)), file: existingFile };
   }
 
   async confirmUpload(userFileId: string, tenantId: string | null): Promise<UserFileWithFile> {
@@ -255,9 +213,7 @@ export class StorageService {
     const head = await this.options.provider.head(file.storageKey);
 
     if (!head) {
-      await this.db.update(files)
-        .set({ status: FILE_STATUS.FAILED, updatedAt: new Date() })
-        .where(eq(files.id, file.id));
+      await this.repo.updateFile(file.id, { status: FILE_STATUS.FAILED });
 
       throw new DomainError({
         code: ERROR_CODES.STORAGE_OBJECT_MISSING,
@@ -268,9 +224,7 @@ export class StorageService {
 
     if (head.sizeBytes > this.options.maxUploadBytes) {
       await this.options.provider.remove(file.storageKey);
-      await this.db.update(files)
-        .set({ status: FILE_STATUS.FAILED, updatedAt: new Date() })
-        .where(eq(files.id, file.id));
+      await this.repo.updateFile(file.id, { status: FILE_STATUS.FAILED });
 
       throw this.tooLarge(head.sizeBytes);
     }
@@ -278,39 +232,25 @@ export class StorageService {
     const resolvedChecksum = head.checksum ?? file.checksum;
 
     if (resolvedChecksum != null && resolvedChecksum !== '') {
-      const [existingReadyFile] = await this.db.select().from(files).where(and(
-        eq(files.checksum, resolvedChecksum),
-        eq(files.status, 'ready'),
-        ne(files.id, file.id),
-      )).limit(1);
+      const existingReadyFile = await this.repo.findReadyByChecksum(resolvedChecksum, file.id);
 
-      if (existingReadyFile) {
-        const [updatedUserFile] = await this.db.update(userFiles)
-          .set({ fileId: existingReadyFile.id, updatedAt: new Date() })
-          .where(eq(userFiles.id, userFile.id))
-          .returning();
+      if (existingReadyFile !== null) {
+        const updatedUserFile = await this.repo.repointUserFile(userFile.id, existingReadyFile.id);
 
-        if (this.options.provider.configured) {
+        if (this.options.provider.configured)
           await this.options.provider.remove(file.storageKey);
-        }
 
-        await this.db.update(files)
-          .set({ status: FILE_STATUS.DELETED, deletedAt: new Date(), updatedAt: new Date() })
-          .where(eq(files.id, file.id));
+        await this.repo.updateFile(file.id, { status: FILE_STATUS.DELETED, deletedAt: new Date() });
 
         return { userFile: updatedUserFile ?? userFile, file: existingReadyFile };
       }
     }
 
-    const [ready] = await this.db.update(files)
-      .set({
-        status: FILE_STATUS.READY,
-        sizeBytes: head.sizeBytes,
-        checksum: resolvedChecksum,
-        updatedAt: new Date(),
-      })
-      .where(eq(files.id, file.id))
-      .returning();
+    const ready = await this.repo.updateFile(file.id, {
+      status: FILE_STATUS.READY,
+      sizeBytes: head.sizeBytes,
+      checksum: resolvedChecksum,
+    });
 
     return { userFile, file: ready ?? file };
   }
@@ -334,36 +274,20 @@ export class StorageService {
   async remove(userFileId: string, tenantId: string | null): Promise<void> {
     const { userFile } = await this.findOwned(userFileId, tenantId);
 
-    await this.db.update(userFiles)
-      .set({ deletedAt: new Date(), updatedAt: new Date() })
-      .where(eq(userFiles.id, userFile.id));
+    await this.repo.softDeleteUserFile(userFile.id);
   }
 
   async findOwned(userFileId: string, tenantId: string | null): Promise<UserFileWithFile> {
-    const [row] = await this.db.select({
-      userFile: userFiles,
-      file: files,
-    })
-      .from(userFiles)
-      .innerJoin(files, eq(userFiles.fileId, files.id))
-      .where(and(
-        eq(userFiles.id, userFileId),
-        tenantId === null ? isNull(userFiles.tenantId) : eq(userFiles.tenantId, tenantId),
-        isNull(userFiles.deletedAt),
-      ));
+    const row = await this.repo.findOwned(userFileId, tenantId);
 
-    if (!row)
-      throw await this.explainMissing(userFileId);
+    if (row === null)
+      throw await this.explainMissing(userFileId, tenantId);
 
     return row;
   }
 
-  private async explainMissing(id: string): Promise<DomainError> {
-    const [deleted] = await this.db.select({ id: userFiles.id })
-      .from(userFiles)
-      .where(and(eq(userFiles.id, id), isNotNull(userFiles.deletedAt)));
-
-    if (deleted) {
+  private async explainMissing(id: string, tenantId: string | null): Promise<DomainError> {
+    if (await this.repo.wasDeleted(id, tenantId)) {
       return new DomainError({
         code: ERROR_CODES.RESOURCE_NOT_FOUND,
         statusCode: 404,
@@ -371,15 +295,13 @@ export class StorageService {
       });
     }
 
-    const [byFileId] = await this.db.select({ userFileId: userFiles.id })
-      .from(userFiles)
-      .where(eq(userFiles.fileId, id));
+    const userFileId = await this.repo.userFileIdOfFile(id, tenantId);
 
-    if (byFileId) {
+    if (userFileId !== null) {
       return new DomainError({
         code: ERROR_CODES.RESOURCE_NOT_FOUND,
         statusCode: 404,
-        message: `That is a stored-file id, not a file id. Use the \`id\` from the upload response — for this object it is ${byFileId.userFileId}.`,
+        message: `That is a stored-file id, not a file id. Use the \`id\` from the upload response — for this object it is ${userFileId}.`,
       });
     }
 
@@ -412,7 +334,7 @@ export class StorageService {
       report.removed++;
     }
 
-    await audit.log(this.db, systemAuditContext('job:orphan-sweep'), {
+    await audit.log(this.repo.database, systemAuditContext('job:orphan-sweep'), {
       action: AUDIT_ACTIONS.STORAGE_CLEANED,
       entityType: AUDIT_ENTITIES.STORAGE,
       entityId: 'orphan-sweep',
@@ -429,11 +351,7 @@ export class StorageService {
     if (objects.length === 0)
       return { orphans: [], tooRecent: 0 };
 
-    const rows = await this.db.select({ storageKey: files.storageKey })
-      .from(files)
-      .where(inArray(files.storageKey, objects.map(object => object.key)));
-
-    const known = new Set(rows.map(row => row.storageKey));
+    const known = await this.repo.knownStorageKeys(objects);
     const unknown = objects.filter(object => !known.has(object.key));
     const orphans = unknown.filter(object => object.lastModified === null || object.lastModified <= cutoff);
 
@@ -453,7 +371,7 @@ export class StorageService {
     const changed = report.stalePendingCleaned + report.orphanedFilesCleaned + report.missingObjectsFlagged;
 
     if (changed > 0) {
-      await audit.log(this.db, systemAuditContext('job:storage-cleanup'), {
+      await audit.log(this.repo.database, systemAuditContext('job:storage-cleanup'), {
         action: AUDIT_ACTIONS.STORAGE_CLEANED,
         entityType: AUDIT_ENTITIES.STORAGE,
         entityId: 'storage-cleanup',
@@ -471,10 +389,7 @@ export class StorageService {
     let stalePendingCleaned = 0;
     let inFlightPendingPreserved = 0;
 
-    const pendingFiles = await this.db.select().from(files).where(and(
-      eq(files.status, 'pending'),
-      isNull(files.deletedAt),
-    ));
+    const pendingFiles = await this.repo.livePendingFiles();
 
     for (const pendingFile of pendingFiles) {
       const isExpired = pendingFile.expiresAt !== null && pendingFile.expiresAt < now;
@@ -492,9 +407,7 @@ export class StorageService {
         }
       }
 
-      await this.db.update(files)
-        .set({ status: FILE_STATUS.FAILED, deletedAt: new Date(), updatedAt: new Date() })
-        .where(eq(files.id, pendingFile.id));
+      await this.repo.updateFile(pendingFile.id, { status: FILE_STATUS.FAILED, deletedAt: new Date() });
 
       stalePendingCleaned++;
     }
@@ -509,37 +422,23 @@ export class StorageService {
     let orphanedFilesCleaned = 0;
     let missingObjectsFlagged = 0;
 
-    const readyFiles = await this.db.select().from(files).where(and(
-      eq(files.status, 'ready'),
-      isNull(files.deletedAt),
-      lte(files.createdAt, cutoffTime),
-    ));
+    const readyFiles = await this.repo.readyFilesOlderThan(cutoffTime);
 
     for (const readyFile of readyFiles) {
-      const [activeRefs] = await this.db.select({ total: count() })
-        .from(userFiles)
-        .where(and(
-          eq(userFiles.fileId, readyFile.id),
-          isNull(userFiles.deletedAt),
-        ));
+      const totalActive = await this.repo.countLiveReferences(readyFile.id);
 
-      const totalActive = Number(activeRefs?.total ?? 0);
       if (totalActive === 0) {
         if (this.options.provider.configured && readyFile.storageKey !== null) {
           await this.options.provider.remove(readyFile.storageKey);
         }
-        await this.db.update(files)
-          .set({ status: FILE_STATUS.DELETED, deletedAt: new Date(), updatedAt: new Date() })
-          .where(eq(files.id, readyFile.id));
+        await this.repo.updateFile(readyFile.id, { status: FILE_STATUS.DELETED, deletedAt: new Date() });
 
         orphanedFilesCleaned++;
       }
       else if (verifyStorageIntegrity && this.options.provider.configured && readyFile.storageKey !== null) {
         const head = await this.options.provider.head(readyFile.storageKey);
         if (head === null) {
-          await this.db.update(files)
-            .set({ status: FILE_STATUS.FAILED, updatedAt: new Date() })
-            .where(eq(files.id, readyFile.id));
+          await this.repo.updateFile(readyFile.id, { status: FILE_STATUS.FAILED });
 
           missingObjectsFlagged++;
         }

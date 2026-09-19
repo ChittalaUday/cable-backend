@@ -1,12 +1,11 @@
+import type { AuditExecutor } from './audit.repository';
 import type { AuditContext, AuditEvent, AuditMutation, AuditQuery } from './audit.types';
-import type { Database } from '@/db/client';
 import type { AuditLog } from '@/db/schema';
-import { and, desc, eq, isNull, lt, or } from 'drizzle-orm';
 import { AUDIT_VERBS, auditAction } from '@/constants/audit';
-import { auditLogs } from '@/db/schema';
+import { AuditRepository } from './audit.repository';
 import { auditDiff, sanitizeAuditValue } from './audit.utils';
 
-type AuditDb = Pick<Database, 'insert' | 'select'>;
+type AuditDb = AuditExecutor;
 
 export class AuditService {
   async log(db: AuditDb, context: AuditContext, event: AuditEvent): Promise<AuditLog> {
@@ -16,7 +15,7 @@ export class AuditService {
       ? before !== null && after !== null ? auditDiff(before, after) : null
       : sanitizeAuditValue(event.changes);
 
-    const [row] = await db.insert(auditLogs).values({
+    return new AuditRepository(db).insertLog({
       tenantId: context.tenantId,
       actorId: context.actorId,
       actorSessionId: context.actorSessionId ?? null,
@@ -32,11 +31,7 @@ export class AuditService {
       ipAddress: context.ipAddress ?? null,
       userAgent: context.userAgent ?? null,
       metadata: sanitizeAuditValue(event.metadata),
-    }).returning();
-
-    if (!row)
-      throw new Error('Audit insert returned no row');
-    return row;
+    });
   }
 
   async created(db: AuditDb, context: AuditContext, event: AuditMutation & { after: Record<string, unknown> }): Promise<AuditLog> {
@@ -56,19 +51,7 @@ export class AuditService {
     if (!Number.isInteger(limit) || limit < 1 || limit > 100)
       throw new RangeError('Audit query limit must be between 1 and 100');
 
-    return db.select().from(auditLogs).where(and(
-      query.tenantId === null ? isNull(auditLogs.tenantId) : eq(auditLogs.tenantId, query.tenantId),
-      query.entityType === undefined ? undefined : eq(auditLogs.entityType, query.entityType),
-      query.entityId === undefined ? undefined : eq(auditLogs.entityId, query.entityId),
-      query.actorId === undefined ? undefined : eq(auditLogs.actorId, query.actorId),
-      query.action === undefined ? undefined : eq(auditLogs.action, query.action),
-      query.before === undefined
-        ? undefined
-        : or(
-            lt(auditLogs.createdAt, query.before.createdAt),
-            and(eq(auditLogs.createdAt, query.before.createdAt), lt(auditLogs.id, query.before.id)),
-          ),
-    )).orderBy(desc(auditLogs.createdAt), desc(auditLogs.id)).limit(limit);
+    return new AuditRepository(db).listLogs(query, limit);
   }
 }
 

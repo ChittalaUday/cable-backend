@@ -16,6 +16,10 @@ export interface RouteRecord {
   method: string | string[];
   url: string;
   permission: PermissionKey | undefined;
+  /** The cache tag this route is served under, when it is a cached read. */
+  cacheTag: string | undefined;
+  /** The tags this route drops when it succeeds. */
+  invalidates: readonly string[];
 }
 
 function permissionOf(preHandler: unknown): PermissionKey | undefined {
@@ -52,7 +56,17 @@ export async function buildApp() {
   const routeTable: RouteRecord[] = [];
   app.decorate('routeTable', routeTable);
   app.addHook('onRoute', (route) => {
-    routeTable.push({ method: route.method, url: route.url, permission: permissionOf(route.preHandler) });
+    const config = route.config as
+      | { cache?: { tag: string }; invalidates?: readonly string[] }
+      | undefined;
+
+    routeTable.push({
+      method: route.method,
+      url: route.url,
+      permission: permissionOf(route.preHandler),
+      cacheTag: config?.cache?.tag,
+      invalidates: config?.invalidates ?? [],
+    });
   });
 
   await app.register(autoload, {

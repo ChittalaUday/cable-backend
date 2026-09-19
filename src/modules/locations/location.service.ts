@@ -15,26 +15,20 @@ import type {
 } from './location.schema';
 import type { LocationWritableStatus } from '@/constants/geo';
 import type { Database as Db, Transaction as Tx } from '@/db/client';
+import type { locationCategories, locations as locationsTable } from '@/db/schema';
 import type { AccessContext, RequestAccess } from '@/modules/iam/access.service';
 import type { PermissionKey, PermissionScope } from '@/security/permissions';
-import type { Page, PaginationQuery } from '@/utils/pagination';
-import { and, asc, count, eq, inArray, isNull, sql } from 'drizzle-orm';
+import type { Page } from '@/utils/pagination';
+import { and } from 'drizzle-orm';
 import { AUDIT_ACTIONS, AUDIT_ENTITIES } from '@/constants/audit';
 import { LOCATION_SOURCE, LOCATION_STATUS } from '@/constants/geo';
-import {
-  locationAliases,
-  locationCategories,
-  locations,
-  locationSchemaLevels,
-  locationSchemas,
-} from '@/db/schema';
-import { ERROR_CODES, isForeignKeyViolation, isUniqueViolation } from '@/errors';
+import { ERROR_CODES, isUniqueViolation } from '@/errors';
 import { badRequest, conflict, forbidden, inUse, notFound } from '@/errors/domain-error';
 import { audit } from '@/modules/audit/audit.service';
 import { locationScopeFor, requireScope } from '@/modules/iam/access.service';
-import { underAnyGrant, withinGrantedSubtree } from '@/security/location-scope';
 import { PERMISSIONS } from '@/security/permissions';
 import { offsetOf } from '@/utils/pagination';
+import { LocationRepository } from './location.repository';
 import { countGenerated, expandLevel, NO_PARENT } from './locations.generate';
 
 const MAX_GENERATED_NODES = 2000;
@@ -55,17 +49,17 @@ function coordinates(input: { latitude?: number | null; longitude?: number | nul
   };
 }
 
-interface PathRow extends Record<string, unknown> { id: string; depth: number; path: string; pathIds: string[] }
-
 export class LocationsService {
-  constructor(private readonly db: Db) {}
+  private readonly repo: LocationRepository;
+
+  constructor(repoOrDb: LocationRepository | Db) {
+    this.repo = repoOrDb instanceof LocationRepository
+      ? repoOrDb
+      : new LocationRepository(repoOrDb);
+  }
 
   async listCategories({ tenantId }: RequestAccess): Promise<CategoryResponse[]> {
-    const rows = await this.db
-      .select()
-      .from(locationCategories)
-      .where(eq(locationCategories.tenantId, tenantId))
-      .orderBy(asc(locationCategories.name));
+    const rows = await this.repo.listCategories(tenantId);
 
     return rows.map(row => ({
       id: row.id,
@@ -79,13 +73,15 @@ export class LocationsService {
 
   async createCategory({ tenantId, audit: context }: RequestAccess, input: CreateCategoryBody): Promise<CategoryResponse> {
     try {
-      const [row] = await this.db
-        .insert(locationCategories)
-        .values({ tenantId, name: input.name, slug: input.slug, config: input.config ?? {} })
-        .returning();
+      const row = await this.repo.createCategory({
+        tenantId,
+        name: input.name,
+        slug: input.slug,
+        config: input.config ?? {},
+      });
 
-      const created = this.categoryOf(row!);
-      await audit.created(this.db, context, { entityType: AUDIT_ENTITIES.LOCATION_CATEGORY, entityId: created.id, after: created });
+      const created = this.categoryOf(row);
+      await audit.created(this.repo.database, context, { entityType: AUDIT_ENTITIES.LOCATION_CATEGORY, entityId: created.id, after: created });
 
       return created;
     }
@@ -97,26 +93,19 @@ export class LocationsService {
   }
 
   async updateCategory({ tenantId, audit: context }: RequestAccess, id: string, patch: UpdateCategoryBody): Promise<CategoryResponse> {
-    const [existing] = await this.db
-      .select()
-      .from(locationCategories)
-      .where(and(eq(locationCategories.tenantId, tenantId), eq(locationCategories.id, id)))
-      .limit(1);
+    const existing = await this.repo.findCategoryById(tenantId, id);
+    if (existing === null)
+      throw notFound('Category');
 
-    const [row] = await this.db
-      .update(locationCategories)
-      .set({ ...patch, updatedAt: new Date() })
-      .where(and(eq(locationCategories.tenantId, tenantId), eq(locationCategories.id, id)))
-      .returning();
-
-    if (row === undefined)
+    const row = await this.repo.updateCategory(tenantId, id, patch);
+    if (row === null)
       throw notFound('Category');
 
     const after = this.categoryOf(row);
-    await audit.updated(this.db, context, {
+    await audit.updated(this.repo.database, context, {
       entityType: AUDIT_ENTITIES.LOCATION_CATEGORY,
       entityId: id,
-      before: this.categoryOf(existing!),
+      before: this.categoryOf(existing),
       after,
     });
 
@@ -124,33 +113,20 @@ export class LocationsService {
   }
 
   async deleteCategory({ tenantId, audit: context }: RequestAccess, id: string): Promise<void> {
-    const [existing] = await this.db
-      .select()
-      .from(locationCategories)
-      .where(and(eq(locationCategories.tenantId, tenantId), eq(locationCategories.id, id)))
-      .limit(1);
+    const existing = await this.repo.findCategoryById(tenantId, id);
 
-    try {
-      await this.db
-        .delete(locationCategories)
-        .where(and(eq(locationCategories.tenantId, tenantId), eq(locationCategories.id, id)));
-    }
-    catch (error) {
-      if (isForeignKeyViolation(error))
-        throw inUse('This category is still used by a schema level or a location');
-      throw error;
-    }
+    const inUseByLevelsOrLocations = await this.repo.isCategoryInUse(tenantId, id);
+    if (inUseByLevelsOrLocations)
+      throw inUse('This category is still used by a schema level or a location');
 
-    if (existing !== undefined)
-      await audit.deleted(this.db, context, { entityType: AUDIT_ENTITIES.LOCATION_CATEGORY, entityId: id, before: this.categoryOf(existing) });
+    await this.repo.softDeleteCategory(tenantId, id);
+
+    if (existing !== null)
+      await audit.deleted(this.repo.database, context, { entityType: AUDIT_ENTITIES.LOCATION_CATEGORY, entityId: id, before: this.categoryOf(existing) });
   }
 
   async listSchemas({ tenantId }: RequestAccess): Promise<SchemaResponse[]> {
-    const rows = await this.db
-      .select()
-      .from(locationSchemas)
-      .where(eq(locationSchemas.tenantId, tenantId))
-      .orderBy(asc(locationSchemas.name));
+    const rows = await this.repo.listSchemas(tenantId);
 
     if (rows.length === 0)
       return [];
@@ -176,42 +152,36 @@ export class LocationsService {
     if (new Set(categoryIds).size !== categoryIds.length)
       throw badRequest(ERROR_CODES.VALIDATION_FAILED, 'A category may appear at only one level of a schema');
 
-    const known = await this.db
-      .select({ id: locationCategories.id })
-      .from(locationCategories)
-      .where(and(eq(locationCategories.tenantId, tenantId), inArray(locationCategories.id, categoryIds)));
+    const known = await this.repo.findCategoriesByIds(tenantId, categoryIds);
 
     if (known.length !== categoryIds.length)
       throw notFound('Category');
 
-    const id = await this.db.transaction(async (tx) => {
-      const [row] = await tx
-        .insert(locationSchemas)
-        .values({
-          tenantId,
+    let id: string;
+    try {
+      id = await this.repo.createSchemaWithLevels(
+        tenantId,
+        {
           name: input.name,
           slug: input.slug,
           description: input.description ?? null,
-        })
-        .returning({ id: locationSchemas.id });
-
-      await tx.insert(locationSchemaLevels).values(input.levels.map((level, depth) => ({
-        schemaId: row!.id,
-        categoryId: level.categoryId,
-        depth,
-        isTerminal: level.isTerminal ?? depth === input.levels.length - 1,
-        config: level.config ?? {},
-      })));
-
-      return row!.id;
-    }).catch((error: unknown) => {
+        },
+        input.levels.map((level, depth) => ({
+          categoryId: level.categoryId,
+          depth,
+          isTerminal: level.isTerminal ?? depth === input.levels.length - 1,
+          config: level.config ?? {},
+        })),
+      );
+    }
+    catch (error) {
       if (isUniqueViolation(error))
         throw conflict(`A schema with slug "${input.slug}" already exists`);
       throw error;
-    });
+    }
 
     const [created] = await this.listSchemasById(access, [id]);
-    await audit.created(this.db, access.audit, { entityType: AUDIT_ENTITIES.LOCATION_SCHEMA, entityId: id, after: created! });
+    await audit.created(this.repo.database, access.audit, { entityType: AUDIT_ENTITIES.LOCATION_SCHEMA, entityId: id, after: created! });
 
     return created!;
   }
@@ -219,17 +189,13 @@ export class LocationsService {
   async updateSchema(access: RequestAccess, id: string, patch: UpdateSchemaBody): Promise<SchemaResponse> {
     const { tenantId } = access;
     const [before] = await this.listSchemasById(access, [id]);
-    const [row] = await this.db
-      .update(locationSchemas)
-      .set({ ...patch, updatedAt: new Date() })
-      .where(and(eq(locationSchemas.tenantId, tenantId), eq(locationSchemas.id, id)))
-      .returning({ id: locationSchemas.id });
+    const row = await this.repo.updateSchema(tenantId, id, patch);
 
-    if (row === undefined)
+    if (row === null)
       throw notFound('Location schema');
 
     const [updated] = await this.listSchemasById(access, [id]);
-    await audit.updated(this.db, access.audit, { entityType: AUDIT_ENTITIES.LOCATION_SCHEMA, entityId: id, before: before!, after: updated! });
+    await audit.updated(this.repo.database, access.audit, { entityType: AUDIT_ENTITIES.LOCATION_SCHEMA, entityId: id, before: before!, after: updated! });
 
     return updated!;
   }
@@ -238,19 +204,15 @@ export class LocationsService {
     const { tenantId } = access;
     const [before] = await this.listSchemasById(access, [id]);
 
-    try {
-      await this.db
-        .delete(locationSchemas)
-        .where(and(eq(locationSchemas.tenantId, tenantId), eq(locationSchemas.id, id)));
-    }
-    catch (error) {
-      if (isForeignKeyViolation(error))
-        throw inUse('This schema still has locations; delete or move them first');
-      throw error;
-    }
+    // A soft delete raises no foreign key error, so the dependency has to be
+    // counted here or the schema goes while its locations still point at it.
+    if (await this.repo.schemaHasLocations(tenantId, id))
+      throw inUse('This schema still has locations; delete or move them first');
+
+    await this.repo.softDeleteSchema(tenantId, id);
 
     if (before !== undefined)
-      await audit.deleted(this.db, access.audit, { entityType: AUDIT_ENTITIES.LOCATION_SCHEMA, entityId: id, before });
+      await audit.deleted(this.repo.database, access.audit, { entityType: AUDIT_ENTITIES.LOCATION_SCHEMA, entityId: id, before });
   }
 
   async generate(access: RequestAccess, schemaId: string, input: GenerateBody): Promise<{ created: number; leafIds: string[] }> {
@@ -279,10 +241,10 @@ export class LocationsService {
     if (startDepth + input.levels.length > levels.length)
       throw badRequest(ERROR_CODES.VALIDATION_FAILED, 'More levels requested than the schema defines below this parent');
 
-    return this.db.transaction(async (tx) => {
+    return this.repo.transaction(async (tx) => {
       let parents = parentId === null
         ? [NO_PARENT]
-        : [await this.parentSeed(tx, parentId)];
+        : [await this.repo.parentSeed(parentId, tx)];
       let parentIds: (string | null)[] = [parentId];
       let created = 0;
       let leafIds: string[] = [];
@@ -291,19 +253,16 @@ export class LocationsService {
         const expanded = expandLevel(parents, level);
         const categoryId = levels[startDepth + offset]!.categoryId;
 
-        const inserted = await tx
-          .insert(locations)
-          .values(expanded.map(node => ({
-            tenantId,
-            schemaId,
-            categoryId,
-            parentId: parentIds[node.parentIndex] ?? null,
-            name: node.name,
-            code: node.code,
-            source: LOCATION_SOURCE.ADMIN,
-            createdBy: access.userId,
-          })))
-          .returning({ id: locations.id, name: locations.name, code: locations.code });
+        const inserted = await this.repo.batchCreateLocations(expanded.map(node => ({
+          tenantId,
+          schemaId,
+          categoryId,
+          parentId: parentIds[node.parentIndex] ?? null,
+          name: node.name,
+          code: node.code,
+          source: LOCATION_SOURCE.ADMIN,
+          createdBy: access.userId,
+        })), tx);
 
         created += inserted.length;
         leafIds = inserted.map(row => row.id);
@@ -334,97 +293,57 @@ export class LocationsService {
     if (reach === null)
       return { items: [], total: 0, page: query.page, limit: query.limit };
 
-    const filters: (SQL | undefined)[] = [eq(locations.tenantId, tenantId), ...reach];
+    const filters: (SQL | undefined)[] = [this.repo.liveIn(tenantId), ...reach];
 
-    if (query.parentId !== undefined) {
-      filters.push(query.parentId === 'null'
-        ? isNull(locations.parentId)
-        : eq(locations.parentId, query.parentId));
-    }
+    if (query.parentId !== undefined)
+      filters.push(this.repo.matchesParent(query.parentId === 'null' ? null : query.parentId));
     if (query.ancestorId !== undefined)
-      filters.push(sql`EXISTS (SELECT 1 FROM geo.location_descendants(${query.ancestorId}) d WHERE d.id = ${locations.id} AND d.id <> ${query.ancestorId})`);
+      filters.push(this.repo.underAncestor(query.ancestorId));
     if (query.schemaId !== undefined)
-      filters.push(eq(locations.schemaId, query.schemaId));
+      filters.push(this.repo.matchesSchema(query.schemaId));
     if (query.categoryId !== undefined)
-      filters.push(eq(locations.categoryId, query.categoryId));
+      filters.push(this.repo.matchesCategory(query.categoryId));
     if (query.status !== undefined)
-      filters.push(eq(locations.status, query.status));
+      filters.push(this.repo.matchesStatus(query.status));
     if (query.isActive !== undefined)
-      filters.push(eq(locations.isActive, query.isActive));
-    filters.push(this.coverageFilter(tenantId, query));
-    if (query.q !== undefined) {
-      filters.push(sql`(${locations.name} ILIKE ${`%${query.q}%`} OR EXISTS (
-        SELECT 1 FROM geo.location_aliases a WHERE a.location_id = ${locations.id} AND a.alias ILIKE ${`%${query.q}%`}
-      ))`);
-    }
+      filters.push(this.repo.matchesActive(query.isActive));
+    if (query.coverageServiceId !== undefined)
+      filters.push(this.repo.coveredBy(tenantId, query.coverageServiceId, query.coverageProviderId ?? null));
+    if (query.q !== undefined)
+      filters.push(this.repo.nameOrAliasMatches(query.q));
 
-    const where = and(...filters);
+    const where = and(...filters)!;
 
-    const [rows, [totals]] = await Promise.all([
-      this.db
-        .select()
-        .from(locations)
-        .where(where)
-        .orderBy(asc(locations.name), asc(locations.id))
-        .limit(query.limit)
-        .offset(offsetOf(query as PaginationQuery)),
-      this.db.select({ total: count() }).from(locations).where(where),
-    ]);
+    const { rows, total } = await this.repo.listLocations(
+      where,
+      query.limit,
+      offsetOf(query),
+    );
 
     return {
       items: await this.present(rows),
-      total: totals?.total ?? 0,
+      total,
       page: query.page,
       limit: query.limit,
     };
-  }
-
-  private coverageFilter(tenantId: string, query: ListLocationsQuery): SQL | undefined {
-    if (query.coverageServiceId === undefined)
-      return undefined;
-
-    return sql`crm.coverage_allows(
-      ${tenantId}, ${query.coverageServiceId}, ${query.coverageProviderId ?? null}, NULL, ${locations.id}
-    )`;
   }
 
   async ancestorsOf(access: RequestAccess, id: string): Promise<AncestorResponse[]> {
     const node = await this.findNode(access.tenantId, id);
     await this.assertReaches(access, { key: PERMISSIONS.LOCATIONS_VIEW, nodeId: node.id, createdBy: node.createdBy });
 
-    const chain = await this.db.execute<{ id: string }>(sql`
-      SELECT a.id
-      FROM geo.location_ancestors(${id}) a
-      ORDER BY a.depth DESC
-    `);
-
-    const ids = chain.rows.map(row => row.id);
+    const ids = await this.repo.findAncestorIds(id);
     if (ids.length === 0)
       return [];
 
-    const rows = await this.db
-      .select()
-      .from(locations)
-      .where(and(eq(locations.tenantId, access.tenantId), inArray(locations.id, ids)));
-
+    const rows = await this.repo.findLocationsByIds(access.tenantId, ids);
     const byId = new Map(rows.map(row => [row.id, row]));
     const ordered = ids.map(nodeId => byId.get(nodeId)).filter(row => row !== undefined);
 
-    const [presented, ranks] = await Promise.all([
+    const [presented, rankById] = await Promise.all([
       this.present(ordered),
-      this.db.execute<{ id: string; siblingIndex: number }>(sql`
-        SELECT l.id,
-               (SELECT count(*)::int
-                  FROM geo.locations s
-                 WHERE s.tenant_id = l.tenant_id
-                   AND s.parent_id IS NOT DISTINCT FROM l.parent_id
-                   AND (s.name, s.id) < (l.name, l.id)) AS "siblingIndex"
-        FROM geo.locations l
-        WHERE l.id = ANY(${sql.param(ids)}::uuid[])
-      `),
+      this.repo.findSiblingRanks(ids),
     ]);
-
-    const rankById = new Map(ranks.rows.map(row => [row.id, row.siblingIndex]));
 
     return presented.map(row => ({ ...row, siblingIndex: rankById.get(row.id) ?? 0 }));
   }
@@ -442,27 +361,24 @@ export class LocationsService {
     const { parentId, schemaId, categoryId } = await this.placeFor(access, input);
 
     try {
-      return await this.db.transaction(async (tx) => {
-        const [row] = await tx
-          .insert(locations)
-          .values({
-            tenantId,
-            schemaId,
-            categoryId,
-            parentId,
-            name: input.name,
-            code: input.code ?? null,
-            ...provenance(access, input.status),
-            ...coordinates(input),
-            metadata: input.metadata ?? null,
-            createdBy: access.userId,
-          })
-          .returning();
+      return await this.repo.transaction(async (tx) => {
+        const row = await this.repo.createLocation({
+          tenantId,
+          schemaId,
+          categoryId,
+          parentId,
+          name: input.name,
+          code: input.code ?? null,
+          ...provenance(access, input.status),
+          ...coordinates(input),
+          metadata: input.metadata ?? null,
+          createdBy: access.userId,
+        }, tx);
 
-        await this.replaceAliases(tx, { tenantId, locationId: row!.id, aliases: input.aliases });
+        await this.repo.replaceAliases(tenantId, row.id, input.aliases, tx);
 
-        const [presented] = await this.present([row!], tx);
-        await audit.created(tx, access.audit, { entityType: AUDIT_ENTITIES.LOCATION, entityId: row!.id, after: presented! });
+        const [presented] = await this.present([row], tx);
+        await audit.created(tx, access.audit, { entityType: AUDIT_ENTITIES.LOCATION, entityId: row.id, after: presented! });
 
         return presented!;
       });
@@ -483,16 +399,20 @@ export class LocationsService {
     const [before] = await this.present([existing]);
 
     try {
-      return await this.db.transaction(async (tx) => {
-        const [row] = await tx
-          .update(locations)
-          .set({ ...rest, ...coordinates(patch), updatedAt: new Date() })
-          .where(and(eq(locations.tenantId, tenantId), eq(locations.id, id)))
-          .returning();
+      return await this.repo.transaction(async (tx) => {
+        const row = await this.repo.updateLocation(
+          tenantId,
+          id,
+          { ...rest, ...coordinates(patch), updatedAt: new Date() },
+          tx,
+        );
 
-        await this.replaceAliases(tx, { tenantId, locationId: id, aliases });
+        if (row === null)
+          throw notFound('Location');
 
-        const [presented] = await this.present([row!], tx);
+        await this.repo.replaceAliases(tenantId, id, aliases, tx);
+
+        const [presented] = await this.present([row], tx);
         await audit.updated(tx, access.audit, { entityType: AUDIT_ENTITIES.LOCATION, entityId: id, before: before!, after: presented! });
 
         return presented!;
@@ -507,29 +427,29 @@ export class LocationsService {
 
   async remove(access: RequestAccess, id: string): Promise<void> {
     const { tenantId } = access;
-    const existing = await this.db
-      .select()
-      .from(locations)
-      .where(and(eq(locations.tenantId, tenantId), eq(locations.id, id)))
-      .limit(1);
+    const existing = await this.repo.findLocationById(tenantId, id);
 
-    if (existing[0] === undefined)
+    if (existing === null)
       return;
 
-    await this.assertReaches(access, { key: PERMISSIONS.LOCATIONS_DELETE, nodeId: id, createdBy: existing[0].createdBy });
+    await this.assertReaches(access, { key: PERMISSIONS.LOCATIONS_DELETE, nodeId: id, createdBy: existing.createdBy });
 
-    const [before] = await this.present([existing[0]]);
+    const [before] = await this.present([existing]);
 
-    try {
-      await this.db.delete(locations).where(and(eq(locations.tenantId, tenantId), eq(locations.id, id)));
+    const childCount = await this.repo.countChildren(tenantId, id);
+    if (childCount > 0)
+      throw inUse('This location still has children or customers assigned to it');
+
+    const isAssigned = await this.repo.isLocationAssigned(tenantId, id);
+    if (isAssigned) {
+      await this.repo.updateLocation(tenantId, id, { isActive: false });
+      await audit.deleted(this.repo.database, access.audit, { entityType: AUDIT_ENTITIES.LOCATION, entityId: id, before: before! });
+      return;
     }
-    catch (error) {
-      if (isForeignKeyViolation(error))
-        throw inUse('This location still has children or customers assigned to it');
-      throw error;
-    }
 
-    await audit.deleted(this.db, access.audit, { entityType: AUDIT_ENTITIES.LOCATION, entityId: id, before: before! });
+    await this.repo.softDeleteLocation(tenantId, id);
+
+    await audit.deleted(this.repo.database, access.audit, { entityType: AUDIT_ENTITIES.LOCATION, entityId: id, before: before! });
   }
 
   async assertWithinReach(access: RequestAccess, key: PermissionKey, ids: readonly string[]): Promise<void> {
@@ -543,14 +463,9 @@ export class LocationsService {
     if (reach.kind === 'ALL_TENANT_LOCATIONS')
       return;
 
-    const outside = await this.db.execute<{ id: string }>(sql`
-      SELECT w.id
-      FROM unnest(${sql.param([...new Set(ids)])}::uuid[]) AS w(id)
-      WHERE NOT ${underAnyGrant(sql`w.id`, reach.nodeIds)}
-      LIMIT 1
-    `);
+    const outside = await this.repo.findOutsideGrants(ids as string[], reach.nodeIds);
 
-    if (outside.rows.length > 0)
+    if (outside.length > 0)
       throw forbidden(ERROR_CODES.PERM_SCOPE_DENIED, 'That area is outside your own grant');
   }
 
@@ -559,12 +474,9 @@ export class LocationsService {
       return;
 
     const wanted = [...new Set(ids)];
-    const rows = await this.db
-      .select({ id: locations.id })
-      .from(locations)
-      .where(and(eq(locations.tenantId, tenantId), inArray(locations.id, wanted)));
+    const owned = await this.repo.findOwnedLocationIds(tenantId, wanted);
 
-    if (rows.length !== wanted.length)
+    if (owned.length !== wanted.length)
       throw notFound('Location');
   }
 
@@ -585,21 +497,7 @@ export class LocationsService {
   }
 
   private async levelsOf(schemaIds: string[]) {
-    const rows = await this.db
-      .select({
-        id: locationSchemaLevels.id,
-        schemaId: locationSchemaLevels.schemaId,
-        categoryId: locationSchemaLevels.categoryId,
-        categorySlug: locationCategories.slug,
-        categoryName: locationCategories.name,
-        depth: locationSchemaLevels.depth,
-        isTerminal: locationSchemaLevels.isTerminal,
-        config: locationSchemaLevels.config,
-      })
-      .from(locationSchemaLevels)
-      .innerJoin(locationCategories, eq(locationCategories.id, locationSchemaLevels.categoryId))
-      .where(inArray(locationSchemaLevels.schemaId, schemaIds))
-      .orderBy(asc(locationSchemaLevels.depth));
+    const rows = await this.repo.findSchemaLevelsWithCategories(schemaIds);
 
     const grouped = new Map<string, SchemaResponse['levels']>();
     for (const row of rows) {
@@ -611,13 +509,9 @@ export class LocationsService {
   }
 
   private async levelChain(tenantId: string, schemaId: string) {
-    const [owned] = await this.db
-      .select({ id: locationSchemas.id })
-      .from(locationSchemas)
-      .where(and(eq(locationSchemas.tenantId, tenantId), eq(locationSchemas.id, schemaId)))
-      .limit(1);
+    const owned = await this.repo.findSchemaById(tenantId, schemaId);
 
-    if (owned === undefined)
+    if (owned === null)
       throw notFound('Location schema');
 
     const levels = (await this.levelsOf([schemaId])).get(schemaId) ?? [];
@@ -687,75 +581,20 @@ export class LocationsService {
   }
 
   private async findNode(tenantId: string, id: string) {
-    const [row] = await this.db
-      .select()
-      .from(locations)
-      .where(and(eq(locations.tenantId, tenantId), eq(locations.id, id)))
-      .limit(1);
+    const row = await this.repo.findLocationById(tenantId, id);
 
-    if (row === undefined)
+    if (row === null)
       throw notFound('Location');
 
     return row;
   }
 
-  private async parentSeed(tx: Tx, id: string) {
-    const [row] = await tx
-      .select({ name: locations.name, code: locations.code })
-      .from(locations)
-      .where(eq(locations.id, id))
-      .limit(1);
-
-    return row!;
-  }
-
-  private async replaceAliases(tx: Tx, input: { tenantId: string; locationId: string; aliases: string[] | undefined }): Promise<void> {
-    const { tenantId, locationId, aliases } = input;
-
-    if (aliases === undefined)
-      return;
-
-    await tx.delete(locationAliases).where(and(eq(locationAliases.tenantId, tenantId), eq(locationAliases.locationId, locationId)));
-
-    if (aliases.length > 0) {
-      await tx.insert(locationAliases).values(
-        [...new Set(aliases)].map(alias => ({ tenantId, locationId, alias })),
-      );
-    }
-  }
-
-  private async present(rows: (typeof locations.$inferSelect)[], tx?: Tx): Promise<LocationResponse[]> {
+  private async present(rows: (typeof locationsTable.$inferSelect)[], tx?: Tx): Promise<LocationResponse[]> {
     if (rows.length === 0)
       return [];
 
-    const db = tx ?? this.db;
     const ids = rows.map(row => row.id);
-
-    const [paths, aliasRows, childRows] = await Promise.all([
-      db.execute<PathRow>(sql`
-        SELECT n.id,
-               count(*)::int - 1                                   AS depth,
-               string_agg(l.name, ' / ' ORDER BY a.depth DESC)     AS path,
-               array_agg(l.id ORDER BY a.depth DESC)               AS "pathIds"
-        FROM unnest(${sql.param(ids)}::uuid[]) AS n(id)
-        CROSS JOIN geo.location_ancestors(n.id) AS a
-        JOIN geo.locations l ON l.id = a.id
-        GROUP BY n.id
-      `),
-      db.select({ locationId: locationAliases.locationId, alias: locationAliases.alias })
-        .from(locationAliases)
-        .where(inArray(locationAliases.locationId, ids)),
-      db.select({ parentId: locations.parentId, children: count() })
-        .from(locations)
-        .where(inArray(locations.parentId, ids))
-        .groupBy(locations.parentId),
-    ]);
-
-    const pathById = new Map(paths.rows.map(row => [row.id, row]));
-    const childrenById = new Map(childRows.map(row => [row.parentId, row.children]));
-    const aliasById = new Map<string, string[]>();
-    for (const row of aliasRows)
-      aliasById.set(row.locationId, [...(aliasById.get(row.locationId) ?? []), row.alias]);
+    const { pathById, aliasById, childrenById } = await this.repo.findPresentationData(ids, tx);
 
     return rows.map((row) => {
       const path = pathById.get(row.id);
@@ -786,7 +625,7 @@ export class LocationsService {
 
   private reachCondition(access: RequestAccess, scope: PermissionScope) {
     if (scope === 'OWN')
-      return [eq(locations.createdBy, access.userId)];
+      return [this.repo.ownedBy(access.userId)];
 
     const reach = locationScopeFor(access, PERMISSIONS.LOCATIONS_VIEW);
 
@@ -796,7 +635,7 @@ export class LocationsService {
     if (reach.nodeIds.length === 0)
       return null;
 
-    return [withinGrantedSubtree(sql`${locations.id}`, reach.nodeIds)];
+    return [this.repo.withinGrant(reach.nodeIds)];
   }
 
   private async assertReaches(access: RequestAccess, target: { key: PermissionKey; nodeId: string; createdBy: string | null }): Promise<void> {
@@ -814,11 +653,9 @@ export class LocationsService {
     if (reach.kind === 'ALL_TENANT_LOCATIONS')
       return;
 
-    const result = await this.db.execute<{ reaches: boolean }>(
-      sql`SELECT ${underAnyGrant(nodeId, reach.nodeIds)} AS reaches`,
-    );
+    const reaches = await this.repo.checkUnderAnyGrant(nodeId, reach.nodeIds);
 
-    if (result.rows[0]?.reaches !== true)
+    if (!reaches)
       throw forbidden(ERROR_CODES.PERM_SCOPE_DENIED, 'This location is outside your grant');
   }
 }

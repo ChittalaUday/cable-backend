@@ -1,10 +1,10 @@
+import type { DeviceFingerprint } from '../repositories/sessions.repository';
 import type { Database } from '@/db/client';
 import type { Device, Session, SessionRevokeReason } from '@/db/schema';
-import { and, asc, eq, isNull, sql } from 'drizzle-orm';
-import { devices, sessions } from '@/db/schema';
 import { ERROR_CODES } from '@/errors';
 import { DomainError, forbidden, unauthorized } from '@/errors/domain-error';
 import { generateRefreshToken, hashRefreshToken } from '@/security/tokens';
+import { SessionsRepository } from '../repositories/sessions.repository';
 
 export interface DeviceInfo {
   clientDeviceId: string;
@@ -31,7 +31,7 @@ export interface IssuedSession {
   refreshToken: string;
 }
 
-function fingerprintOf(info: DeviceInfo) {
+function fingerprintOf(info: DeviceInfo): DeviceFingerprint {
   return {
     ...(info.osVersion != null ? { osVersion: info.osVersion } : {}),
     ...(info.manufacturer != null ? { manufacturer: info.manufacturer } : {}),
@@ -43,37 +43,21 @@ function fingerprintOf(info: DeviceInfo) {
 }
 
 export class SessionsService {
+  private readonly repo: SessionsRepository;
+
   constructor(
-    private readonly db: Database,
+    repoOrDb: SessionsRepository | Database,
     private readonly config: SessionsConfig,
     private readonly onRevoked: OnRevoked = async () => {},
-  ) {}
+  ) {
+    this.repo = repoOrDb instanceof SessionsRepository ? repoOrDb : new SessionsRepository(repoOrDb);
+  }
 
   async upsertDevice(info: DeviceInfo): Promise<Device> {
-    const [device] = await this.db.insert(devices)
-      .values({
-        clientDeviceId: info.clientDeviceId,
-        platform: info.platform,
-        ...fingerprintOf(info),
-      })
-      .onConflictDoUpdate({
-        target: devices.clientDeviceId,
-        set: {
-          lastSeenAt: new Date(),
-          ...fingerprintOf(info),
-        },
-      })
-      .returning();
+    const device = await this.repo.upsertDevice(info.clientDeviceId, info.platform, fingerprintOf(info));
 
-    if (!device)
-      throw new Error('Device upsert returned no row');
-
-    if (device.blockedAt !== null) {
-      throw forbidden(
-        ERROR_CODES.AUTH_DEVICE_BLOCKED,
-        'This device has been blocked',
-      );
-    }
+    if (device.blockedAt !== null)
+      throw forbidden(ERROR_CODES.AUTH_DEVICE_BLOCKED, 'This device has been blocked');
 
     return device;
   }
@@ -82,17 +66,13 @@ export class SessionsService {
     await this.enforceDeviceLimit(deviceId);
 
     const refreshToken = generateRefreshToken();
-    const expiresAt = new Date(Date.now() + this.config.refreshTtlDays * 86_400_000);
 
-    const [session] = await this.db.insert(sessions).values({
+    const session = await this.repo.insertSession({
       userId,
       deviceId,
       refreshTokenHash: hashRefreshToken(refreshToken),
-      expiresAt,
-    }).returning();
-
-    if (!session)
-      throw new Error('Session insert returned no row');
+      expiresAt: this.nextExpiry(),
+    });
 
     return { session, refreshToken };
   }
@@ -100,9 +80,9 @@ export class SessionsService {
   async rotate(refreshToken: string, onReuse?: (session: Session) => Promise<void>): Promise<IssuedSession> {
     const hash = hashRefreshToken(refreshToken);
 
-    const [replayed] = await this.db.select().from(sessions).where(and(eq(sessions.prevTokenHash, hash), isNull(sessions.revokedAt)));
+    const replayed = await this.repo.findByPrevTokenHash(hash);
 
-    if (replayed) {
+    if (replayed !== null) {
       /*
        * A token replayed seconds after it was consumed is far more likely to be
        * the same client asking twice than an attacker: two requests that raced,
@@ -123,9 +103,9 @@ export class SessionsService {
       throw unauthorized(ERROR_CODES.AUTH_REFRESH_REUSED, 'Refresh token was already used');
     }
 
-    const [current] = await this.db.select().from(sessions).where(eq(sessions.refreshTokenHash, hash));
+    const current = await this.repo.findByTokenHash(hash);
 
-    if (!current || current.revokedAt !== null)
+    if (current === null || current.revokedAt !== null)
       throw unauthorized(ERROR_CODES.AUTH_REFRESH_INVALID, 'Refresh token is not valid');
 
     if (current.expiresAt.getTime() <= Date.now())
@@ -135,37 +115,30 @@ export class SessionsService {
   }
 
   async revoke(sessionId: string, reason: SessionRevokeReason): Promise<void> {
-    await this.db.update(sessions)
-      .set({ revokedAt: sql`coalesce(${sessions.revokedAt}, now())`, revokedReason: reason })
-      .where(and(eq(sessions.id, sessionId), isNull(sessions.revokedAt)));
-
+    await this.repo.revoke(sessionId, reason);
     await this.onRevoked(sessionId);
   }
 
   async revokeAllForUser(userId: string, reason: SessionRevokeReason): Promise<number> {
-    const rows = await this.db.update(sessions)
-      .set({ revokedAt: new Date(), revokedReason: reason })
-      .where(and(eq(sessions.userId, userId), isNull(sessions.revokedAt)))
-      .returning({ id: sessions.id });
+    const ids = await this.repo.revokeAllForUser(userId, reason);
 
-    await Promise.all(rows.map(async row => this.onRevoked(row.id)));
-    return rows.length;
+    await Promise.all(ids.map(async id => this.onRevoked(id)));
+    return ids.length;
   }
 
   async revokeAllForDevice(deviceId: string, reason: SessionRevokeReason): Promise<number> {
-    const rows = await this.db.update(sessions)
-      .set({ revokedAt: new Date(), revokedReason: reason })
-      .where(and(eq(sessions.deviceId, deviceId), isNull(sessions.revokedAt)))
-      .returning({ id: sessions.id });
+    const ids = await this.repo.revokeAllForDevice(deviceId, reason);
 
-    await Promise.all(rows.map(async row => this.onRevoked(row.id)));
-    return rows.length;
+    await Promise.all(ids.map(async id => this.onRevoked(id)));
+    return ids.length;
   }
 
   async findActive(sessionId: string): Promise<Session | null> {
-    const [session] = await this.db.select().from(sessions).where(and(eq(sessions.id, sessionId), isNull(sessions.revokedAt)));
+    return this.repo.findActive(sessionId);
+  }
 
-    return session ?? null;
+  private nextExpiry(): Date {
+    return new Date(Date.now() + this.config.refreshTtlDays * 86_400_000);
   }
 
   /**
@@ -181,32 +154,16 @@ export class SessionsService {
     await this.assertDeviceUsable(session.deviceId, session.id);
 
     const next = generateRefreshToken();
+    const updated = await this.repo.rotateToken(session.id, hashRefreshToken(next), this.nextExpiry(), consuming);
 
-    const [updated] = await this.db.update(sessions)
-      .set({
-        refreshTokenHash: hashRefreshToken(next),
-        expiresAt: new Date(Date.now() + this.config.refreshTtlDays * 86_400_000),
-        ...(consuming === undefined ? {} : { prevTokenHash: consuming, lastUsedAt: new Date() }),
-      })
-      .where(and(
-        eq(sessions.id, session.id),
-        isNull(sessions.revokedAt),
-        ...(consuming === undefined ? [] : [eq(sessions.refreshTokenHash, consuming)]),
-      ))
-      .returning();
-
-    if (!updated)
+    if (updated === null)
       throw unauthorized(ERROR_CODES.AUTH_REFRESH_INVALID, 'Refresh token is not valid');
 
     return { session: updated, refreshToken: next };
   }
 
   private async assertDeviceUsable(deviceId: string, sessionId: string): Promise<void> {
-    const [device] = await this.db.select({ blockedAt: devices.blockedAt })
-      .from(devices)
-      .where(eq(devices.id, deviceId));
-
-    if (device?.blockedAt == null)
+    if (await this.repo.findDeviceBlockedAt(deviceId) == null)
       return;
 
     await this.revoke(sessionId, 'device_blocked');
@@ -214,14 +171,14 @@ export class SessionsService {
   }
 
   private async enforceDeviceLimit(deviceId: string): Promise<void> {
-    const active = await this.db.select({ id: sessions.id }).from(sessions).where(and(eq(sessions.deviceId, deviceId), isNull(sessions.revokedAt))).orderBy(asc(sessions.lastUsedAt));
+    const active = await this.repo.activeSessionIdsOfDevice(deviceId);
 
     const overflow = active.length - this.config.maxSessionsPerDevice + 1;
     if (overflow <= 0)
       return;
 
-    for (const session of active.slice(0, overflow))
-      await this.revoke(session.id, 'session_limit');
+    for (const sessionId of active.slice(0, overflow))
+      await this.revoke(sessionId, 'session_limit');
   }
 }
 

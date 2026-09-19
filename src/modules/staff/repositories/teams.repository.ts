@@ -1,7 +1,9 @@
 import type { SQL } from 'drizzle-orm';
+import type { AreaGrants } from '../staff.grants';
 import type { Database } from '@/db/client';
-import { and, asc, count, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, asc, count, eq, ilike, inArray, isNull, sql } from 'drizzle-orm';
 import { teamLocations, teams, tenantMemberships, users } from '@/db/schema';
+import { areaGrantsFor, firstNodeOutside } from '../staff.grants';
 
 export type TeamRecord = typeof teams.$inferSelect & { memberCount: number };
 
@@ -26,6 +28,14 @@ export class TeamsRepository {
 
   get database(): Database {
     return this.db;
+  }
+
+  matchesStatus(status: typeof teams.status.enumValues[number]): SQL {
+    return eq(teams.status, status);
+  }
+
+  nameMatches(term: string): SQL {
+    return ilike(teams.name, `%${term}%`);
   }
 
   async list(tenantId: string, conditions: SQL[], page: { limit: number; offset: number }): Promise<TeamRecord[]> {
@@ -171,6 +181,14 @@ export class TeamsRepository {
       ));
 
     return rows.map(row => row.userId);
+  }
+
+  async areaGrants(owners: { membershipIds?: readonly string[]; teamIds?: readonly string[] }): Promise<AreaGrants> {
+    return areaGrantsFor(this.db, owners);
+  }
+
+  async firstNodeOutside(ids: readonly string[], granted: readonly string[]): Promise<boolean> {
+    return firstNodeOutside(this.db, ids, granted);
   }
 
   private live(tenantId: string, conditions: SQL[]): SQL {

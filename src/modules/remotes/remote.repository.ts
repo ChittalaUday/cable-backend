@@ -1,25 +1,43 @@
 import type { SQL } from 'drizzle-orm';
-import type { RemoteDeviceType } from '@/constants/remotes';
 import type { Database } from '@/db/client';
+import type { RemoteCaptureRecord, RemoteRecord } from '@/db/schema';
 import { and, asc, eq, ilike, isNull, or, sql } from 'drizzle-orm';
-import { remotes } from '@/db/schema';
+import { remoteCaptures, remotes } from '@/db/schema';
+
+export interface RemoteListFilter {
+  deviceType?: string;
+  brand?: string;
+  search?: string;
+}
+
+export type RemoteSummaryRow = Omit<RemoteRecord, 'buttons'> & { buttonCount: number };
 
 export class RemoteRepository {
   constructor(private readonly db: Database) {}
 
-  async listRemotes(tenantId: string, query: { deviceType?: string; brand?: string; q?: string }) {
-    const conditions: SQL[] = [
-      or(isNull(remotes.tenantId), eq(remotes.tenantId, tenantId))!,
-    ];
+  /** The audit trail is written by the service but must land on this same executor. */
+  get database(): Database {
+    return this.db;
+  }
 
-    if (query.deviceType !== undefined)
-      conditions.push(eq(remotes.deviceType, query.deviceType as RemoteDeviceType));
+  // The shared library rows carry tenant_id NULL; every read has to let those
+  // through alongside the caller's own captures, which is why this is `or` and
+  // not the usual flat tenant equality.
+  private visibleTo(tenantId: string): SQL {
+    return or(isNull(remotes.tenantId), eq(remotes.tenantId, tenantId))!;
+  }
 
-    if (query.brand !== undefined)
-      conditions.push(ilike(remotes.brand, query.brand));
+  async listRemotes(tenantId: string, filter: RemoteListFilter): Promise<RemoteSummaryRow[]> {
+    const conditions: SQL[] = [this.visibleTo(tenantId)];
 
-    if (query.q !== undefined && query.q.trim() !== '') {
-      const pattern = `%${query.q.trim()}%`;
+    if (filter.deviceType !== undefined)
+      conditions.push(eq(remotes.deviceType, filter.deviceType as RemoteRecord['deviceType']));
+
+    if (filter.brand !== undefined)
+      conditions.push(ilike(remotes.brand, filter.brand));
+
+    if (filter.search !== undefined && filter.search.trim() !== '') {
+      const pattern = `%${filter.search.trim()}%`;
       conditions.push(or(ilike(remotes.brand, pattern), ilike(remotes.model, pattern))!);
     }
 
@@ -39,23 +57,28 @@ export class RemoteRepository {
       })
       .from(remotes)
       .where(and(...conditions))
-      .orderBy(asc(remotes.brand), asc(remotes.model));
+      .orderBy(asc(remotes.deviceType), asc(remotes.brand), asc(remotes.model));
   }
 
-  async findRemoteById(tenantId: string, id: string) {
+  async findRemoteById(tenantId: string, id: string): Promise<RemoteRecord | null> {
     const [row] = await this.db
       .select()
       .from(remotes)
-      .where(and(
-        eq(remotes.id, id),
-        or(isNull(remotes.tenantId), eq(remotes.tenantId, tenantId)),
-      ))
+      .where(and(eq(remotes.id, id), this.visibleTo(tenantId)))
       .limit(1);
 
     return row ?? null;
   }
 
-  async createRemote(data: typeof remotes.$inferInsert) {
+  async findCaptures(remoteId: string): Promise<RemoteCaptureRecord[]> {
+    return this.db
+      .select()
+      .from(remoteCaptures)
+      .where(eq(remoteCaptures.remoteId, remoteId))
+      .orderBy(asc(remoteCaptures.buttonName));
+  }
+
+  async createRemote(data: typeof remotes.$inferInsert): Promise<RemoteRecord> {
     const [created] = await this.db.insert(remotes).values(data).returning();
     return created!;
   }

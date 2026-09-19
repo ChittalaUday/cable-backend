@@ -1,4 +1,5 @@
 import type { SQL } from 'drizzle-orm';
+import type { HydratedRow, Takings } from './payment.repository';
 import type {
   CollectionPage,
   CollectionResponse,
@@ -7,40 +8,25 @@ import type {
   ReverseCollectionBody,
 } from './payment.schema';
 import type { Database, Transaction } from '@/db/client';
-import type { NewCollection } from '@/db/schema';
+import type { CollectionAccessory, NewCollection } from '@/db/schema';
 import type { CollectableLine } from '@/modules/customers/customers.balance';
 import type { RequestAccess } from '@/modules/iam/access.service';
 import type { PermissionScope } from '@/security/permissions';
 import { Buffer } from 'node:buffer';
 import { randomUUID } from 'node:crypto';
 import Decimal from 'decimal.js';
-import { and, eq, sql } from 'drizzle-orm';
 import { AUDIT_ENTITIES } from '@/constants/audit';
 import { COLLECTION_OUTCOME, PAYMENT_METHOD } from '@/constants/billing';
 import { TRANSACTION_TYPE } from '@/constants/crm';
-import { accountTransactions, collections, pointOf } from '@/db/schema';
 import { ERROR_CODES } from '@/errors';
 import { badRequest, conflict, forbidden, notFound } from '@/errors/domain-error';
 import { isUniqueViolation } from '@/errors/postgres';
 import { audit } from '@/modules/audit/audit.service';
-import {
-  applyDuesPayment,
-  findCollectableLine,
-  lockCustomer,
-} from '@/modules/customers/customers.balance';
 import { locationScopeFor, requireScope } from '@/modules/iam/access.service';
-import { underAnyGrant, withinGrantedSubtree } from '@/security/location-scope';
 import { PERMISSIONS } from '@/security/permissions';
+import { PaymentRepository } from './payment.repository';
 
 const ZERO = new Decimal(0);
-
-interface CollectionAccessory {
-  catalogId: string;
-  name: string;
-  quantity: number;
-  unitPrice: string;
-  amount: string;
-}
 
 export interface CollectionAnnouncer {
   (event: {
@@ -73,48 +59,15 @@ function decodeCursor(cursor: string): { collectedAt: Date; id: string } {
   return { collectedAt, id };
 }
 
-interface Takings extends Record<string, unknown> {
-  duesPaid: string;
-  accessoryAmount: string;
-  totalCollected: string;
-  receipts: number;
-}
-
-interface HydratedRow extends Record<string, unknown> {
-  id: string;
-  customerId: string;
-  customerName: string | null;
-  customerCode: string | null;
-  subscriptionId: string | null;
-  serviceAccountNumber: string | null;
-  locationId: string | null;
-  locationPath: string | null;
-  collectedBy: string;
-  collectorName: string | null;
-  outcome: CollectionResponse['outcome'];
-  method: CollectionResponse['method'];
-  dueAmount: string;
-  duesPaid: string;
-  accessoryAmount: string;
-  totalCollected: string;
-  balanceAfter: string;
-  accessories: CollectionAccessory[] | null;
-  reversesId: string | null;
-  reversedById: string | null;
-  reason: string | null;
-  notes: string | null;
-  reference: string;
-  latitude: string | null;
-  longitude: string | null;
-  gpsAccuracyM: string | null;
-  collectedAt: Date | string;
-}
-
 export class PaymentService {
+  private readonly repo: PaymentRepository;
+
   constructor(
-    private readonly db: Database,
+    repoOrDb: PaymentRepository | Database,
     private readonly announce: CollectionAnnouncer = () => {},
-  ) {}
+  ) {
+    this.repo = repoOrDb instanceof PaymentRepository ? repoOrDb : new PaymentRepository(repoOrDb);
+  }
 
   async record(access: RequestAccess, input: RecordCollectionBody): Promise<CollectionResponse> {
     const replay = await this.replayOf(access, input.reference);
@@ -158,8 +111,8 @@ export class PaymentService {
     const scope = requireScope(access, PERMISSIONS.PAYMENTS_COLLECT);
 
     try {
-      return await this.db.transaction(async (tx) => {
-        const customer = await lockCustomer(tx, access.tenantId, input.customerId);
+      return await this.repo.inTransaction(async (tx) => {
+        const customer = await this.repo.lockCustomer(tx, access.tenantId, input.customerId);
 
         if (customer === null)
           throw notFound('Customer');
@@ -187,7 +140,7 @@ export class PaymentService {
           remarks: input.notes ?? null,
         });
 
-        const [row] = await tx.insert(collections).values(collectionRow({
+        const row = await this.repo.insertCollection(tx, collectionRow({
           id,
           access,
           input,
@@ -196,17 +149,19 @@ export class PaymentService {
           outcome,
           dueAmount,
           duesPaid,
+          accessoryAmount,
+          accessories,
           transactionId,
           collectedAt,
-        })).returning();
+        }));
 
         await audit.created(tx, access.audit, {
           entityType: AUDIT_ENTITIES.PAYMENT_COLLECTION,
           entityId: id,
-          after: row!,
+          after: row,
         });
 
-        return { ...row!, customerUserId: customer.userId };
+        return { ...row, customerUserId: customer.userId };
       });
     }
     catch (error) {
@@ -232,38 +187,39 @@ export class PaymentService {
 
     const reversalId = randomUUID();
 
-    const created = await this.db.transaction(async (tx) => {
-      const [original] = await tx.select().from(collections).where(and(eq(collections.id, id), eq(collections.tenantId, access.tenantId)));
+    const created = await this.repo.inTransaction(async (tx) => {
+      const original = await this.repo.findForReversal(tx, access.tenantId, id);
 
-      if (original === undefined)
+      if (original === null)
         throw notFound('Collection');
 
       if (original.outcome === COLLECTION_OUTCOME.REFUND)
         throw conflict('That row is itself a refund');
 
-      const [already] = await tx.select({ id: collections.id }).from(collections).where(and(eq(collections.reversesId, id), eq(collections.tenantId, access.tenantId)));
-
-      if (already !== undefined)
+      if (await this.repo.findReversalOf(tx, access.tenantId, id) !== null)
         throw conflict('That receipt has already been refunded');
 
-      const customer = await lockCustomer(tx, access.tenantId, original.customerId);
+      const customer = await this.repo.lockCustomer(tx, access.tenantId, original.customerId);
       if (customer === null)
         throw notFound('Customer');
 
       const duesPaid = new Decimal(original.duesPaid);
-      const takings = duesPaid;
+      // An accessory sold on the visit was charged to the account, so undoing
+      // the receipt has to take that charge back off too — not just the dues.
+      const accessoryAmount = new Decimal(original.accessoryAmount);
+      const takings = duesPaid.plus(accessoryAmount);
 
       const transactionId = await this.unpostTakings(tx, {
         reversalId,
         access,
         original,
         duesPaid,
-        accessoryAmount: ZERO,
+        accessoryAmount,
         takings,
         reason: input.reason,
       });
 
-      const [row] = await tx.insert(collections).values({
+      const row = await this.repo.insertCollection(tx, {
         id: reversalId,
         tenantId: access.tenantId,
         customerId: original.customerId,
@@ -274,22 +230,24 @@ export class PaymentService {
         method: original.method,
         dueAmount: original.balanceAfter,
         duesPaid: duesPaid.negated().toFixed(2),
+        accessoryAmount: accessoryAmount.negated().toFixed(2),
+        accessories: original.accessories,
         balanceAfter: new Decimal(original.balanceAfter).plus(duesPaid).toFixed(2),
         transactionId,
         reversesId: original.id,
         reason: input.reason,
         reference: input.reference,
         collectedAt: new Date(),
-      }).returning();
+      });
 
       await audit.created(tx, access.audit, {
         entityType: AUDIT_ENTITIES.PAYMENT_COLLECTION,
         entityId: reversalId,
-        after: row!,
+        after: row,
         metadata: { reverses: original.id, reference: original.reference },
       });
 
-      return { ...row!, customerUserId: customer.userId };
+      return { ...row, customerUserId: customer.userId };
     });
 
     this.announce({
@@ -308,28 +266,10 @@ export class PaymentService {
     if (reach === null)
       return emptyPage(query.limit);
 
-    const where = sql.join(filtersFor(access, query, reach), sql` AND `);
-    const paged = query.cursor === undefined ? where : sql`${where} AND ${afterCursor(query.cursor)}`;
+    const cursor = query.cursor === undefined ? null : decodeCursor(query.cursor);
+    const { rows, totals } = await this.repo.listHydrated(access.tenantId, access.userId, query, reach, cursor);
 
-    const [rows, totals] = await Promise.all([
-      this.db.execute<HydratedRow>(sql`
-        ${this.selectCollections()}
-        WHERE ${paged}
-        ORDER BY c.collected_at DESC, c.id DESC
-        LIMIT ${query.limit + 1}
-      `),
-      this.db.execute<Takings>(sql`
-        SELECT coalesce(sum(c.dues_paid), 0) "duesPaid",
-               '0.00'::numeric(12, 2) "accessoryAmount",
-               coalesce(sum(c.total_collected), 0) "totalCollected",
-               count(*)::int "receipts"
-        FROM billing.collections c
-        LEFT JOIN crm.subscriptions s ON s.id = c.subscription_id
-        WHERE ${where}
-      `),
-    ]);
-
-    return pageOf(rows.rows, totals.rows[0], query.limit);
+    return pageOf(rows, totals, query.limit);
   }
 
   async get(access: RequestAccess, id: string): Promise<CollectionResponse> {
@@ -338,36 +278,21 @@ export class PaymentService {
     if (reach === null)
       throw notFound('Collection');
 
-    const { rows } = await this.db.execute<HydratedRow>(sql`
-      ${this.selectCollections()}
-      WHERE c.tenant_id = ${access.tenantId} AND c.id = ${id} AND ${reach}
-    `);
+    const row = await this.repo.findHydrated(access.tenantId, id, reach);
 
-    if (rows[0] === undefined)
+    if (row === null)
       throw notFound('Collection');
 
-    return toResponse(rows[0]);
+    return toResponse(row);
   }
 
   private reachCondition(access: RequestAccess): SQL | null {
     const scope = requireScope(access, PERMISSIONS.PAYMENTS_VIEW);
 
-    if (scope === 'OWN') {
-      return sql`EXISTS (
-        SELECT 1 FROM crm.customers own
-        WHERE own.id = c.customer_id AND own.user_id = ${access.userId}
-      )`;
-    }
-
-    const reach = locationScopeFor(access, PERMISSIONS.PAYMENTS_VIEW);
-
-    if (reach.kind === 'ALL_TENANT_LOCATIONS')
-      return sql`true`;
-
-    if (reach.nodeIds.length === 0)
-      return null;
-
-    return withinGrantedSubtree(sql`s.installation_location_id`, reach.nodeIds);
+    return this.repo.reachCondition(
+      scope === 'OWN' ? 'OWN' : locationScopeFor(access, PERMISSIONS.PAYMENTS_VIEW),
+      access.userId,
+    );
   }
 
   private async resolveLine(
@@ -375,7 +300,7 @@ export class PaymentService {
     tenantId: string,
     input: RecordCollectionBody,
   ): Promise<CollectableLine | null> {
-    const lines = await findCollectableLine(tx, tenantId, input.customerId, input.subscriptionId ?? null);
+    const lines = await this.repo.collectableLines(tx, tenantId, input.customerId, input.subscriptionId ?? null);
 
     if (input.subscriptionId !== undefined && lines.length === 0)
       throw notFound('Subscription');
@@ -407,11 +332,7 @@ export class PaymentService {
     if (reach.nodeIds.length === 0 || locationId === null)
       throw notFound('Customer');
 
-    const { rows } = await tx.execute<{ reached: boolean }>(sql`
-      SELECT ${underAnyGrant(sql`${locationId}::uuid`, reach.nodeIds)} AS reached
-    `);
-
-    if (rows[0]?.reached !== true)
+    if (!await this.repo.nodeUnderGrant(tx, locationId, reach.nodeIds))
       throw notFound('Customer');
   }
 
@@ -424,13 +345,7 @@ export class PaymentService {
       return [];
 
     const ids = [...new Set(lines.map(line => line.catalogId))];
-    const { rows } = await tx.execute<{ id: string; name: string }>(sql`
-      SELECT id, name FROM inventory.item_catalog
-      WHERE tenant_id = ${tenantId} AND id = ANY(${sql.param(ids)}::uuid[])
-        AND deleted_at IS NULL
-    `);
-
-    const known = new Map(rows.map(row => [row.id, row.name]));
+    const known = await this.repo.accessoryNames(tx, tenantId, ids);
 
     return lines.map((line) => {
       const name = known.get(line.catalogId);
@@ -462,7 +377,7 @@ export class PaymentService {
     if (input.takings.isZero() || original.subscriptionId === null)
       return null;
 
-    const [line] = await findCollectableLine(tx, input.access.tenantId, original.customerId, original.subscriptionId);
+    const [line] = await this.repo.collectableLines(tx, input.access.tenantId, original.customerId, original.subscriptionId);
 
     if (line === undefined)
       throw notFound('Subscription');
@@ -479,7 +394,7 @@ export class PaymentService {
 
     let running = new Decimal(line.outstandingBalance).plus(input.takings);
 
-    const [cash] = await tx.insert(accountTransactions).values({
+    const cashId = await this.repo.insertTransaction(tx, {
       ...common,
       transactionNo: receiptNo('REV', input.reversalId),
       transactionType: TRANSACTION_TYPE.REVERSAL,
@@ -487,12 +402,12 @@ export class PaymentService {
       credit: '0',
       closingBalance: running.toFixed(2),
       remarks: `Reversal of ${original.reference}: ${input.reason}`,
-    }).returning();
+    });
 
     if (!input.accessoryAmount.isZero()) {
       running = running.minus(input.accessoryAmount);
 
-      await tx.insert(accountTransactions).values({
+      await this.repo.insertTransaction(tx, {
         ...common,
         transactionNo: receiptNo('ADJ', input.reversalId),
         transactionType: TRANSACTION_TYPE.ADJUSTMENT,
@@ -504,9 +419,9 @@ export class PaymentService {
     }
 
     if (!input.duesPaid.isZero())
-      await applyDuesPayment(tx, input.access.tenantId, original.customerId, line.id, input.duesPaid.negated().toFixed(2));
+      await this.repo.applyDuesPayment(tx, input.access.tenantId, original.customerId, line.id, input.duesPaid.negated().toFixed(2));
 
-    return cash!.id;
+    return cashId;
   }
 
   private async postTakings(tx: Transaction, input: {
@@ -536,7 +451,7 @@ export class PaymentService {
     const transactionId = await this.postLedger(tx, { ...input, line });
 
     if (!input.duesPaid.isZero())
-      await applyDuesPayment(tx, input.access.tenantId, input.customerId, line.id, input.duesPaid.toFixed(2));
+      await this.repo.applyDuesPayment(tx, input.access.tenantId, input.customerId, line.id, input.duesPaid.toFixed(2));
 
     return transactionId;
   }
@@ -567,7 +482,7 @@ export class PaymentService {
     if (!input.accessoryAmount.isZero()) {
       running = running.plus(input.accessoryAmount);
 
-      await tx.insert(accountTransactions).values({
+      await this.repo.insertTransaction(tx, {
         ...common,
         transactionNo: receiptNo('ACC', input.id),
         transactionType: TRANSACTION_TYPE.DEDUCTION,
@@ -578,7 +493,7 @@ export class PaymentService {
       });
     }
 
-    const [row] = await tx.insert(accountTransactions).values({
+    return this.repo.insertTransaction(tx, {
       ...common,
       transactionNo: receiptNo('RCP', input.id),
       transactionType: TRANSACTION_TYPE.DEPOSIT,
@@ -586,63 +501,20 @@ export class PaymentService {
       credit: input.takings.toFixed(2),
       closingBalance: running.minus(input.takings).toFixed(2),
       remarks: input.remarks,
-    }).returning();
-
-    return row!.id;
+    });
   }
 
   private async findByReference(tenantId: string, reference: string): Promise<{ id: string; collectedBy: string } | null> {
-    const [row] = await this.db
-      .select({ id: collections.id, collectedBy: collections.collectedBy })
-      .from(collections)
-      .where(and(eq(collections.tenantId, tenantId), eq(collections.reference, reference)));
-
-    return row ?? null;
-  }
-
-  private selectCollections(): SQL {
-    return sql`
-      SELECT c.id,
-             c.customer_id "customerId",
-             coalesce(u.name, cust.name) "customerName",
-             cust.customer_code "customerCode",
-             c.subscription_id "subscriptionId",
-             s.service_account_number "serviceAccountNumber",
-             s.installation_location_id "locationId",
-             lp.path "locationPath",
-             c.collected_by "collectedBy",
-             collector.name "collectorName",
-             c.outcome, c.method,
-             c.due_amount "dueAmount",
-             c.dues_paid "duesPaid",
-             '0.00'::numeric(12, 2) "accessoryAmount",
-             c.total_collected "totalCollected",
-             c.balance_after "balanceAfter",
-             '[]'::jsonb "accessories",
-             c.reverses_id "reversesId",
-             (SELECT r.id FROM billing.collections r WHERE r.reverses_id = c.id) "reversedById",
-             c.reason, c.notes, c.reference,
-             c.latitude, c.longitude, c.gps_accuracy_m "gpsAccuracyM",
-             c.collected_at "collectedAt"
-      FROM billing.collections c
-      JOIN crm.customers cust ON cust.id = c.customer_id
-      LEFT JOIN auth.users u ON u.id = cust.user_id
-      LEFT JOIN auth.users collector ON collector.id = c.collected_by
-      LEFT JOIN crm.subscriptions s ON s.id = c.subscription_id
-      LEFT JOIN geo.location_paths lp ON lp.id = s.installation_location_id
-    `;
+    return this.repo.findByReference(tenantId, reference);
   }
 
   private async hydrateOne(id: string, tenantId: string): Promise<CollectionResponse> {
-    const { rows } = await this.db.execute<HydratedRow>(sql`
-      ${this.selectCollections()}
-      WHERE c.tenant_id = ${tenantId} AND c.id = ${id}
-    `);
+    const row = await this.repo.findHydrated(tenantId, id);
 
-    if (rows[0] === undefined)
+    if (row === null)
       throw notFound('Collection');
 
-    return toResponse(rows[0]);
+    return toResponse(row);
   }
 }
 
@@ -665,47 +537,6 @@ function pageOf(rows: HydratedRow[], summary: Takings | undefined, limit: number
   };
 }
 
-function filtersFor(access: RequestAccess, query: ListCollectionsQuery, reach: SQL): SQL[] {
-  const filters: SQL[] = [sql`c.tenant_id = ${access.tenantId}`, reach];
-
-  if (query.customerId !== undefined)
-    filters.push(sql`c.customer_id = ${query.customerId}`);
-
-  if (query.collectedBy !== undefined)
-    filters.push(sql`c.collected_by = ${query.collectedBy === 'me' ? access.userId : query.collectedBy}`);
-
-  if (query.outcome !== undefined)
-    filters.push(sql`c.outcome = ${query.outcome}`);
-
-  if (query.from !== undefined)
-    filters.push(sql`c.collected_at >= ${new Date(query.from)}`);
-
-  if (query.to !== undefined)
-    filters.push(sql`c.collected_at <= ${new Date(query.to)}`);
-
-  if (query.nearLatitude !== undefined && query.nearLongitude !== undefined) {
-    filters.push(sql`c.latitude IS NOT NULL AND ST_DWithin(
-      ${pointOf(sql`c.longitude`, sql`c.latitude`)},
-      ${pointOf(sql`${query.nearLongitude}`, sql`${query.nearLatitude}`)},
-      ${query.withinM ?? 200}
-    )`);
-  }
-
-  if (query.locationId !== undefined) {
-    filters.push(sql`EXISTS (
-      SELECT 1 FROM geo.location_descendants(${query.locationId}) AS d WHERE d.id = s.installation_location_id
-    )`);
-  }
-
-  return filters;
-}
-
-function afterCursor(cursor: string): SQL {
-  const { collectedAt, id } = decodeCursor(cursor);
-
-  return sql`(c.collected_at, c.id) < (${collectedAt}, ${id}::uuid)`;
-}
-
 function pointFrom(input: RecordCollectionBody): Pick<NewCollection, 'latitude' | 'longitude' | 'gpsAccuracyM'> {
   if (input.latitude === undefined || input.longitude === undefined)
     return { latitude: null, longitude: null, gpsAccuracyM: null };
@@ -726,6 +557,8 @@ function collectionRow(input: {
   outcome: CollectionResponse['outcome'];
   dueAmount: Decimal;
   duesPaid: Decimal;
+  accessoryAmount: Decimal;
+  accessories: CollectionAccessory[];
   transactionId: string | null;
   collectedAt: Date;
 }): NewCollection {
@@ -742,6 +575,8 @@ function collectionRow(input: {
     method: paid ? input.input.method ?? PAYMENT_METHOD.CASH : null,
     dueAmount: input.dueAmount.toFixed(2),
     duesPaid: input.duesPaid.toFixed(2),
+    accessoryAmount: input.accessoryAmount.toFixed(2),
+    accessories: input.accessories,
     balanceAfter: input.dueAmount.minus(input.duesPaid).toFixed(2),
     transactionId: input.transactionId,
     reason: input.input.reason ?? null,

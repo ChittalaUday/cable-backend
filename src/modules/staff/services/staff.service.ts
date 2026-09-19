@@ -1,5 +1,4 @@
-import type { SQL } from 'drizzle-orm';
-import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import type { StaffRow } from '../repositories/staff.repository';
 import type { AreaGrants } from '../staff.grants';
 import type {
   CreateStaffBody,
@@ -10,113 +9,61 @@ import type {
   StaffResponse,
   UpdateStaffBody,
 } from '../staff.schema';
-import type * as schema from '@/db/schema';
+import type { Database, Transaction } from '@/db/client';
 import type { AccessService, RequestAccess } from '@/modules/iam/access.service';
 import type { LocationsService } from '@/modules/locations/location.service';
 import type { PermissionKey } from '@/security/permissions';
-import type { Page, PaginationQuery } from '@/utils/pagination';
-import { and, count, desc, eq, ilike, inArray, isNull, or, sql } from 'drizzle-orm';
+import type { Page } from '@/utils/pagination';
 import { SYSTEM_ROLES } from '@/config/constants';
 import { AUDIT_ENTITIES } from '@/constants/audit';
 import { MEMBERSHIP_STATUS } from '@/constants/tenancy';
-import {
-  membershipLocations,
-  teamLocations,
-  teamMemberLocations,
-  teams,
-  tenantMemberships,
-  users,
-} from '@/db/schema';
 import { ERROR_CODES, isUniqueViolation } from '@/errors';
 import { badRequest, conflict, forbidden, notFound } from '@/errors/domain-error';
 import { audit } from '@/modules/audit/audit.service';
 import { scopeFor } from '@/modules/iam/access.service';
-import { underAnyGrant } from '@/security/location-scope';
 import { hashPassword } from '@/security/password';
 import { PERMISSIONS } from '@/security/permissions';
 import { normaliseEmail } from '@/utils/email';
 import { offsetOf } from '@/utils/pagination';
-import { areaGrantsFor, assertWithinGrant, servesNode, staffReach } from '../staff.grants';
-
-type Db = NodePgDatabase<typeof schema>;
-
-interface StaffRow {
-  id: string;
-  userId: string;
-  roleId: string;
-  status: string;
-  teamId: string | null;
-  isTeamLeader: boolean;
-  createdAt: Date;
-  updatedAt: Date;
-  name: string | null;
-  email: string | null;
-  phone: string | null;
-  photoUrl: string | null;
-  teamName: string | null;
-  teamSlug: string | null;
-}
+import { StaffRepository } from '../repositories/staff.repository';
+import { assertWithinGrant, servesNode, staffReach } from '../staff.grants';
 
 type Grants = AreaGrants;
 
 const EMPTY: LocationRef[] = [];
+const STAFF_ROLES = [SYSTEM_ROLES.ADMIN, SYSTEM_ROLES.STAFF] as const;
 
 export class StaffService {
+  private readonly repo: StaffRepository;
+
   constructor(
-    private readonly db: Db,
+    repoOrDb: StaffRepository | Database,
     private readonly locations: LocationsService,
     private readonly access: AccessService,
-  ) {}
+  ) {
+    this.repo = repoOrDb instanceof StaffRepository ? repoOrDb : new StaffRepository(repoOrDb);
+  }
 
   async list(access: RequestAccess, query: ListStaffQuery): Promise<Page<StaffResponse>> {
     const reach = staffReach(access, PERMISSIONS.STAFF_VIEW);
     if (reach === null)
       return { items: [], total: 0, page: query.page, limit: query.limit };
 
-    const filters: (SQL | undefined)[] = [
-      eq(tenantMemberships.tenantId, access.tenantId),
-      isNull(tenantMemberships.deletedAt),
-      inArray(tenantMemberships.roleId, [SYSTEM_ROLES.ADMIN, SYSTEM_ROLES.STAFF]),
-      ...reach,
-    ];
+    const filters = this.repo.buildFilters(access.tenantId, STAFF_ROLES, reach, {
+      ...query,
+      ...(query.locationId === undefined ? {} : { nodeCondition: servesNode(query.locationId) }),
+    });
 
-    if (query.roleId !== undefined)
-      filters.push(eq(tenantMemberships.roleId, query.roleId));
-    if (query.status !== undefined)
-      filters.push(eq(tenantMemberships.status, query.status));
-    if (query.teamId !== undefined) {
-      filters.push(query.teamId === 'null'
-        ? isNull(tenantMemberships.teamId)
-        : eq(tenantMemberships.teamId, query.teamId));
-    }
-    if (query.locationId !== undefined)
-      filters.push(servesNode(query.locationId));
-    if (query.q !== undefined) {
-      const term = `%${query.q}%`;
-      filters.push(or(ilike(users.name, term), ilike(users.email, term), ilike(users.phone, term)));
-    }
-
-    const where = and(...filters);
-
-    const [rows, [totals]] = await Promise.all([
-      this.selectStaff()
-        .where(where)
-        .orderBy(desc(tenantMemberships.createdAt), desc(tenantMemberships.id))
-        .limit(query.limit)
-        .offset(offsetOf(query as PaginationQuery)),
-      this.db
-        .select({ total: count() })
-        .from(tenantMemberships)
-        .innerJoin(users, and(eq(users.id, tenantMemberships.userId), isNull(users.deletedAt)))
-        .leftJoin(teams, eq(teams.id, tenantMemberships.teamId))
-        .where(where),
-    ]);
+    const { rows, total } = await this.repo.listStaff(filters, {
+      limit: query.limit,
+      offset: offsetOf(query),
+    });
 
     const grants = await this.grantsFor(rows);
 
     return {
       items: rows.map(row => this.present(row, grants)),
-      total: totals?.total ?? 0,
+      total,
       page: query.page,
       limit: query.limit,
     };
@@ -129,7 +76,9 @@ export class StaffService {
   }
 
   async create(access: RequestAccess, input: CreateStaffBody): Promise<StaffResponse> {
-    if (input.email === undefined && input.phone === undefined)
+    const email = normaliseEmail(input.email);
+
+    if (email === null && input.phone === undefined)
       throw badRequest(ERROR_CODES.VALIDATION_FAILED, 'An email or a phone number is required', [{ field: 'email', issue: 'One of email or phone must be present' }]);
 
     const roleId = input.roleId ?? SYSTEM_ROLES.STAFF;
@@ -137,47 +86,29 @@ export class StaffService {
     await this.assertGrantable(access, input.locationIds ?? [], PERMISSIONS.STAFF_CREATE);
     await this.assertTeamOfTenant(access.tenantId, input.teamId ?? null);
 
-    const email = normaliseEmail(input.email);
-
-    const id = await this.db.transaction(async (tx) => {
+    const id = await this.repo.inTransaction(async (tx) => {
       const userId = await this.resolveUser(tx, { ...input, email });
+      const existing = await this.repo.findMembershipOfUser(tx, access.tenantId, userId);
 
-      const [existing] = await tx
-        .select({ id: tenantMemberships.id, deletedAt: tenantMemberships.deletedAt })
-        .from(tenantMemberships)
-        .where(and(eq(tenantMemberships.userId, userId), eq(tenantMemberships.tenantId, access.tenantId)))
-        .limit(1);
-
-      if (existing !== undefined && existing.deletedAt === null)
+      if (existing !== null && existing.deletedAt === null)
         throw conflict('This person is already a member of this tenant');
 
-      const values = {
+      const membershipId = await this.repo.upsertMembership(tx, {
         userId,
         tenantId: access.tenantId,
         roleId,
         status: input.status ?? 'active' as const,
         teamId: input.teamId ?? null,
-      };
+      }, existing?.id ?? null);
 
-      const [membership] = existing === undefined
-        ? await tx.insert(tenantMemberships).values(values).returning({ id: tenantMemberships.id })
-        : await tx
-            .update(tenantMemberships)
-            .set({ ...values, deletedAt: null, updatedAt: new Date() })
-            .where(eq(tenantMemberships.id, existing.id))
-            .returning({ id: tenantMemberships.id });
+      // A restored membership must not inherit the areas it carried before.
+      await this.repo.replaceOwnLocations(membershipId, [...new Set(input.locationIds ?? [])], tx);
 
-      if (input.locationIds !== undefined && input.locationIds.length > 0) {
-        await tx.insert(membershipLocations).values(
-          [...new Set(input.locationIds)].map(locationId => ({ membershipId: membership!.id, locationId })),
-        );
-      }
-
-      return membership!.id;
+      return membershipId;
     });
 
     const created = await this.byId(access.tenantId, id);
-    await audit.created(this.db, access.audit, { entityType: AUDIT_ENTITIES.STAFF, entityId: id, after: created });
+    await audit.created(this.repo.database, access.audit, { entityType: AUDIT_ENTITIES.STAFF, entityId: id, after: created });
 
     return created;
   }
@@ -194,49 +125,28 @@ export class StaffService {
 
     const leavesTeam = patch.teamId !== undefined && patch.teamId !== before.team?.id;
 
-    await this.db.transaction(async (tx) => {
-      if (Object.keys(membership).length > 0) {
-        await tx
-          .update(tenantMemberships)
-          .set({ ...membership, updatedAt: new Date() })
-          .where(and(
-            eq(tenantMemberships.tenantId, access.tenantId),
-            eq(tenantMemberships.id, id),
-            isNull(tenantMemberships.deletedAt),
-          ));
-      }
+    await this.repo.inTransaction(async (tx) => {
+      if (Object.keys(membership).length > 0)
+        await this.repo.updateMembership(tx, access.tenantId, id, membership);
 
       if (leavesTeam) {
-        await tx.delete(teamMemberLocations).where(eq(teamMemberLocations.membershipId, id));
-        await tx
-          .update(teams)
-          .set({ leaderMembershipId: null, updatedAt: new Date() })
-          .where(and(eq(teams.tenantId, access.tenantId), eq(teams.leaderMembershipId, id)));
+        await this.repo.clearTeamAreas(tx, id);
+        await this.repo.standDownAsLeader(tx, access.tenantId, id);
       }
 
       if (name !== undefined)
-        await tx.update(users).set({ name, updatedAt: new Date() }).where(eq(users.id, before.userId));
+        await this.repo.renameUser(tx, before.userId, name);
     });
 
     this.access.invalidate(before.userId, access.tenantId);
     const after = await this.byId(access.tenantId, id);
-    await audit.updated(this.db, access.audit, { entityType: AUDIT_ENTITIES.STAFF, entityId: id, before, after });
+    await audit.updated(this.repo.database, access.audit, { entityType: AUDIT_ENTITIES.STAFF, entityId: id, before, after });
 
     return after;
   }
 
   async remove(access: RequestAccess, id: string): Promise<void> {
-    const [existing] = await this.db
-      .select({ id: tenantMemberships.id })
-      .from(tenantMemberships)
-      .where(and(
-        eq(tenantMemberships.tenantId, access.tenantId),
-        eq(tenantMemberships.id, id),
-        isNull(tenantMemberships.deletedAt),
-      ))
-      .limit(1);
-
-    if (existing === undefined)
+    if (!await this.repo.membershipExists(access.tenantId, id))
       return;
 
     const before = await this.readFor(access, id, PERMISSIONS.STAFF_DELETE);
@@ -244,28 +154,18 @@ export class StaffService {
     if (before.userId === access.userId)
       throw conflict('You cannot remove your own membership');
 
-    await this.db.transaction(async (tx) => {
-      await tx
-        .update(tenantMemberships)
-        .set({ deletedAt: new Date(), status: MEMBERSHIP_STATUS.SUSPENDED, teamId: null, updatedAt: new Date() })
-        .where(and(
-          eq(tenantMemberships.tenantId, access.tenantId),
-          eq(tenantMemberships.id, id),
-          isNull(tenantMemberships.deletedAt),
-        ));
+    await this.repo.inTransaction(async (tx) => {
+      await this.repo.softDeleteMembership(tx, access.tenantId, id, MEMBERSHIP_STATUS.SUSPENDED);
 
       // The grants went with the membership when this was a hard delete; they still do,
       // so taking the person back on does not silently restore last year's areas.
-      await tx.delete(membershipLocations).where(eq(membershipLocations.membershipId, id));
-      await tx.delete(teamMemberLocations).where(eq(teamMemberLocations.membershipId, id));
-      await tx
-        .update(teams)
-        .set({ leaderMembershipId: null, updatedAt: new Date() })
-        .where(and(eq(teams.tenantId, access.tenantId), eq(teams.leaderMembershipId, id)));
+      await this.repo.replaceOwnLocations(id, [], tx);
+      await this.repo.replaceTeamAreas(id, [], tx);
+      await this.repo.standDownAsLeader(tx, access.tenantId, id);
     });
 
     this.access.invalidate(before.userId, access.tenantId);
-    await audit.deleted(this.db, access.audit, { entityType: AUDIT_ENTITIES.STAFF, entityId: id, before });
+    await audit.deleted(this.repo.database, access.audit, { entityType: AUDIT_ENTITIES.STAFF, entityId: id, before });
   }
 
   async setLocations(access: RequestAccess, id: string, input: SetLocationsBody): Promise<StaffResponse> {
@@ -273,15 +173,11 @@ export class StaffService {
     const wanted = [...new Set(input.locationIds)];
     await this.assertGrantable(access, wanted, PERMISSIONS.STAFF_UPDATE);
 
-    await this.db.transaction(async (tx) => {
-      await tx.delete(membershipLocations).where(eq(membershipLocations.membershipId, id));
-      if (wanted.length > 0)
-        await tx.insert(membershipLocations).values(wanted.map(locationId => ({ membershipId: id, locationId })));
-    });
+    await this.repo.replaceOwnLocations(id, wanted);
 
     this.access.invalidate(before.userId, access.tenantId);
     const after = await this.byId(access.tenantId, id);
-    await audit.updated(this.db, access.audit, {
+    await audit.updated(this.repo.database, access.audit, {
       entityType: AUDIT_ENTITIES.STAFF_LOCATIONS,
       entityId: id,
       before: { locations: before.locations },
@@ -301,15 +197,11 @@ export class StaffService {
     await this.locations.assertOwned(access, wanted);
     await this.assertWithinTeamPatch(before.team.id, wanted);
 
-    await this.db.transaction(async (tx) => {
-      await tx.delete(teamMemberLocations).where(eq(teamMemberLocations.membershipId, id));
-      if (wanted.length > 0)
-        await tx.insert(teamMemberLocations).values(wanted.map(locationId => ({ membershipId: id, locationId })));
-    });
+    await this.repo.replaceTeamAreas(id, wanted);
 
     this.access.invalidate(before.userId, access.tenantId);
     const after = await this.byId(access.tenantId, id);
-    await audit.updated(this.db, access.audit, {
+    await audit.updated(this.repo.database, access.audit, {
       entityType: AUDIT_ENTITIES.STAFF_TEAM_AREAS,
       entityId: id,
       before: { teamAreas: before.teamAreas },
@@ -320,68 +212,27 @@ export class StaffService {
     return after;
   }
 
+  async memberUserIds(tenantId: string, teamId: string): Promise<string[]> {
+    return this.repo.memberUserIds(tenantId, teamId);
+  }
+
   private async assertWithinTeamPatch(teamId: string, ids: readonly string[]): Promise<void> {
     if (ids.length === 0)
       return;
 
-    const patch = await this.db
-      .select({ id: teamLocations.locationId })
-      .from(teamLocations)
-      .where(eq(teamLocations.teamId, teamId));
+    const patch = await this.repo.teamLocationIds(teamId);
 
     if (patch.length === 0)
       throw badRequest(ERROR_CODES.VALIDATION_FAILED, 'This team has no areas yet — grant the team some first');
 
-    const outside = await this.db.execute<{ id: string }>(sql`
-      SELECT w.id
-      FROM unnest(${sql.param([...ids])}::uuid[]) AS w(id)
-      WHERE NOT ${underAnyGrant(sql`w.id`, patch.map(node => node.id))}
-      LIMIT 1
-    `);
-
-    if (outside.rows.length > 0)
+    if (await this.repo.firstNodeOutside(ids, patch))
       throw badRequest(ERROR_CODES.VALIDATION_FAILED, 'That area is outside this team\'s own areas');
   }
 
-  async memberUserIds(tenantId: string, teamId: string): Promise<string[]> {
-    const rows = await this.db
-      .select({ userId: tenantMemberships.userId })
-      .from(tenantMemberships)
-      .where(and(eq(tenantMemberships.tenantId, tenantId), eq(tenantMemberships.teamId, teamId), isNull(tenantMemberships.deletedAt)));
-
-    return rows.map(row => row.userId);
-  }
-
-  private selectStaff() {
-    return this.db
-      .select({
-        id: tenantMemberships.id,
-        userId: tenantMemberships.userId,
-        roleId: tenantMemberships.roleId,
-        status: tenantMemberships.status,
-        teamId: tenantMemberships.teamId,
-        isTeamLeader: sql<boolean>`coalesce(${teams.leaderMembershipId} = ${tenantMemberships.id}, false)`,
-        createdAt: tenantMemberships.createdAt,
-        updatedAt: tenantMemberships.updatedAt,
-        name: users.name,
-        email: users.email,
-        phone: users.phone,
-        photoUrl: users.photoUrl,
-        teamName: teams.name,
-        teamSlug: teams.slug,
-      })
-      .from(tenantMemberships)
-      .innerJoin(users, and(eq(users.id, tenantMemberships.userId), isNull(users.deletedAt)))
-      .leftJoin(teams, eq(teams.id, tenantMemberships.teamId))
-      .$dynamic();
-  }
-
   private async byId(tenantId: string, id: string): Promise<StaffResponse> {
-    const [row] = await this.selectStaff()
-      .where(and(eq(tenantMemberships.tenantId, tenantId), eq(tenantMemberships.id, id), isNull(tenantMemberships.deletedAt)))
-      .limit(1);
+    const row = await this.repo.findStaffById(tenantId, id);
 
-    if (row === undefined)
+    if (row === null)
       throw notFound('Staff member');
 
     return this.present(row, await this.grantsFor([row]));
@@ -392,11 +243,9 @@ export class StaffService {
     if (reach === null)
       throw notFound('Staff member');
 
-    const [row] = await this.selectStaff()
-      .where(and(eq(tenantMemberships.tenantId, access.tenantId), eq(tenantMemberships.id, id), isNull(tenantMemberships.deletedAt), ...reach))
-      .limit(1);
+    const row = await this.repo.findStaffById(access.tenantId, id, reach);
 
-    if (row === undefined)
+    if (row === null)
       throw notFound('Staff member');
 
     return row;
@@ -409,7 +258,7 @@ export class StaffService {
   }
 
   private async grantsFor(rows: readonly StaffRow[]): Promise<Grants> {
-    return areaGrantsFor(this.db, {
+    return this.repo.areaGrants({
       membershipIds: rows.map(row => row.id),
       teamIds: rows.map(row => row.teamId).filter((id): id is string => id !== null),
     });
@@ -445,19 +294,10 @@ export class StaffService {
     return row.teamId === null ? EMPTY : (grants.team.get(row.teamId) ?? EMPTY);
   }
 
-  private async resolveUser(tx: Parameters<Parameters<Db['transaction']>[0]>[0], input: Omit<CreateStaffBody, 'email'> & { email: string | null }): Promise<string> {
-    const matches = [
-      input.email === null ? undefined : eq(users.email, input.email),
-      input.phone === undefined ? undefined : eq(users.phone, input.phone),
-    ].filter(clause => clause !== undefined);
+  private async resolveUser(tx: Transaction, input: Omit<CreateStaffBody, 'email'> & { email: string | null }): Promise<string> {
+    const existing = await this.repo.findUserByIdentity(tx, { email: input.email, phone: input.phone });
 
-    const [existing] = await tx
-      .select({ id: users.id, name: users.name, deletedAt: users.deletedAt })
-      .from(users)
-      .where(or(...matches))
-      .limit(1);
-
-    if (existing !== undefined) {
+    if (existing !== null) {
       // The row still holds the email/phone, so it must be restored rather than re-created.
       if (existing.deletedAt !== null)
         throw conflict('This email or phone belongs to a removed account; restore it first');
@@ -469,17 +309,12 @@ export class StaffService {
     }
 
     try {
-      const [created] = await tx
-        .insert(users)
-        .values({
-          name: input.name,
-          email: input.email,
-          phone: input.phone ?? null,
-          passwordHash: input.password === undefined ? null : await hashPassword(input.password),
-        })
-        .returning({ id: users.id });
-
-      return created!.id;
+      return await this.repo.insertUser(tx, {
+        name: input.name,
+        email: input.email,
+        phone: input.phone ?? null,
+        passwordHash: input.password === undefined ? null : await hashPassword(input.password),
+      });
     }
     catch (error) {
       if (isUniqueViolation(error))
@@ -497,18 +332,12 @@ export class StaffService {
     if (teamId === null)
       return;
 
-    const [team] = await this.db
-      .select({ id: teams.id })
-      .from(teams)
-      .where(and(eq(teams.tenantId, tenantId), eq(teams.id, teamId), isNull(teams.deletedAt)))
-      .limit(1);
-
-    if (team === undefined)
+    if (!await this.repo.teamExists(tenantId, teamId))
       throw notFound('Team');
   }
 
   private async assertGrantable(access: RequestAccess, ids: readonly string[], key: PermissionKey): Promise<void> {
     await this.locations.assertOwned(access, ids);
-    await assertWithinGrant(this.db, access, { ids, key });
+    await assertWithinGrant(this.repo, access, { ids, key });
   }
 }

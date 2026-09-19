@@ -27,6 +27,7 @@ import {
 } from '@/db/schema';
 import { FLOOR_NAMES, parseAddress } from './parse-address';
 import { TIDCO_BUILDING, TIDCO_TOWN } from './seed-locations';
+import { ensureSystemRoles } from './seed-roles';
 
 const pool = new pg.Pool({ connectionString: env.DATABASE_URL, max: 2 });
 const db = drizzle(pool);
@@ -301,6 +302,11 @@ async function buildLocationTree(tenantId: string, addresses: readonly string[])
 
 async function run() {
   console.log('🚀 Starting MSO Data Seeding...');
+
+  // This seed can be the first thing to touch a database, and it creates the
+  // tenant below. Roles are global and every membership references one, so they
+  // have to exist before a tenant does anybody any good.
+  await ensureSystemRoles(db);
 
   let [tenant] = await db.select().from(tenants).where(sql`${tenants.code} = 'SSCN'`).limit(1);
   if (!tenant) {

@@ -1,6 +1,7 @@
 import type { SQL } from 'drizzle-orm';
 import type { CustomerPage, ListCustomersQuery } from './customer.schema';
-import type { Database } from '@/db/client';
+import type { CollectableLine, LockedCustomer } from './customers.balance';
+import type { Database, Transaction } from '@/db/client';
 import type { RequestAccess } from '@/modules/iam/access.service';
 import { and, desc, eq, isNull, sql } from 'drizzle-orm';
 import {
@@ -15,8 +16,15 @@ import {
   subscriptions,
   users,
 } from '@/db/schema';
+import {
+  applyDuesPayment,
+  findCollectableLine,
+  lockCustomer,
+} from './customers.balance';
 import { listCustomers, locationPaths } from './customers.list';
 import { searchCustomers } from './customers.search';
+
+export type { CollectableLine, LockedCustomer } from './customers.balance';
 
 export class CustomerRepository {
   constructor(private readonly db: Database) {}
@@ -127,5 +135,20 @@ export class CustomerRepository {
 
   async getLocationPaths(locationIds: string[]) {
     return locationPaths(this.db, locationIds);
+  }
+
+  // The balance a collector settles lives on these tables, so payments reaches
+  // it through here rather than writing `crm.customers` itself. Each takes the
+  // caller's `tx`: the row lock only holds inside their transaction.
+  async lockCustomer(tx: Transaction, tenantId: string, customerId: string): Promise<LockedCustomer | null> {
+    return lockCustomer(tx, tenantId, customerId);
+  }
+
+  async collectableLines(tx: Transaction, tenantId: string, customerId: string, subscriptionId: string | null): Promise<CollectableLine[]> {
+    return findCollectableLine(tx, tenantId, customerId, subscriptionId);
+  }
+
+  async applyDuesPayment(tx: Transaction, tenantId: string, customerId: string, subscriptionId: string, amount: string): Promise<void> {
+    return applyDuesPayment(tx, tenantId, customerId, subscriptionId, amount);
   }
 }

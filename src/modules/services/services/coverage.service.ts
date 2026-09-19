@@ -1,99 +1,45 @@
 import type { SQL } from 'drizzle-orm';
+import type { CoverageTargetRef } from '../coverage.repository';
 import type { AvailabilityResponse, CoverageEntry, CoverageResponse, SetCoverageBody } from '../service.schema';
-import type { Database as Db } from '@/db/client';
+import type { Database } from '@/db/client';
 import type { RequestAccess } from '@/modules/iam/access.service';
 import type { LocationsService } from '@/modules/locations/location.service';
 import type { PermissionKey } from '@/security/permissions';
-import { and, asc, eq, isNull, sql } from 'drizzle-orm';
 import { AUDIT_ENTITIES } from '@/constants/audit';
-import { owned } from '@/db/owned';
-import { locationPaths, packages, serviceCoverage, serviceProviders, services } from '@/db/schema';
 import { ERROR_CODES } from '@/errors/codes';
 import { badRequest, forbidden, orNotFound } from '@/errors/domain-error';
 import { audit } from '@/modules/audit/audit.service';
 import { locationScopeFor } from '@/modules/iam/access.service';
-import { overlapsAnyGrant, underAnyGrant } from '@/security/location-scope';
 import { PERMISSIONS } from '@/security/permissions';
-import { coverageReachesGrant } from '../coverage.scope';
+import { CoverageRepository } from '../coverage.repository';
 
 export { coverageReachesGrant } from '../coverage.scope';
 
-interface AvailabilityRow extends Record<string, unknown> {
-  serviceId: string;
-  serviceName: string;
-  serviceSlug: string;
-  serviceIcon: string | null;
-  providerId: string;
-  providerName: string;
-  providerSlug: string;
-  isDefault: boolean;
-  packageId: string | null;
-  packageName: string | null;
-  packageSlug: string | null;
-  packageType: string | null;
-  price: string | null;
-  billingCycle: string | null;
-  packageAvailable: boolean;
-}
+type AvailabilityRow = Awaited<ReturnType<CoverageRepository['availabilityAt']>>[number];
 
 export class CoverageService {
-  constructor(private readonly db: Db, private readonly locations: LocationsService) {}
+  private readonly repo: CoverageRepository;
 
-  private rowsInReach(access: RequestAccess, key: PermissionKey): SQL[] {
-    const reach = locationScopeFor(access, key);
-
-    if (reach.kind === 'ALL_TENANT_LOCATIONS')
-      return [];
-
-    return [overlapsAnyGrant(sql`${serviceCoverage.locationId}`, reach.nodeIds)];
-  }
-
-  private catalogueInReach(access: RequestAccess, key: PermissionKey, target: {
-    serviceId: SQL;
-    serviceProviderId?: SQL;
-    packageId?: SQL;
-  }): SQL[] {
-    const reach = locationScopeFor(access, key);
-
-    if (reach.kind === 'ALL_TENANT_LOCATIONS')
-      return [];
-
-    return [coverageReachesGrant({
-      tenantId: access.tenantId,
-      serviceId: target.serviceId,
-      serviceProviderId: target.serviceProviderId ?? null,
-      packageId: target.packageId ?? null,
-    }, reach.nodeIds)];
+  constructor(repoOrDb: CoverageRepository | Database, private readonly locations: LocationsService) {
+    this.repo = repoOrDb instanceof CoverageRepository ? repoOrDb : new CoverageRepository(repoOrDb);
   }
 
   async listForProvider(access: RequestAccess, providerId: string): Promise<CoverageResponse[]> {
     await this.findProvider(access, providerId, PERMISSIONS.SERVICES_VIEW);
 
-    return this.rowsWhere(
-      and(eq(serviceCoverage.serviceProviderId, providerId), isNull(serviceCoverage.packageId))!,
-      access,
-      PERMISSIONS.SERVICES_VIEW,
-    );
+    return this.rowsWhere(this.repo.forProvider(providerId), access, PERMISSIONS.SERVICES_VIEW);
   }
 
   async listForPackage(access: RequestAccess, packageId: string): Promise<CoverageResponse[]> {
     await this.findPackage(access, packageId, PERMISSIONS.PACKAGES_VIEW);
 
-    return this.rowsWhere(eq(serviceCoverage.packageId, packageId), access, PERMISSIONS.PACKAGES_VIEW);
+    return this.rowsWhere(this.repo.forPackage(packageId), access, PERMISSIONS.PACKAGES_VIEW);
   }
 
   async listForService(access: RequestAccess, serviceId: string): Promise<CoverageResponse[]> {
     await this.findService(access, serviceId, PERMISSIONS.SERVICES_VIEW);
 
-    return this.rowsWhere(
-      and(
-        eq(serviceCoverage.serviceId, serviceId),
-        isNull(serviceCoverage.serviceProviderId),
-        isNull(serviceCoverage.packageId),
-      )!,
-      access,
-      PERMISSIONS.SERVICES_VIEW,
-    );
+    return this.rowsWhere(this.repo.forService(serviceId), access, PERMISSIONS.SERVICES_VIEW);
   }
 
   async replaceForProvider(access: RequestAccess, providerId: string, input: SetCoverageBody): Promise<CoverageResponse[]> {
@@ -108,14 +54,13 @@ export class CoverageService {
 
     const before = await this.listForProvider(access, providerId);
 
-    await this.write(access, {
+    await this.repo.replaceCoverage(access.tenantId, access.userId, {
       serviceId: provider.serviceId,
       serviceProviderId: providerId,
-      entries: input.entries,
-    });
+    }, input.entries);
 
     const after = await this.listForProvider(access, providerId);
-    await audit.updated(this.db, access.audit, {
+    await audit.updated(this.repo.database, access.audit, {
       entityType: AUDIT_ENTITIES.SERVICE_COVERAGE,
       entityId: providerId,
       before: { coverage: before },
@@ -138,15 +83,14 @@ export class CoverageService {
 
     const before = await this.listForPackage(access, packageId);
 
-    await this.write(access, {
+    await this.repo.replaceCoverage(access.tenantId, access.userId, {
       serviceId: pkg.serviceId,
       serviceProviderId: pkg.serviceProviderId,
       packageId,
-      entries: input.entries,
-    });
+    }, input.entries);
 
     const after = await this.listForPackage(access, packageId);
-    await audit.updated(this.db, access.audit, {
+    await audit.updated(this.repo.database, access.audit, {
       entityType: AUDIT_ENTITIES.SERVICE_COVERAGE,
       entityId: packageId,
       before: { coverage: before },
@@ -163,10 +107,13 @@ export class CoverageService {
 
     const before = await this.listForService(access, serviceId);
 
-    await this.write(access, { serviceId, serviceProviderId: null, entries: input.entries });
+    await this.repo.replaceCoverage(access.tenantId, access.userId, {
+      serviceId,
+      serviceProviderId: null,
+    }, input.entries);
 
     const after = await this.listForService(access, serviceId);
-    await audit.updated(this.db, access.audit, {
+    await audit.updated(this.repo.database, access.audit, {
       entityType: AUDIT_ENTITIES.SERVICE_COVERAGE,
       entityId: serviceId,
       before: { coverage: before },
@@ -178,130 +125,18 @@ export class CoverageService {
   }
 
   async availabilityAt(access: RequestAccess, locationId: string): Promise<AvailabilityResponse> {
-    const { tenantId } = access;
     await this.assertNodeInReach(access, locationId);
 
-    const result = await this.db.execute<AvailabilityRow>(sql`
-      WITH chain AS (
-        SELECT id, depth FROM geo.location_ancestors(${locationId})
-      ),
-      constants AS (
-        SELECT '00000000-0000-0000-0000-000000000000'::uuid AS nil
-      ),
-      -- 1. Nearest ancestor rule (uses index service_coverage_tenant_location_idx)
-      nearest AS (
-        SELECT DISTINCT ON (
-          c.service_id,
-          coalesce(c.service_provider_id, k.nil),
-          coalesce(c.package_id, k.nil)
-        )
-          c.service_id,
-          coalesce(c.service_provider_id, k.nil) AS provider_id,
-          coalesce(c.package_id, k.nil)          AS pkg_id,
-          c.is_available
-        FROM crm.service_coverage c
-        CROSS JOIN constants k
-        JOIN chain ON chain.id = c.location_id
-        WHERE c.tenant_id = ${tenantId}
-        ORDER BY
-          c.service_id,
-          coalesce(c.service_provider_id, k.nil),
-          coalesce(c.package_id, k.nil),
-          chain.depth
-      ),
-      -- 2. Entities that have an allowlist (at least one row with is_available = true)
-      allowlists AS (
-        SELECT DISTINCT
-          c.service_id,
-          coalesce(c.service_provider_id, k.nil) AS provider_id,
-          coalesce(c.package_id, k.nil)          AS pkg_id
-        FROM crm.service_coverage c
-        CROSS JOIN constants k
-        WHERE c.tenant_id = ${tenantId}
-          AND c.is_available = true
-      ),
-      -- 3. Resolved rules: Hash join between nearest and allowlists
-      rules AS (
-        SELECT
-          coalesce(n.service_id, a.service_id)   AS service_id,
-          coalesce(n.provider_id, a.provider_id) AS provider_id,
-          coalesce(n.pkg_id, a.pkg_id)           AS pkg_id,
-          coalesce(n.is_available, a.service_id IS NULL) AS is_available
-        FROM allowlists a
-        FULL OUTER JOIN nearest n
-          ON n.service_id = a.service_id
-         AND n.provider_id = a.provider_id
-         AND n.pkg_id = a.pkg_id
-      )
-      SELECT s.id            AS "serviceId",
-             s.name          AS "serviceName",
-             s.slug          AS "serviceSlug",
-             s.icon          AS "serviceIcon",
-             p.id            AS "providerId",
-             p.name          AS "providerName",
-             p.slug          AS "providerSlug",
-             p.is_default    AS "isDefault",
-             pk.id           AS "packageId",
-             pk.name         AS "packageName",
-             pk.slug         AS "packageSlug",
-             pk.package_type AS "packageType",
-             pk.price        AS "price",
-             pk.billing_cycle AS "billingCycle",
-             coalesce(rs.is_available, true)
-               AND coalesce(rp.is_available, true)
-               AND coalesce(rpk.is_available, true) AS "packageAvailable"
-      FROM crm.service_providers p
-      CROSS JOIN constants k
-      JOIN crm.services s
-        ON s.id = p.service_id
-       AND s.deleted_at IS NULL
-       AND s.status = 'active'
-      LEFT JOIN crm.packages pk
-        ON pk.service_provider_id = p.id
-       AND pk.tenant_id = p.tenant_id
-       AND pk.deleted_at IS NULL
-       AND pk.status = 'active'
-      LEFT JOIN rules rpk
-        ON rpk.service_id = p.service_id
-       AND rpk.provider_id = p.id
-       AND rpk.pkg_id = pk.id
-      LEFT JOIN rules rp
-        ON rp.service_id = p.service_id
-       AND rp.provider_id = p.id
-       AND rp.pkg_id = k.nil
-      LEFT JOIN rules rs
-        ON rs.service_id = p.service_id
-       AND rs.provider_id = k.nil
-       AND rs.pkg_id = k.nil
-      WHERE p.tenant_id = ${tenantId}
-        AND p.deleted_at IS NULL
-        AND p.status = 'active'
-        AND coalesce(rs.is_available, true)
-        AND coalesce(rp.is_available, true)
-      ORDER BY s.name, p.name, pk.name
-    `);
+    const rows = await this.repo.availabilityAt(access.tenantId, locationId);
 
-    return { locationId, services: this.group(result.rows) };
+    return { locationId, services: group(rows) };
   }
 
   async isPackageAvailableAt({ tenantId }: RequestAccess, target: { packageId: string; locationId: string }): Promise<boolean> {
-    const result = await this.db.execute<{ available: boolean }>(sql`
-      SELECT crm.coverage_allows(
-        ${tenantId}, p.service_id, p.id, pk.id, ${target.locationId}
-      ) AS available
-      FROM crm.packages pk
-      JOIN crm.service_providers p ON p.id = pk.service_provider_id
-      WHERE pk.id = ${target.packageId} AND pk.tenant_id = ${tenantId}
-    `);
-
-    const [row] = result.rows;
-
-    return row?.available ?? false;
+    return this.repo.isPackageAvailableAt(tenantId, target.packageId, target.locationId);
   }
 
-  private async assertWithinParent(access: RequestAccess, target: {
-    serviceId: string;
-    serviceProviderId: string | null;
+  private async assertWithinParent(access: RequestAccess, target: CoverageTargetRef & {
     entries: CoverageEntry[];
     parent: 'service' | 'provider';
   }): Promise<void> {
@@ -310,81 +145,16 @@ export class CoverageService {
     if (served.length === 0)
       return;
 
-    const result = await this.db.execute<{ path: string }>(sql`
-      SELECT lp.path
-      FROM unnest(${sql.param(served)}::uuid[]) AS n(id)
-      JOIN geo.location_paths lp ON lp.id = n.id
-      WHERE NOT crm.coverage_allows(
-        ${access.tenantId}, ${target.serviceId}, ${target.serviceProviderId}, NULL, n.id
-      )
-      ORDER BY lp.path
-    `);
+    const places = await this.repo.pathsOutsideParent(access.tenantId, target, served);
 
-    if (result.rows.length === 0)
+    if (places.length === 0)
       return;
 
-    const places = result.rows.map(row => row.path);
     throw badRequest(
       ERROR_CODES.VALIDATION_FAILED,
       `The ${target.parent} does not cover ${places.slice(0, 3).join(', ')}${places.length > 3 ? ` and ${places.length - 3} more` : ''}. Widen the ${target.parent}'s coverage first.`,
       places.map(path => ({ field: 'entries', issue: `Outside the ${target.parent}'s coverage: ${path}` })),
     );
-  }
-
-  private async write(access: RequestAccess, target: {
-    serviceId: string;
-    serviceProviderId: string | null;
-    packageId?: string | null;
-    entries: CoverageEntry[];
-  }): Promise<void> {
-    const { tenantId } = access;
-    const packageId = target.packageId ?? null;
-
-    await this.db.transaction(async (tx) => {
-      await tx.delete(serviceCoverage).where(and(
-        eq(serviceCoverage.tenantId, tenantId),
-        eq(serviceCoverage.serviceId, target.serviceId),
-        target.serviceProviderId === null
-          ? isNull(serviceCoverage.serviceProviderId)
-          : eq(serviceCoverage.serviceProviderId, target.serviceProviderId),
-        packageId === null
-          ? isNull(serviceCoverage.packageId)
-          : eq(serviceCoverage.packageId, packageId),
-      ));
-
-      if (target.entries.length === 0)
-        return;
-
-      await tx.insert(serviceCoverage).values(target.entries.map(entry => ({
-        tenantId,
-        serviceId: target.serviceId,
-        serviceProviderId: target.serviceProviderId,
-        packageId,
-        locationId: entry.locationId,
-        isAvailable: entry.isAvailable ?? true,
-        note: entry.note ?? null,
-        createdBy: access.userId,
-      })));
-    });
-  }
-
-  private async findPackage(access: RequestAccess, id: string, key: PermissionKey) {
-    const [row] = await this.db
-      .select({
-        id: packages.id,
-        serviceProviderId: packages.serviceProviderId,
-        serviceId: serviceProviders.serviceId,
-      })
-      .from(packages)
-      .innerJoin(serviceProviders, eq(serviceProviders.id, packages.serviceProviderId))
-      .where(and(owned(packages, access.tenantId, id), ...this.catalogueInReach(access, key, {
-        serviceId: sql`${serviceProviders.serviceId}`,
-        serviceProviderId: sql`${packages.serviceProviderId}`,
-        packageId: sql`${packages.id}`,
-      })))
-      .limit(1);
-
-    return orNotFound(row, 'Package');
   }
 
   private async assertNodeInReach(access: RequestAccess, locationId: string): Promise<void> {
@@ -395,99 +165,73 @@ export class CoverageService {
     if (reach.kind === 'ALL_TENANT_LOCATIONS')
       return;
 
-    const result = await this.db.execute<{ reaches: boolean }>(
-      sql`SELECT ${underAnyGrant(locationId, reach.nodeIds)} AS reaches`,
-    );
-
-    if (result.rows[0]?.reaches !== true)
+    if (!await this.repo.nodeUnderGrant(locationId, reach.nodeIds))
       throw forbidden(ERROR_CODES.PERM_SCOPE_DENIED, 'This location is outside your grant');
   }
 
   private async rowsWhere(where: SQL, access: RequestAccess, key: PermissionKey): Promise<CoverageResponse[]> {
-    const rows = await this.db
-      .select({
-        id: serviceCoverage.id,
-        serviceId: serviceCoverage.serviceId,
-        serviceProviderId: serviceCoverage.serviceProviderId,
-        packageId: serviceCoverage.packageId,
-        locationId: serviceCoverage.locationId,
-        locationPath: locationPaths.path,
-        isAvailable: serviceCoverage.isAvailable,
-        note: serviceCoverage.note,
-      })
-      .from(serviceCoverage)
-      .innerJoin(locationPaths, eq(locationPaths.id, serviceCoverage.locationId))
-      .where(and(eq(serviceCoverage.tenantId, access.tenantId), where, ...this.rowsInReach(access, key)))
-      .orderBy(asc(locationPaths.path));
-
-    return rows;
-  }
-
-  private group(rows: AvailabilityRow[]): AvailabilityResponse['services'] {
-    const byService = new Map<string, AvailabilityResponse['services'][number]>();
-
-    for (const row of rows) {
-      let service = byService.get(row.serviceId);
-      if (service === undefined) {
-        service = {
-          id: row.serviceId,
-          name: row.serviceName,
-          slug: row.serviceSlug,
-          icon: row.serviceIcon,
-          providers: [],
-        };
-        byService.set(row.serviceId, service);
-      }
-
-      let provider = service.providers.find(p => p.id === row.providerId);
-      if (provider === undefined) {
-        provider = {
-          id: row.providerId,
-          name: row.providerName,
-          slug: row.providerSlug,
-          isDefault: row.isDefault,
-          packages: [],
-        };
-        service.providers.push(provider);
-      }
-
-      if (row.packageId !== null && row.packageAvailable) {
-        provider.packages.push({
-          id: row.packageId,
-          name: row.packageName!,
-          slug: row.packageSlug!,
-          packageType: row.packageType!,
-          price: row.price!,
-          billingCycle: row.billingCycle!,
-        });
-      }
-    }
-
-    return [...byService.values()];
+    return this.repo.listRows(
+      access.tenantId,
+      where,
+      this.repo.rowsInReach(locationScopeFor(access, key)),
+    );
   }
 
   private async findProvider(access: RequestAccess, id: string, key: PermissionKey) {
-    const [row] = await this.db
-      .select({ id: serviceProviders.id, serviceId: serviceProviders.serviceId })
-      .from(serviceProviders)
-      .where(and(owned(serviceProviders, access.tenantId, id), ...this.catalogueInReach(access, key, {
-        serviceId: sql`${serviceProviders.serviceId}`,
-        serviceProviderId: sql`${serviceProviders.id}`,
-      })))
-      .limit(1);
+    const reach = this.repo.catalogueInReach(access.tenantId, locationScopeFor(access, key), this.repo.providerScope());
+    return orNotFound(await this.repo.findProvider(access.tenantId, id, reach), 'Service provider');
+  }
 
-    return orNotFound(row, 'Service provider');
+  private async findPackage(access: RequestAccess, id: string, key: PermissionKey) {
+    const reach = this.repo.catalogueInReach(access.tenantId, locationScopeFor(access, key), this.repo.packageScope());
+    return orNotFound(await this.repo.findPackage(access.tenantId, id, reach), 'Package');
   }
 
   private async findService(access: RequestAccess, id: string, key: PermissionKey) {
-    const [row] = await this.db
-      .select({ id: services.id })
-      .from(services)
-      .where(and(owned(services, access.tenantId, id), ...this.catalogueInReach(access, key, {
-        serviceId: sql`${services.id}`,
-      })))
-      .limit(1);
-
-    return orNotFound(row, 'Service');
+    const reach = this.repo.catalogueInReach(access.tenantId, locationScopeFor(access, key), this.repo.serviceScope());
+    return orNotFound(await this.repo.findService(access.tenantId, id, reach), 'Service');
   }
+}
+
+function group(rows: AvailabilityRow[]): AvailabilityResponse['services'] {
+  const byService = new Map<string, AvailabilityResponse['services'][number]>();
+
+  for (const row of rows) {
+    let service = byService.get(row.serviceId);
+    if (service === undefined) {
+      service = {
+        id: row.serviceId,
+        name: row.serviceName,
+        slug: row.serviceSlug,
+        icon: row.serviceIcon,
+        providers: [],
+      };
+      byService.set(row.serviceId, service);
+    }
+
+    let provider = service.providers.find(p => p.id === row.providerId);
+    if (provider === undefined) {
+      provider = {
+        id: row.providerId,
+        name: row.providerName,
+        slug: row.providerSlug,
+        isDefault: row.isDefault,
+        packages: [],
+      };
+      service.providers.push(provider);
+    }
+
+    if (row.packageId !== null && row.packageAvailable) {
+      provider.packages.push({
+        id: row.packageId,
+        name: row.packageName!,
+        slug: row.packageSlug!,
+        packageType: row.packageType!,
+        price: row.price!,
+        billingCycle: row.billingCycle!,
+      });
+    }
+  }
+
+  return [...byService.values()];
 }

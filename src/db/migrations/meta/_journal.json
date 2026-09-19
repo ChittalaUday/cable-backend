@@ -15,6 +15,20 @@
       "when": 1789767445789,
       "tag": "0001_chunky_moondragon",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1789767445790,
+      "tag": "0002_soft_delete_geo",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1789767445791,
+      "tag": "0003_collection_accessories",
+      "breakpoints": true
     }
   ]
 }

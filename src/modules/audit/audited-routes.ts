@@ -50,6 +50,7 @@ export const AUDITED_ROUTES: Readonly<Record<string, readonly AuditAction[]>> = 
   'PUT /api/v1/inventory/catalog/:id': [auditAction(AUDIT_ENTITIES.INVENTORY_ITEM, AUDIT_VERBS.UPDATED)],
   'DELETE /api/v1/inventory/catalog/:id': [auditAction(AUDIT_ENTITIES.INVENTORY_ITEM, AUDIT_VERBS.DELETED)],
   'POST /api/v1/inventory/issue': [auditAction(AUDIT_ENTITIES.INVENTORY_CUSTOMER_EQUIPMENT, AUDIT_VERBS.CREATED)],
+  'POST /api/v1/inventory/return': [auditAction(AUDIT_ENTITIES.INVENTORY_CUSTOMER_EQUIPMENT, AUDIT_VERBS.UPDATED)],
   'POST /api/v1/inventory/inward': [auditAction(AUDIT_ENTITIES.INVENTORY_STOCK_MOVEMENT, AUDIT_VERBS.CREATED)],
   'POST /api/v1/inventory/transfer': [auditAction(AUDIT_ENTITIES.INVENTORY_STOCK_MOVEMENT, AUDIT_VERBS.CREATED)],
   'POST /api/v1/inventory/approval-requests': [auditAction(AUDIT_ENTITIES.INVENTORY_APPROVAL_REQUEST, AUDIT_VERBS.CREATED)],

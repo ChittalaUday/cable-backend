@@ -1,3 +1,4 @@
+export * from './coverage.repository';
 export * from './service.repository';
 export { default as serviceRoutes } from './service.routes';
 export * from './service.schema';

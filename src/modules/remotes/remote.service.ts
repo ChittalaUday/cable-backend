@@ -1,18 +1,15 @@
-import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import type { RemoteSummaryRow } from './remote.repository';
 import type { CreateRemoteBody, ListRemotesQuery, RemoteCapture, RemoteDetail, RemoteSummary } from './remote.schema';
-import type * as schema from '@/db/schema';
+import type { Database } from '@/db/client';
 import type { RemoteButton, RemoteRecord } from '@/db/schema';
 import type { RequestAccess } from '@/modules/iam/access.service';
-import { and, asc, eq, ilike, isNull, or, sql } from 'drizzle-orm';
 import { AUDIT_ENTITIES } from '@/constants/audit';
 import { REMOTE_SOURCE } from '@/constants/remotes';
-import { remoteCaptures, remotes } from '@/db/schema';
 import { ERROR_CODES } from '@/errors';
 import { badRequest, conflict, notFound } from '@/errors/domain-error';
 import { isUniqueViolation } from '@/errors/postgres';
 import { audit } from '@/modules/audit/audit.service';
-
-type Db = NodePgDatabase<typeof schema>;
+import { RemoteRepository } from './remote.repository';
 
 const MAX_PATTERN_DURATION_US = 2_000_000;
 
@@ -45,7 +42,7 @@ function assertTransmittable(buttons: readonly RemoteButton[]): void {
   }
 }
 
-function toSummary(row: Omit<RemoteRecord, 'buttons'> & { buttonCount: number }): RemoteSummary {
+function toSummary(row: RemoteSummaryRow): RemoteSummary {
   return {
     id: row.id,
     deviceType: row.deviceType,
@@ -60,73 +57,27 @@ function toSummary(row: Omit<RemoteRecord, 'buttons'> & { buttonCount: number })
 }
 
 export class RemotesService {
-  constructor(private readonly db: Db) {}
+  private readonly repo: RemoteRepository;
+
+  constructor(repoOrDb: RemoteRepository | Database) {
+    this.repo = repoOrDb instanceof RemoteRepository ? repoOrDb : new RemoteRepository(repoOrDb);
+  }
 
   async list(access: RequestAccess, query: ListRemotesQuery): Promise<RemoteSummary[]> {
-    const visible = or(isNull(remotes.tenantId), eq(remotes.tenantId, access.tenantId));
-    const filters = [visible];
-
-    if (query.deviceType !== undefined)
-      filters.push(eq(remotes.deviceType, query.deviceType));
-
-    if (query.brand !== undefined)
-      filters.push(eq(remotes.brand, query.brand));
-
-    if (query.search !== undefined) {
-      const term = `%${query.search}%`;
-      filters.push(or(ilike(remotes.brand, term), ilike(remotes.model, term)));
-    }
-
-    const rows = await this.db
-      .select({
-        id: remotes.id,
-        tenantId: remotes.tenantId,
-        deviceType: remotes.deviceType,
-        brand: remotes.brand,
-        model: remotes.model,
-        source: remotes.source,
-        verified: remotes.verified,
-        notes: remotes.notes,
-        createdAt: remotes.createdAt,
-        updatedAt: remotes.updatedAt,
-        buttonCount: sql<number>`jsonb_array_length(${remotes.buttons})::int`,
-      })
-      .from(remotes)
-      .where(and(...filters))
-      .orderBy(asc(remotes.deviceType), asc(remotes.brand), asc(remotes.model));
-
+    const rows = await this.repo.listRemotes(access.tenantId, query);
     return rows.map(toSummary);
   }
 
   async get(access: RequestAccess, id: string): Promise<RemoteDetail> {
-    const [row] = await this.db
-      .select()
-      .from(remotes)
-      .where(and(
-        eq(remotes.id, id),
-        or(isNull(remotes.tenantId), eq(remotes.tenantId, access.tenantId)),
-      ))
-      .limit(1);
+    const row = await this.repo.findRemoteById(access.tenantId, id);
 
-    if (!row)
+    if (row === null)
       throw notFound('Remote');
 
-    const captures = await this.db
-      .select()
-      .from(remoteCaptures)
-      .where(eq(remoteCaptures.remoteId, id))
-      .orderBy(asc(remoteCaptures.buttonName));
+    const captures = await this.repo.findCaptures(id);
 
     return {
-      id: row.id,
-      deviceType: row.deviceType,
-      brand: row.brand,
-      model: row.model,
-      source: row.source,
-      verified: row.verified,
-      notes: row.notes,
-      isTenantOwned: row.tenantId !== null,
-      buttons: row.buttons,
+      ...this.toDetail(row),
       captures: captures.map(c => ({
         id: c.id,
         remoteId: c.remoteId,
@@ -155,42 +106,43 @@ export class RemotesService {
     assertTransmittable(input.buttons);
 
     try {
-      const [created] = await this.db
-        .insert(remotes)
-        .values({
-          tenantId: access.tenantId,
-          deviceType: input.deviceType,
-          brand: input.brand.trim(),
-          model: input.model.trim(),
-          source: REMOTE_SOURCE.LEARNED,
-          verified: input.verified ?? false,
-          notes: input.notes ?? null,
-          buttons: input.buttons,
-        })
-        .returning();
-
-      await audit.created(this.db, access.audit, {
-        entityType: AUDIT_ENTITIES.REMOTE,
-        entityId: created!.id,
-        after: created!,
+      const created = await this.repo.createRemote({
+        tenantId: access.tenantId,
+        deviceType: input.deviceType,
+        brand: input.brand.trim(),
+        model: input.model.trim(),
+        source: REMOTE_SOURCE.LEARNED,
+        verified: input.verified ?? false,
+        notes: input.notes ?? null,
+        buttons: input.buttons,
       });
 
-      return {
-        id: created!.id,
-        deviceType: created!.deviceType,
-        brand: created!.brand,
-        model: created!.model,
-        source: created!.source,
-        verified: created!.verified,
-        notes: created!.notes,
-        isTenantOwned: true,
-        buttons: created!.buttons,
-      };
+      await audit.created(this.repo.database, access.audit, {
+        entityType: AUDIT_ENTITIES.REMOTE,
+        entityId: created.id,
+        after: created,
+      });
+
+      return this.toDetail(created);
     }
     catch (error) {
       if (isUniqueViolation(error))
         throw conflict(`You already have a ${input.deviceType.toUpperCase()} remote for "${input.brand} ${input.model}"`);
       throw error;
     }
+  }
+
+  private toDetail(row: RemoteRecord): RemoteDetail {
+    return {
+      id: row.id,
+      deviceType: row.deviceType,
+      brand: row.brand,
+      model: row.model,
+      source: row.source,
+      verified: row.verified,
+      notes: row.notes,
+      isTenantOwned: row.tenantId !== null,
+      buttons: row.buttons,
+    };
   }
 }

@@ -89,8 +89,30 @@ export function servesNode(locationId: string): SQL {
   )`;
 }
 
+/**
+ * True when at least one of `ids` sits outside every node in `granted`.
+ * Repository-internal: services reach it through `StaffRepository`.
+ */
+export async function firstNodeOutside(db: Db, ids: readonly string[], granted: readonly string[]): Promise<boolean> {
+  if (ids.length === 0 || granted.length === 0)
+    return ids.length > 0;
+
+  const outside = await db.execute<{ id: string }>(sql`
+    SELECT w.id
+    FROM unnest(${sql.param([...ids])}::uuid[]) AS w(id)
+    WHERE NOT ${underAnyGrant(sql`w.id`, granted)}
+    LIMIT 1
+  `);
+
+  return outside.rows.length > 0;
+}
+
+export interface GrantChecker {
+  firstNodeOutside: (ids: readonly string[], granted: readonly string[]) => Promise<boolean>;
+}
+
 export async function assertWithinGrant(
-  db: Db,
+  repo: GrantChecker,
   access: RequestAccess,
   grant: { ids: readonly string[]; key: PermissionKey },
 ): Promise<void> {
@@ -103,14 +125,7 @@ export async function assertWithinGrant(
   if (granted.length === 0)
     throw forbidden(ERROR_CODES.PERM_SCOPE_DENIED, 'You hold no area you could grant');
 
-  const outside = await db.execute<{ id: string }>(sql`
-    SELECT w.id
-    FROM unnest(${sql.param([...grant.ids])}::uuid[]) AS w(id)
-    WHERE NOT ${underAnyGrant(sql`w.id`, granted)}
-    LIMIT 1
-  `);
-
-  if (outside.rows.length > 0)
+  if (await repo.firstNodeOutside(grant.ids, granted))
     throw forbidden(ERROR_CODES.PERM_SCOPE_DENIED, 'That area is outside your own grant');
 }
 

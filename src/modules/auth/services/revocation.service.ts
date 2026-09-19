@@ -1,19 +1,22 @@
 import type pg from 'pg';
 import type { Database } from '@/db/client';
-import { sql } from 'drizzle-orm';
+import { SessionsRepository } from '../repositories/sessions.repository';
 
 const CHANNEL = 'session_revoked';
 
 export class RevocationCache {
   private readonly revoked = new Map<string, number>();
+  private readonly repo: SessionsRepository;
   private listener: pg.PoolClient | null = null;
   private pruneTimer: NodeJS.Timeout | null = null;
 
   constructor(
-    private readonly db: Database,
+    repoOrDb: SessionsRepository | Database,
     private readonly pool: pg.Pool,
     private readonly ttlMs: number,
-  ) {}
+  ) {
+    this.repo = repoOrDb instanceof SessionsRepository ? repoOrDb : new SessionsRepository(repoOrDb);
+  }
 
   has(sessionId: string): boolean {
     return this.revoked.has(sessionId);
@@ -21,7 +24,7 @@ export class RevocationCache {
 
   async publish(sessionId: string): Promise<void> {
     this.add(sessionId);
-    await this.db.execute(sql`SELECT pg_notify(${CHANNEL}, ${sessionId})`);
+    await this.repo.notifyRevoked(CHANNEL, sessionId);
   }
 
   async start(): Promise<void> {
@@ -47,13 +50,8 @@ export class RevocationCache {
   }
 
   private async load(): Promise<void> {
-    const cutoff = new Date(Date.now() - this.ttlMs);
-    const rows = await this.db.execute<{ id: string }>(
-      sql`SELECT id FROM auth.sessions WHERE revoked_at IS NOT NULL AND revoked_at > ${cutoff}`,
-    );
-
-    for (const row of rows.rows)
-      this.add(row.id);
+    for (const id of await this.repo.revokedSince(new Date(Date.now() - this.ttlMs)))
+      this.add(id);
   }
 
   private add(sessionId: string): void {

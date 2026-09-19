@@ -30,7 +30,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.post('/locations', {
-    config: { invalidates: ['analytics', 'coverage', 'customers', 'inventory', 'locations', 'service-providers', 'services', 'staff', 'teams'] },
+    config: { invalidates: ['analytics', 'channels', 'coverage', 'customers', 'inventory', 'locations', 'packages', 'payments', 'service-providers', 'services', 'staff', 'teams'] },
     preHandler: app.requirePermission(PERMISSIONS.LOCATIONS_CREATE),
     schema: {
       tags: ['locations'],
@@ -72,7 +72,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.patch('/locations/:id', {
-    config: { invalidates: ['analytics', 'coverage', 'customers', 'inventory', 'locations', 'service-providers', 'services', 'staff', 'teams'] },
+    config: { invalidates: ['analytics', 'channels', 'coverage', 'customers', 'inventory', 'locations', 'packages', 'payments', 'service-providers', 'services', 'staff', 'teams'] },
     preHandler: app.requirePermission(PERMISSIONS.LOCATIONS_UPDATE),
     schema: {
       tags: ['locations'],
@@ -86,7 +86,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.delete('/locations/:id', {
-    config: { invalidates: ['analytics', 'coverage', 'customers', 'inventory', 'locations', 'packages', 'service-providers', 'services', 'staff', 'teams'] },
+    config: { invalidates: ['analytics', 'channels', 'coverage', 'customers', 'inventory', 'locations', 'packages', 'payments', 'service-providers', 'services', 'staff', 'teams'] },
     preHandler: app.requirePermission(PERMISSIONS.LOCATIONS_DELETE),
     schema: {
       tags: ['locations'],

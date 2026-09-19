@@ -25,7 +25,7 @@ import {
 import { hashPassword } from '@/security/password';
 import { PERMISSIONS } from '@/security/permissions';
 import { createTestDb } from '@/test/db';
-import { seedAuthData, TEST_PASSWORD, uniqueDeviceId, uniqueEmail, uniquePhone } from '@/test/fixtures';
+import { releaseUserReferences, seedAuthData, TEST_PASSWORD, uniqueDeviceId, uniqueEmail, uniquePhone } from '@/test/fixtures';
 import { bodyOf } from '@/test/http';
 
 const { db, close } = createTestDb();
@@ -205,6 +205,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await app.close();
+  await releaseUserReferences(db, createdUserIds);
   await db.delete(users).where(inArray(users.id, createdUserIds));
   await data.cleanup();
   await close();

@@ -1,6 +1,6 @@
 import type { SQL } from 'drizzle-orm';
 import { sql } from 'drizzle-orm';
-import { check, foreignKey, index, numeric, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
+import { check, foreignKey, index, jsonb, numeric, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
 import { COLLECTION_OUTCOMES, PAYMENT_METHODS } from '@/constants/billing';
 import { users } from '../auth/users';
 import { accountTransactions } from '../crm/account-transactions';
@@ -14,6 +14,14 @@ function values(allowed: readonly string[]): SQL {
   return sql`(${sql.join(allowed.map(value => sql.raw(`'${value}'`)), sql`, `)})`;
 }
 
+export interface CollectionAccessory {
+  catalogId: string;
+  name: string;
+  quantity: number;
+  unitPrice: string;
+  amount: string;
+}
+
 export const collections = billing.table('collections', {
   id: uuid('id').primaryKey().defaultRandom(),
   tenantId: uuid('tenant_id').notNull().references(() => tenants.id, { onDelete: 'restrict' }),
@@ -25,9 +33,12 @@ export const collections = billing.table('collections', {
   method: text('method', { enum: PAYMENT_METHODS }),
   dueAmount: numeric('due_amount', { precision: 12, scale: 2 }).notNull().default('0'),
   duesPaid: numeric('dues_paid', { precision: 12, scale: 2 }).notNull().default('0'),
+  accessoryAmount: numeric('accessory_amount', { precision: 12, scale: 2 }).notNull().default('0'),
+  accessories: jsonb('accessories').$type<CollectionAccessory[]>().notNull().default([]),
+  // What the collector actually took away: dues plus anything sold on the visit.
   totalCollected: numeric('total_collected', { precision: 12, scale: 2 })
     .notNull()
-    .generatedAlwaysAs(sql`dues_paid`),
+    .generatedAlwaysAs(sql`dues_paid + accessory_amount`),
   balanceAfter: numeric('balance_after', { precision: 12, scale: 2 }).notNull().default('0'),
   transactionId: uuid('transaction_id').references(() => accountTransactions.id, { onDelete: 'restrict' }),
   reversesId: uuid('reverses_id'),
@@ -56,6 +67,7 @@ export const collections = billing.table('collections', {
   check('collections_target_check', sql`${table.subscriptionId} IS NOT NULL OR ${table.customerEquipmentId} IS NOT NULL`),
   check('collections_no_payment_is_empty', sql`${table.outcome} <> 'none' OR ${table.duesPaid} = 0`),
   check('collections_takings_not_negative', sql`${table.outcome} = 'refund' OR ${table.duesPaid} >= 0`),
+  check('collections_accessories_not_negative', sql`${table.outcome} = 'refund' OR ${table.accessoryAmount} >= 0`),
   check('collections_refund_gives_back', sql`${table.outcome} <> 'refund' OR ${table.duesPaid} <= 0`),
   check('collections_point_is_whole', sql`(${table.latitude} IS NULL) = (${table.longitude} IS NULL)`),
   check('collections_point_is_on_earth', sql`${table.latitude} IS NULL OR (${table.latitude} BETWEEN -90 AND 90 AND ${table.longitude} BETWEEN -180 AND 180)`),

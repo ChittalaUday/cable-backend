@@ -1,4 +1,5 @@
-import { boolean, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import { boolean, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 import { geo } from '../schemas';
 import { tenants } from '../tenancy/tenants';
 
@@ -14,8 +15,11 @@ export const locationSchemas = geo.table('location_schemas', {
 
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  deletedAt: timestamp('deleted_at', { withTimezone: true }),
 }, table => [
-  unique('location_schemas_tenant_slug_uq').on(table.tenantId, table.slug),
+  uniqueIndex('location_schemas_tenant_slug_uq')
+    .on(table.tenantId, table.slug)
+    .where(sql`deleted_at IS NULL`),
 ]);
 
 export type LocationSchema = typeof locationSchemas.$inferSelect;

@@ -443,7 +443,8 @@ constrained by what the app happens to do today.
 
 ### 4.3 Authentication
 
-Own JWT. Firebase Auth is removed from the system entirely.
+Own JWT. A Google ID token never issues our sessions — it is only an identity
+Google vouches for, exchanged at the door for a token of ours.
 
 **Sign-in identifier is email OR phone.** One endpoint resolves either:
 `POST /api/v1/auth/login { identifier, password }` — `identifier` is matched
@@ -453,9 +454,10 @@ against `users.email` then `users.phone`.
 Sign-In, gets an `idToken`, and posts it to
 `POST /api/v1/auth/google { idToken }`. The backend verifies that token against
 Google's public keys (`google-auth-library`), then links or creates the `users`
-row by `google_sub`, falling back to verified `email`. The mobile app never
-talks to Firebase again. **This is the only approved outbound call in the
-service** (§1).
+row by `google_sub`, falling back to verified `email`.
+
+Google's token endpoint is **the only approved outbound call in the service**
+(§1).
 
 **Tokens**
 - **Access token** — 15 min, JWT. Claims: `sub` (user id), `sid` (session id),

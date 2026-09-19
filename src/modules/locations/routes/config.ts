@@ -126,7 +126,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.post('/location-schemas/:id/generate', {
-    config: { invalidates: ['analytics', 'coverage', 'customers', 'inventory', 'locations', 'service-providers', 'services', 'staff', 'teams'] },
+    config: { invalidates: ['analytics', 'channels', 'coverage', 'customers', 'inventory', 'locations', 'packages', 'payments', 'service-providers', 'services', 'staff', 'teams'] },
     preHandler: app.requirePermission(PERMISSIONS.LOCATIONS_CONFIGURE),
     schema: {
       tags: ['locations'],

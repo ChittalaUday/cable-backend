@@ -32,7 +32,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.post('/packages', {
-    config: { invalidates: ['coverage', 'customers', 'packages'] },
+    config: { invalidates: ['coverage', 'customers', 'packages', 'service-providers', 'services'] },
     preHandler: app.requirePermission(PERMISSIONS.PACKAGES_CREATE),
     schema: {
       tags: ['packages'],
@@ -60,7 +60,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.patch('/packages/:id', {
-    config: { invalidates: ['coverage', 'customers', 'packages'] },
+    config: { invalidates: ['coverage', 'customers', 'packages', 'service-providers', 'services'] },
     preHandler: app.requirePermission(PERMISSIONS.PACKAGES_UPDATE),
     schema: {
       tags: ['packages'],
@@ -88,7 +88,7 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
   });
 
   app.put('/packages/:id/channels', {
-    config: { invalidates: ['channels', 'packages'] },
+    config: { invalidates: ['channels', 'customers', 'packages'] },
     preHandler: app.requirePermission(PERMISSIONS.PACKAGES_UPDATE),
     schema: {
       tags: ['packages'],

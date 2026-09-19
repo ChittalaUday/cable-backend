@@ -1,71 +1,17 @@
-import type { SystemRoleId } from '@/config/constants';
-import type { PermissionKey, PermissionScope } from '@/security/permissions';
 import process from 'node:process';
-import { eq, or, sql } from 'drizzle-orm';
+import { eq, or } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import pg from 'pg';
 import { SYSTEM_ROLES } from '@/config/constants';
 import { env } from '@/config/env';
 import * as schema from '@/db/schema';
-import { rolePermissions, roles, tenantMemberships, tenants, users } from '@/db/schema';
+import { tenantMemberships, tenants, users } from '@/db/schema';
 import { hashPassword } from '@/security/password';
-import {
-  ALL_PERMISSION_KEYS,
-  PERMISSIONS,
-} from '@/security/permissions';
+import { SYSTEM_ROLE_GRANTS } from '@/security/role-grants';
 import { seedLocations } from './seed-locations';
 import { seedRemotes } from './seed-remotes';
-
-const EVERYTHING = ALL_PERMISSION_KEYS.map(key => [key, 'ALL'] as [PermissionKey, PermissionScope]);
-
-const GRANTS: Record<SystemRoleId, Array<[PermissionKey, PermissionScope]>> = {
-  [SYSTEM_ROLES.ADMIN]: EVERYTHING,
-
-  [SYSTEM_ROLES.STAFF]: [
-    [PERMISSIONS.CUSTOMERS_VIEW, 'LOCATION'],
-    [PERMISSIONS.CUSTOMERS_CREATE, 'LOCATION'],
-    [PERMISSIONS.CUSTOMERS_UPDATE, 'LOCATION'],
-    [PERMISSIONS.LOCATIONS_VIEW, 'LOCATION'],
-    [PERMISSIONS.LOCATIONS_CREATE, 'LOCATION'],
-    [PERMISSIONS.CONNECTIONS_VIEW, 'LOCATION'],
-    [PERMISSIONS.CONNECTIONS_CREATE, 'LOCATION'],
-    [PERMISSIONS.CONNECTIONS_UPDATE, 'LOCATION'],
-    [PERMISSIONS.PAYMENTS_VIEW, 'LOCATION'],
-    [PERMISSIONS.PAYMENTS_COLLECT, 'LOCATION'],
-    [PERMISSIONS.TICKETS_VIEW, 'ASSIGNED'],
-    [PERMISSIONS.TICKETS_CREATE, 'LOCATION'],
-    [PERMISSIONS.TICKETS_UPDATE, 'ASSIGNED'],
-    [PERMISSIONS.TICKETS_RESOLVE, 'ASSIGNED'],
-    [PERMISSIONS.INVENTORY_VIEW, 'LOCATION'],
-    [PERMISSIONS.INVENTORY_UPDATE, 'LOCATION'],
-    [PERMISSIONS.PACKAGES_VIEW, 'LOCATION'],
-    [PERMISSIONS.SERVICES_VIEW, 'LOCATION'],
-    [PERMISSIONS.REPORTS_VIEW, 'LOCATION'],
-    [PERMISSIONS.REMOTES_VIEW, 'ALL'],
-    [PERMISSIONS.REMOTES_MANAGE, 'ALL'],
-    [PERMISSIONS.NOTIFICATIONS_SEND, 'ALL'],
-  ],
-
-  [SYSTEM_ROLES.CUSTOMER]: [
-    [PERMISSIONS.CUSTOMERS_VIEW, 'OWN'],
-    [PERMISSIONS.CONNECTIONS_VIEW, 'OWN'],
-    [PERMISSIONS.PAYMENTS_VIEW, 'OWN'],
-    [PERMISSIONS.TICKETS_VIEW, 'OWN'],
-    [PERMISSIONS.TICKETS_CREATE, 'OWN'],
-    [PERMISSIONS.PACKAGES_VIEW, 'ALL'],
-    [PERMISSIONS.SERVICES_VIEW, 'ALL'],
-    [PERMISSIONS.DEVICES_VIEW, 'OWN'],
-    [PERMISSIONS.SESSIONS_VIEW, 'OWN'],
-    [PERMISSIONS.SESSIONS_REVOKE, 'OWN'],
-    [PERMISSIONS.REMOTES_VIEW, 'ALL'],
-  ],
-};
-
-const ROLE_NAMES: Record<SystemRoleId, string> = {
-  [SYSTEM_ROLES.ADMIN]: 'Admin',
-  [SYSTEM_ROLES.STAFF]: 'Staff',
-  [SYSTEM_ROLES.CUSTOMER]: 'Customer',
-};
+import { ensureSystemRoles } from './seed-roles';
+import { seedStaff } from './seed-staff';
 
 const TENANTS = [
   { code: 'SSCN', name: 'Sri Satya Cable Network' },
@@ -76,24 +22,14 @@ const pool = new pg.Pool({ connectionString: env.DATABASE_URL, max: 1 });
 const db = drizzle(pool, { schema });
 
 try {
-  for (const roleId of Object.keys(GRANTS) as SystemRoleId[]) {
-    await db
-      .insert(roles)
-      .values({ id: roleId, name: ROLE_NAMES[roleId] })
-      .onConflictDoUpdate({ target: roles.id, set: { name: ROLE_NAMES[roleId], updatedAt: new Date() } });
-
-    await db
-      .insert(rolePermissions)
-      .values(GRANTS[roleId].map(([permissionKey, scope]) => ({ roleId, permissionKey, scope })))
-      .onConflictDoUpdate({
-        target: [rolePermissions.roleId, rolePermissions.permissionKey],
-        set: { scope: sql`excluded.scope` },
-      });
-  }
+  const { granted, revoked } = await ensureSystemRoles(db);
 
   await db.insert(tenants).values(TENANTS).onConflictDoNothing({ target: tenants.code });
 
-  console.log(`✅ Seeded ${Object.keys(GRANTS).length} roles, ${TENANTS.length} tenants`);
+  console.log(
+    `✅ Seeded ${Object.keys(SYSTEM_ROLE_GRANTS).length} roles (${granted} grants`
+    + `${revoked > 0 ? `, ${revoked} revoked` : ''}), ${TENANTS.length} tenants`,
+  );
 
   const allTenants = await db.select().from(tenants);
   const tenantMap = new Map(allTenants.map(t => [t.code, t.id]));
@@ -191,6 +127,7 @@ try {
   const sscnTenantId = tenantMap.get('SSCN');
   if (sscnTenantId !== undefined) {
     await seedLocations(db, sscnTenantId);
+    await seedStaff(db, sscnTenantId);
   }
 
   const remoteCount = await seedRemotes(db);

@@ -1,8 +1,19 @@
 import type { TestDb } from './db';
 import { randomInt, randomUUID } from 'node:crypto';
-import { inArray } from 'drizzle-orm';
+import { inArray, sql } from 'drizzle-orm';
 import { SYSTEM_ROLES } from '@/config/constants';
-import { devices, rolePermissions, roles, tenantMemberships, tenants, users } from '@/db/schema';
+import {
+  approvalRequests,
+  collections,
+  customerEquipment,
+  devices,
+  rolePermissions,
+  roles,
+  stockMovements,
+  tenantMemberships,
+  tenants,
+  users,
+} from '@/db/schema';
 import { hashPassword } from '@/security/password';
 import { ALL_PERMISSION_KEYS, PERMISSIONS } from '@/security/permissions';
 import { normaliseEmail } from '@/utils/email';
@@ -34,10 +45,64 @@ export interface SeededAuthData {
   cleanup: () => Promise<void>;
 }
 
+/**
+ * Clear the rows that name a user with ON DELETE RESTRICT, so the user can go.
+ *
+ * Everything that records who did the work — a receipt, an issued box, a stock
+ * movement, a change request — pins the actor on purpose, which is right in
+ * production and in the way at the end of a test. `billing.collections` is also
+ * append-only by trigger, so it is lifted with the trigger off.
+ */
+export async function releaseUserReferences(db: TestDb, userIds: readonly string[]): Promise<void> {
+  if (userIds.length === 0)
+    return;
+
+  const ids = [...userIds];
+
+  await db.execute(sql`ALTER TABLE billing.collections DISABLE TRIGGER collections_append_only`);
+  try {
+    await db.delete(collections).where(inArray(collections.collectedBy, ids));
+  }
+  finally {
+    await db.execute(sql`ALTER TABLE billing.collections ENABLE TRIGGER collections_append_only`);
+  }
+
+  await db.delete(stockMovements).where(inArray(stockMovements.performedBy, ids));
+  await db.delete(customerEquipment).where(inArray(customerEquipment.assignedBy, ids));
+  await db.delete(approvalRequests).where(inArray(approvalRequests.requestedBy, ids));
+}
+
+/**
+ * Take a copy of a role's grants and hand back the undo.
+ *
+ * `iam.roles` allows exactly three ids, so every test file shares one set of
+ * grants (hence `fileParallelism: false`). A file that widens a role has to put
+ * it back, or the next file runs against permissions it never asked for.
+ */
+export async function snapshotRoleGrants(db: TestDb, roleIds: readonly string[]): Promise<() => Promise<void>> {
+  const before = await db
+    .select()
+    .from(rolePermissions)
+    .where(inArray(rolePermissions.roleId, [...roleIds]));
+
+  return async () => {
+    await db.delete(rolePermissions).where(inArray(rolePermissions.roleId, [...roleIds]));
+
+    if (before.length > 0)
+      await db.insert(rolePermissions).values(before);
+  };
+}
+
 export async function seedRoles(db: TestDb): Promise<void> {
   const grants = {
     [SYSTEM_ROLES.ADMIN]: ALL_PERMISSION_KEYS.map(key => [key, 'ALL'] as const),
-    [SYSTEM_ROLES.STAFF]: [[PERMISSIONS.CUSTOMERS_VIEW, 'LOCATION'] as const],
+    [SYSTEM_ROLES.STAFF]: [
+      [PERMISSIONS.CUSTOMERS_VIEW, 'LOCATION'] as const,
+      [PERMISSIONS.LOCATIONS_VIEW, 'LOCATION'] as const,
+      [PERMISSIONS.LOCATIONS_CREATE, 'LOCATION'] as const,
+      [PERMISSIONS.LOCATIONS_UPDATE, 'LOCATION'] as const,
+      [PERMISSIONS.LOCATIONS_DELETE, 'LOCATION'] as const,
+    ],
     [SYSTEM_ROLES.CUSTOMER]: [[PERMISSIONS.CUSTOMERS_VIEW, 'OWN'] as const],
   };
 
@@ -102,6 +167,7 @@ export async function seedAuthData(db: TestDb): Promise<SeededAuthData> {
     tenantB: { id: tenantB!.id, code: tenantB!.code },
     blockedDeviceId: blocked!.clientDeviceId,
     cleanup: async () => {
+      await releaseUserReferences(db, userIds);
       await db.delete(users).where(inArray(users.id, userIds));
       await db.delete(tenants).where(inArray(tenants.id, [tenantA!.id, tenantB!.id]));
       await db.delete(devices).where(inArray(devices.id, [blocked!.id]));

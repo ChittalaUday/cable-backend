@@ -54,8 +54,10 @@ export function badRequest(code: ErrorCode, message: string, details?: Validatio
   );
 }
 
-export function orNotFound<T>(row: T | undefined, what: string): T {
-  if (row === undefined)
+// Repositories signal "no row" with null; Drizzle's destructured `[row]` gives
+// undefined. Both mean the same 404, so this accepts either.
+export function orNotFound<T>(row: T | null | undefined, what: string): T {
+  if (row === null || row === undefined)
     throw notFound(what);
 
   return row;
