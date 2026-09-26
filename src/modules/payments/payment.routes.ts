@@ -6,7 +6,8 @@ import {
   CollectionPage,
   CollectionResponse,
   ListCollectionsQuery,
-  RecordCollectionBody,
+  RecordEquipmentPaymentBody,
+  RecordSubscriptionPaymentBody,
   ReverseCollectionBody,
 } from './payment.schema';
 
@@ -38,18 +39,33 @@ const routes: FastifyPluginAsyncTypebox = async (app) => {
     return request.server.payments.get(request.access, request.params.id);
   });
 
-  app.post('/payments', {
+  app.post('/payments/subscription', {
     config: { invalidates: ['analytics', 'customers', 'payments'] },
     preHandler: app.requirePermission(PERMISSIONS.PAYMENTS_COLLECT),
     schema: {
       tags: ['payments'],
-      summary: 'Record a doorstep visit: full payment, part payment, or nothing with a reason',
+      summary: 'Record a subscription payment: full payment, part payment, or nothing with a reason',
       description: 'Idempotent on `reference` — replaying one returns the original receipt rather than taking the money twice.',
-      body: RecordCollectionBody,
+      body: RecordSubscriptionPaymentBody,
       response: { 201: CollectionResponse, ...ERRORS },
     },
   }, async (request, reply) => {
-    const receipt = await request.server.payments.record(request.access, request.body);
+    const receipt = await request.server.payments.recordSubscription(request.access, request.body);
+    return reply.status(201).send(receipt);
+  });
+
+  app.post('/payments/equipment', {
+    config: { invalidates: ['analytics', 'customers', 'payments', 'inventory'] },
+    preHandler: app.requirePermission(PERMISSIONS.PAYMENTS_COLLECT),
+    schema: {
+      tags: ['payments'],
+      summary: 'Record an equipment payment: add new equipment or update/replace existing equipment',
+      description: 'Idempotent on `reference` — replaying one returns the original receipt rather than taking the money twice.',
+      body: RecordEquipmentPaymentBody,
+      response: { 201: CollectionResponse, ...ERRORS },
+    },
+  }, async (request, reply) => {
+    const receipt = await request.server.payments.recordEquipment(request.access, request.body);
     return reply.status(201).send(receipt);
   });
 

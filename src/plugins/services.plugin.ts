@@ -15,6 +15,7 @@ import { PaymentService } from '@/modules/payments/payment.service';
 import { RemotesService } from '@/modules/remotes/remote.service';
 import { CoverageService, ServicesService } from '@/modules/services';
 import { StaffService, TeamsService } from '@/modules/staff';
+import { TenantService } from '@/modules/tenants';
 import { firebaseApp } from '@/services/firebase';
 import { MessagingService } from '@/services/messaging/messaging.service';
 import { createFcmProvider } from '@/services/messaging/providers/fcm.provider';
@@ -39,6 +40,7 @@ declare module 'fastify' {
     services: ServicesService;
     coverage: CoverageService;
     remotes: RemotesService;
+    tenants: TenantService;
     analytics: AnalyticsService;
     messaging: MessagingService;
     notifications: NotificationService;
@@ -163,6 +165,7 @@ export default fp(async (app) => {
   const coverage = new CoverageService(app.db, locations);
   const remotes = new RemotesService(app.db);
   const analytics = new AnalyticsService(app.db);
+  const tenants = new TenantService(app.db);
 
   app.decorate('messaging', messaging);
   app.decorate('notifications', notifications);
@@ -180,4 +183,5 @@ export default fp(async (app) => {
   app.decorate('coverage', coverage);
   app.decorate('remotes', remotes);
   app.decorate('analytics', analytics);
+  app.decorate('tenants', tenants);
 }, { name: 'services', dependencies: ['db', 'iam'] });

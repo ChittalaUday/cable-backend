@@ -43,6 +43,7 @@ export async function seedLocations(db: Db, tenantId: string): Promise<void> {
       .values({ tenantId, name: cat.name, slug: cat.slug, config: {} })
       .onConflictDoUpdate({
         target: [locationCategories.tenantId, locationCategories.slug],
+        targetWhere: sql`deleted_at IS NULL`,
         set: { name: cat.name, updatedAt: new Date() },
       })
       .returning({ id: locationCategories.id, slug: locationCategories.slug });
@@ -55,6 +56,7 @@ export async function seedLocations(db: Db, tenantId: string): Promise<void> {
       .values({ tenantId, name: input.name, slug: input.slug, description: input.description, isActive: true })
       .onConflictDoUpdate({
         target: [locationSchemas.tenantId, locationSchemas.slug],
+        targetWhere: sql`deleted_at IS NULL`,
         set: { name: input.name, description: input.description, updatedAt: new Date() },
       })
       .returning({ id: locationSchemas.id });

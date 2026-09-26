@@ -92,6 +92,61 @@ export type ListCustomersQuery = Static<typeof ListCustomersQuery>;
 
 export const IdParams = Type.Object({ id: Uuid });
 
+export const SubscriptionIdParams = Type.Object({ id: Uuid, subscriptionId: Uuid });
+
+/** A price a caller sends, as opposed to one we render back. */
+const MoneyInput = Type.String({
+  pattern: '^\\d{1,10}(\\.\\d{1,2})?$',
+  description: 'Decimal string, never negative, e.g. "349.00"',
+});
+
+export const ChangePlanBody = Type.Object({
+  /** The package the line moves onto. Must belong to the line's own provider. */
+  packageId: Uuid,
+  /**
+   * What this customer actually pays, when it is not the package's list price.
+   * Left out, the line takes the package price.
+   */
+  price: Type.Optional(MoneyInput),
+});
+
+/** The first connection, fitted at the same time as the subscriber. */
+const FirstConnection = Type.Object({
+  packageId: Uuid,
+  /** Where the line is fitted. Also what decides who can see the customer. */
+  locationId: Uuid,
+  installationAddress: Type.Optional(Type.String({ maxLength: 500 })),
+  price: Type.Optional(MoneyInput),
+});
+
+export const CreateCustomerBody = Type.Object({
+  name: Type.String({ minLength: 1, maxLength: 160 }),
+  phone: Type.String({ pattern: '^[0-9]{10}$' }),
+  alternatePhone: Type.Optional(Type.String({ pattern: '^[0-9]{10}$' })),
+  whatsappNumber: Type.Optional(Type.String({ pattern: '^[0-9]{10}$' })),
+  status: Type.Optional(CustomerStatusSchema),
+  address: Type.Optional(Type.String({ maxLength: 500 })),
+  notes: Type.Optional(Type.String({ maxLength: 2000 })),
+  connection: Type.Optional(FirstConnection),
+});
+
+export const AddSubscriptionBody = Type.Object({
+  /** Usually an addon package, but any package of the same provider works. */
+  packageId: Uuid,
+  /**
+   * The line the new one sits beside. The provider, the installation location
+   * and the address are inherited from it, so an addon cannot end up somewhere
+   * the base connection is not.
+   */
+  basedOn: Uuid,
+  price: Type.Optional(MoneyInput),
+});
+
+export type CreateCustomerBody = Static<typeof CreateCustomerBody>;
+export type ChangePlanBody = Static<typeof ChangePlanBody>;
+export type AddSubscriptionBody = Static<typeof AddSubscriptionBody>;
+export type Subscription = Static<typeof SubscriptionResponse>;
+
 const SearchLocationResponse = Type.Object({
   locationId: Uuid,
   path: Type.String(),

@@ -56,10 +56,25 @@ export const AUDITED_ROUTES: Readonly<Record<string, readonly AuditAction[]>> = 
   'POST /api/v1/inventory/approval-requests': [auditAction(AUDIT_ENTITIES.INVENTORY_APPROVAL_REQUEST, AUDIT_VERBS.CREATED)],
   'PATCH /api/v1/inventory/approval-requests/:id': [auditAction(AUDIT_ENTITIES.INVENTORY_APPROVAL_REQUEST, AUDIT_VERBS.UPDATED)],
 
-  'POST /api/v1/payments': [auditAction(AUDIT_ENTITIES.PAYMENT_COLLECTION, AUDIT_VERBS.CREATED)],
+  'POST /api/v1/payments/subscription': [auditAction(AUDIT_ENTITIES.PAYMENT_COLLECTION, AUDIT_VERBS.CREATED)],
+  'POST /api/v1/payments/equipment': [auditAction(AUDIT_ENTITIES.PAYMENT_COLLECTION, AUDIT_VERBS.CREATED)],
   'POST /api/v1/payments/:id/reverse': [auditAction(AUDIT_ENTITIES.PAYMENT_COLLECTION, AUDIT_VERBS.CREATED)],
 
+  'POST /api/v1/tickets': [auditAction(AUDIT_ENTITIES.TICKET, AUDIT_VERBS.CREATED)],
+  'PATCH /api/v1/tickets/:id': [auditAction(AUDIT_ENTITIES.TICKET, AUDIT_VERBS.UPDATED)],
+  'POST /api/v1/tickets/:id/assign': [auditAction(AUDIT_ENTITIES.TICKET, AUDIT_VERBS.UPDATED)],
+  'POST /api/v1/customers': [
+    auditAction(AUDIT_ENTITIES.CUSTOMER, AUDIT_VERBS.CREATED),
+    auditAction(AUDIT_ENTITIES.SUBSCRIPTION, AUDIT_VERBS.CREATED),
+  ],
+  'PATCH /api/v1/customers/:id/subscriptions/:subscriptionId': [auditAction(AUDIT_ENTITIES.SUBSCRIPTION, AUDIT_VERBS.UPDATED)],
+  'POST /api/v1/customers/:id/subscriptions': [auditAction(AUDIT_ENTITIES.SUBSCRIPTION, AUDIT_VERBS.CREATED)],
+
   'POST /api/v1/remotes': [auditAction(AUDIT_ENTITIES.REMOTE, AUDIT_VERBS.CREATED)],
+
+  'POST /api/v1/tenants/me/upi-accounts': [auditAction(AUDIT_ENTITIES.TENANT_UPI_ACCOUNT, AUDIT_VERBS.CREATED)],
+  'PATCH /api/v1/tenants/me/upi-accounts/:upiAccountId': [auditAction(AUDIT_ENTITIES.TENANT_UPI_ACCOUNT, AUDIT_VERBS.UPDATED)],
+  'DELETE /api/v1/tenants/me/upi-accounts/:upiAccountId': [auditAction(AUDIT_ENTITIES.TENANT_UPI_ACCOUNT, AUDIT_VERBS.DELETED)],
 
   'POST /api/v1/notifications/send': [AUDIT_ACTIONS.NOTIFICATION_SENT],
 };

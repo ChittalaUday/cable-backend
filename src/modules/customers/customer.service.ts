@@ -1,13 +1,23 @@
 import type {
+  AddSubscriptionBody,
+  ChangePlanBody,
+  CreateCustomerBody,
   CustomerDetail,
   CustomerPage,
   CustomerProfile,
   ListCustomersQuery,
+  Subscription,
 } from './customer.schema';
-import type { Database } from '@/db/client';
+import type { BillingCycle } from '@/constants/crm';
+import type { Database, Transaction } from '@/db/client';
 import type { RequestAccess } from '@/modules/iam/access.service';
-import { CUSTOMER_STATUS } from '@/constants/crm';
-import { notFound } from '@/errors/domain-error';
+import { AUDIT_ENTITIES } from '@/constants/audit';
+import { CUSTOMER_STATUS, SUBSCRIPTION_STATUS } from '@/constants/crm';
+import { ERROR_CODES } from '@/errors';
+import { badRequest, conflict, notFound } from '@/errors/domain-error';
+import { audit } from '@/modules/audit/audit.service';
+import { locationScopeFor, requireScope } from '@/modules/iam/access.service';
+import { PERMISSIONS } from '@/security/permissions';
 import { CustomerRepository } from './customer.repository';
 import { reachCondition } from './customers.list';
 
@@ -15,6 +25,18 @@ export { CustomerProfileResponse } from './customer.schema';
 export { customerWithinNodes } from './customers.list';
 
 const RECENT_TRANSACTIONS = 20;
+
+interface PlannedLine {
+  chosen: { id: string; serviceProviderId: string; billingCycle: BillingCycle; price: string };
+  input: NonNullable<CreateCustomerBody['connection']>;
+}
+
+/** A trimmed value, or null when nothing was actually typed. */
+function trimmed(value: string | undefined): string | null {
+  const text = value?.trim() ?? '';
+
+  return text === '' ? null : text;
+}
 
 export class CustomerService {
   private readonly repo: CustomerRepository;
@@ -105,6 +127,269 @@ export class CustomerService {
     };
   }
 
+  /**
+   * Move a line onto a different package.
+   *
+   * Nothing is prorated, because nothing accrues: `outstanding_balance` is only
+   * ever written down by a payment — there is no cycle job that charges the
+   * monthly fee. The new price is what the next charge will use, whenever that
+   * is built. Add proration here the day accrual exists, not before.
+   */
+  async changePlan(
+    access: RequestAccess,
+    customerId: string,
+    subscriptionId: string,
+    input: ChangePlanBody,
+  ): Promise<Subscription> {
+    return this.repo.inTransaction(async (tx) => {
+      const line = await this.reachableLine(tx, access, customerId, subscriptionId);
+      const chosen = await this.samePackageProvider(tx, access.tenantId, input.packageId, line.serviceProviderId);
+
+      if (chosen.id === line.packageId && input.price === undefined)
+        throw conflict('That line is already on this package');
+
+      const after = await this.repo.updateSubscription(tx, access.tenantId, line.id, {
+        packageId: chosen.id,
+        price: input.price ?? chosen.price,
+        billingCycle: chosen.billingCycle,
+      });
+
+      await audit.updated(tx, access.audit, {
+        entityType: AUDIT_ENTITIES.SUBSCRIPTION,
+        entityId: line.id,
+        before: line,
+        after,
+      });
+
+      return this.lineOf(tx, access.tenantId, after.id);
+    });
+  }
+
+  /**
+   * Put another package on the customer as a line of its own.
+   *
+   * An addon is a subscription rather than a flag on one, because that is the
+   * only shape the schema has: one package per line, one balance per line. It
+   * also means an addon bills, collects and shows up on every screen that
+   * already reads lines, with no new machinery anywhere.
+   */
+  /**
+   * Register a subscriber, and optionally fit their first connection with them.
+   *
+   * One transaction, because a customer with no line is invisible to every
+   * area-scoped screen in the app — half of this landing is worse than none of
+   * it. The subscriber code comes from the database sequence rather than from
+   * here, so two collectors at two doors cannot mint the same one.
+   */
+  async create(access: RequestAccess, input: CreateCustomerBody): Promise<CustomerDetail> {
+    const scope = requireScope(access, PERMISSIONS.CUSTOMERS_CREATE);
+
+    // An area-scoped caller can only reach customers through a line's location.
+    // Letting them register one without a connection would file a subscriber
+    // that they themselves could not open again.
+    if (scope !== 'ALL' && input.connection === undefined) {
+      throw badRequest(
+        ERROR_CODES.VALIDATION_FAILED,
+        'Registering without a connection needs customers.create at ALL — an area-scoped account must fit the first line',
+      );
+    }
+
+    const address = trimmed(input.address);
+
+    const id = await this.repo.inTransaction(async (tx) => {
+      const line = input.connection === undefined
+        ? null
+        : await this.plannedLine(tx, access, scope, input.connection);
+
+      const code = await this.repo.nextCustomerCode(tx, access.tenantId);
+
+      const customer = await this.repo.insertCustomer(tx, {
+        tenantId: access.tenantId,
+        customerCode: code,
+        name: input.name.trim(),
+        phone: input.phone,
+        alternatePhone: input.alternatePhone ?? null,
+        whatsappNumber: input.whatsappNumber ?? null,
+        address,
+        notes: trimmed(input.notes),
+        status: input.status ?? CUSTOMER_STATUS.ACTIVE,
+        outstandingBalance: '0',
+        createdBy: access.userId,
+      });
+
+      await audit.created(tx, access.audit, {
+        entityType: AUDIT_ENTITIES.CUSTOMER,
+        entityId: customer.id,
+        after: customer,
+      });
+
+      if (line !== null)
+        await this.fitFirstLine(tx, access, customer.id, code, address, line);
+
+      return customer.id;
+    });
+
+    return this.detail(access, id);
+  }
+
+  /** The customer's first line, taking the subscriber code as its account number. */
+  private async fitFirstLine(
+    tx: Transaction,
+    access: RequestAccess,
+    customerId: string,
+    code: string,
+    address: string | null,
+    line: PlannedLine,
+  ): Promise<void> {
+    const created = await this.repo.insertSubscription(tx, {
+      tenantId: access.tenantId,
+      customerId,
+      serviceProviderId: line.chosen.serviceProviderId,
+      packageId: line.chosen.id,
+      // Addons suffix off this, so one customer's accounts read as a family.
+      serviceAccountNumber: code,
+      status: SUBSCRIPTION_STATUS.ACTIVE,
+      startDate: new Date(),
+      billingCycle: line.chosen.billingCycle,
+      price: line.input.price ?? line.chosen.price,
+      outstandingBalance: '0',
+      installationLocationId: line.input.locationId,
+      installationAddress: trimmed(line.input.installationAddress) ?? address,
+    });
+
+    await audit.created(tx, access.audit, {
+      entityType: AUDIT_ENTITIES.SUBSCRIPTION,
+      entityId: created.id,
+      after: created,
+    });
+  }
+
+  /** The package and location a first connection asks for, once both check out. */
+  private async plannedLine(
+    tx: Transaction,
+    access: RequestAccess,
+    scope: string,
+    connection: NonNullable<CreateCustomerBody['connection']>,
+  ): Promise<PlannedLine> {
+    const chosen = await this.repo.findPackage(tx, access.tenantId, connection.packageId);
+
+    if (chosen === null)
+      throw notFound('Package');
+
+    if (scope !== 'ALL') {
+      const reach = locationScopeFor(access, PERMISSIONS.CUSTOMERS_CREATE);
+      const reaches = reach.kind === 'ALL_TENANT_LOCATIONS'
+        || (reach.nodeIds.length > 0
+          && await this.repo.nodeUnderGrant(tx, connection.locationId, reach.nodeIds));
+
+      if (!reaches) {
+        throw badRequest(
+          ERROR_CODES.PERM_SCOPE_DENIED,
+          'That location is outside the areas this account covers',
+        );
+      }
+    }
+
+    return { chosen, input: connection };
+  }
+
+  async addSubscription(
+    access: RequestAccess,
+    customerId: string,
+    input: AddSubscriptionBody,
+  ): Promise<Subscription> {
+    return this.repo.inTransaction(async (tx) => {
+      const base = await this.reachableLine(tx, access, customerId, input.basedOn);
+      const chosen = await this.samePackageProvider(tx, access.tenantId, input.packageId, base.serviceProviderId);
+
+      const taken = await this.repo.accountNumbersOf(tx, access.tenantId, customerId);
+
+      const created = await this.repo.insertSubscription(tx, {
+        tenantId: access.tenantId,
+        customerId,
+        serviceProviderId: base.serviceProviderId,
+        packageId: chosen.id,
+        serviceAccountNumber: nextAccountNumber(base.serviceAccountNumber, taken),
+        status: SUBSCRIPTION_STATUS.ACTIVE,
+        startDate: new Date(),
+        billingCycle: chosen.billingCycle,
+        price: input.price ?? chosen.price,
+        outstandingBalance: '0',
+        installationLocationId: base.installationLocationId,
+        installationAddress: base.installationAddress,
+      });
+
+      await audit.created(tx, access.audit, {
+        entityType: AUDIT_ENTITIES.SUBSCRIPTION,
+        entityId: created.id,
+        after: created,
+      });
+
+      return this.lineOf(tx, access.tenantId, created.id);
+    });
+  }
+
+  /** The customer's line, once the caller is known to reach where it is fitted. */
+  private async reachableLine(
+    tx: Transaction,
+    access: RequestAccess,
+    customerId: string,
+    subscriptionId: string,
+  ) {
+    const scope = requireScope(access, PERMISSIONS.CONNECTIONS_UPDATE);
+    const line = await this.repo.findSubscription(tx, access.tenantId, customerId, subscriptionId);
+
+    if (line === null)
+      throw notFound('Subscription');
+
+    if (scope !== 'ALL') {
+      const reach = locationScopeFor(access, PERMISSIONS.CONNECTIONS_UPDATE);
+      const reaches = reach.kind === 'ALL_TENANT_LOCATIONS'
+        || (reach.nodeIds.length > 0
+          && await this.repo.nodeUnderGrant(tx, line.installationLocationId, reach.nodeIds));
+
+      // 404 rather than 403, the same answer `GET /customers/:id` gives: whether
+      // a line exists outside your areas is not something to learn from an error.
+      if (!reaches)
+        throw notFound('Subscription');
+    }
+
+    return line;
+  }
+
+  /**
+   * A package of this tenant, on the same provider as the line.
+   *
+   * Crossing providers would leave the line's service account number pointing at
+   * a provider that never issued it — that is a new connection, not a plan change.
+   */
+  private async samePackageProvider(
+    tx: Transaction,
+    tenantId: string,
+    packageId: string,
+    serviceProviderId: string,
+  ) {
+    const chosen = await this.repo.findPackage(tx, tenantId, packageId);
+
+    if (chosen === null)
+      throw notFound('Package');
+
+    if (chosen.serviceProviderId !== serviceProviderId)
+      throw badRequest(ERROR_CODES.VALIDATION_FAILED, 'That package belongs to a different provider');
+
+    return chosen;
+  }
+
+  /** Re-reads a written line in the shape every other endpoint returns it in. */
+  private async lineOf(tx: Transaction, tenantId: string, subscriptionId: string): Promise<Subscription> {
+    const row = await this.repo.findSubscriptionLine(tx, tenantId, subscriptionId);
+
+    if (row === null)
+      throw notFound('Subscription');
+
+    return toLine(row);
+  }
+
   private async equipmentOf(tenantId: string, customerId: string) {
     const rows = await this.repo.findEquipment(tenantId, customerId);
 
@@ -138,21 +423,46 @@ export class CustomerService {
   private async subscriptionLines(tenantId: string, customerId: string) {
     const lines = await this.repo.findSubscriptions(tenantId, customerId);
 
-    return lines.map(line => ({
-      id: line.subscription.id,
-      serviceAccountNumber: line.subscription.serviceAccountNumber,
-      status: line.subscription.status,
-      startDate: line.subscription.startDate.toISOString(),
-      endDate: line.subscription.endDate?.toISOString() ?? null,
-      billingCycle: line.subscription.billingCycle,
-      price: line.subscription.price,
-      outstandingBalance: line.subscription.outstandingBalance,
-      locationId: line.subscription.installationLocationId,
-      installationAddress: line.subscription.installationAddress,
-      service: { id: line.serviceId, name: line.serviceName, slug: line.serviceSlug, icon: line.serviceIcon },
-      provider: { id: line.subscription.serviceProviderId, name: line.providerName, slug: line.providerSlug },
-      package: { id: line.subscription.packageId, name: line.packageName, slug: line.packageSlug, packageType: line.packageType },
-    }));
+    return lines.map(toLine);
+  }
+}
+
+type LineRow = Awaited<ReturnType<CustomerRepository['findSubscriptions']>>[number];
+
+/** The one shape a subscription is rendered in, wherever it is read from. */
+function toLine(line: LineRow): Subscription {
+  return {
+    id: line.subscription.id,
+    serviceAccountNumber: line.subscription.serviceAccountNumber,
+    status: line.subscription.status,
+    startDate: line.subscription.startDate.toISOString(),
+    endDate: line.subscription.endDate?.toISOString() ?? null,
+    billingCycle: line.subscription.billingCycle,
+    price: line.subscription.price,
+    outstandingBalance: line.subscription.outstandingBalance,
+    locationId: line.subscription.installationLocationId,
+    installationAddress: line.subscription.installationAddress,
+    service: { id: line.serviceId, name: line.serviceName, slug: line.serviceSlug, icon: line.serviceIcon },
+    provider: { id: line.subscription.serviceProviderId, name: line.providerName, slug: line.providerSlug },
+    package: { id: line.subscription.packageId, name: line.packageName, slug: line.packageSlug, packageType: line.packageType },
+  };
+}
+
+/**
+ * `SSCN-0042` and its addons become `SSCN-0042-A1`, `-A2`, and so on.
+ *
+ * Account numbers arrive with imported MSO data and have no generator, so an
+ * added line is suffixed off the one it sits beside — readable on a receipt,
+ * and traceable back to the connection it belongs to.
+ */
+function nextAccountNumber(base: string, taken: readonly string[]): string {
+  const used = new Set(taken);
+
+  for (let suffix = 1; ; suffix += 1) {
+    const candidate = `${base}-A${suffix}`;
+
+    if (!used.has(candidate))
+      return candidate;
   }
 }
 

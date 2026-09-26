@@ -81,3 +81,23 @@ export const TRANSACTION_TYPE = {
   ADJUSTMENT: 'adjustment',
   OTHER: 'other',
 } as const satisfies Record<string, TransactionType>;
+
+export const TICKET_CATEGORIES = [
+  'no_signal',
+  'poor_quality',
+  'billing',
+  'installation',
+  'relocation',
+  'disconnection',
+  'other',
+] as const;
+export type TicketCategory = (typeof TICKET_CATEGORIES)[number];
+
+export const TICKET_PRIORITIES = ['low', 'normal', 'high', 'urgent'] as const;
+export type TicketPriority = (typeof TICKET_PRIORITIES)[number];
+
+export const TICKET_STATUSES = ['open', 'in_progress', 'resolved', 'closed', 'cancelled'] as const;
+export type TicketStatus = (typeof TICKET_STATUSES)[number];
+
+/** Statuses a ticket is no longer worked on in. */
+export const TICKET_CLOSED_STATUSES = ['resolved', 'closed', 'cancelled'] as const;

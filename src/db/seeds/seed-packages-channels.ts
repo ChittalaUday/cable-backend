@@ -136,6 +136,46 @@ export function mapGenre(category: string, channelName: string): ChannelGenre {
   return 'General';
 }
 
+/** What the operator charges on top of the MSO rate, per month of the pack. */
+const ACT_MONTHLY_MARKUP = 1135;
+
+const MONTHS_PER_CYCLE: Record<BillingCycle, number> = {
+  monthly: 1,
+  quarterly: 3,
+  semi_annual: 6,
+  annual: 12,
+};
+
+/**
+ * What the subscriber pays for an ACT pack, as opposed to what the MSO takes.
+ *
+ * The CSV carries the MSO rate — the cable slice — and the broadband the pack
+ * is really sold on is the operator's own, so the retail price is the MSO rate
+ * plus `ACT_MONTHLY_MARKUP` for every month the pack runs. Rounded up to the
+ * next ₹5 and never down, because a collector at a door counts notes, not paise,
+ * and rounding down would have the operator eat the difference on every visit.
+ *
+ * Only ACT's own plans. Bouquets and a-la-carte channels are add-ons sold
+ * beside a plan, and the markup already rides on the plan they sit next to.
+ */
+export function actRetailPrice(pkg: {
+  name: string;
+  price: string;
+  packageType: PackageType;
+  billingCycle: BillingCycle;
+}): string {
+  const mso = Number(pkg.price) || 0;
+
+  // A zero-priced base package is ACT's mandatory free tier, not something sold.
+  if (pkg.packageType !== 'base' || mso <= 0 || !/^ACT[\s_]/i.test(pkg.name)) {
+    return pkg.price;
+  }
+
+  const total = mso + ACT_MONTHLY_MARKUP * MONTHS_PER_CYCLE[pkg.billingCycle];
+
+  return (Math.ceil(total / 5) * 5).toFixed(2);
+}
+
 export function inferBillingCycle(name: string): BillingCycle {
   const upper = name.toUpperCase();
   if (upper.includes('_03_') || upper.includes('03 MONTHS') || upper.includes('3 MONTHS') || upper.includes('03_MONTHS')) {
@@ -457,7 +497,7 @@ export async function seedPackagesAndChannels({
         .set({
           name: pkg.name,
           packageType: pkg.packageType,
-          price: pkg.price,
+          price: actRetailPrice(pkg),
           msoShare: pkg.price,
           billingCycle: pkg.billingCycle,
           description: `ACT Digital ${pkg.section} (${pkg.name}) with ${pkg.channelSlugs.size} channels`,
@@ -481,7 +521,7 @@ export async function seedPackagesAndChannels({
     name: pkg.name,
     slug: pkg.slug,
     packageType: pkg.packageType,
-    price: pkg.price,
+    price: actRetailPrice(pkg),
     discount: '0.00',
     msoShare: pkg.price,
     taxRate: '18.00',

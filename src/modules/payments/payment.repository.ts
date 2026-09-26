@@ -1,11 +1,27 @@
 import type { SQL } from 'drizzle-orm';
 import type { CollectionResponse, ListCollectionsQuery } from './payment.schema';
 import type { Database, Transaction } from '@/db/client';
-import type { Collection, CollectionAccessory, NewCollection } from '@/db/schema';
+import type {
+  Collection,
+  CollectionAccessory,
+  CustomerEquipment,
+  Equipment,
+  ItemCatalogRecord,
+  NewCollection,
+  StockMovementRecord,
+} from '@/db/schema';
 import type { CollectableLine, LockedCustomer } from '@/modules/customers/customer.repository';
 import type { LocationScope } from '@/security/location-scope';
 import { and, eq, sql } from 'drizzle-orm';
-import { accountTransactions, collections, pointOf } from '@/db/schema';
+import {
+  accountTransactions,
+  collections,
+  customerEquipment,
+  equipment,
+  itemCatalog,
+  pointOf,
+  stockMovements,
+} from '@/db/schema';
 import { CustomerRepository } from '@/modules/customers/customer.repository';
 import { underAnyGrant, withinGrantedSubtree } from '@/security/location-scope';
 
@@ -22,6 +38,12 @@ export interface HydratedRow extends Record<string, unknown> {
   customerName: string | null;
   customerCode: string | null;
   subscriptionId: string | null;
+  customerEquipmentId: string | null;
+  equipmentName: string | null;
+  equipmentItemCode: string | null;
+  equipmentSerialNumber: string | null;
+  equipmentBrand: string | null;
+  equipmentModel: string | null;
   serviceAccountNumber: string | null;
   locationId: string | null;
   locationPath: string | null;
@@ -98,6 +120,12 @@ export class PaymentRepository {
              coalesce(u.name, cust.name) "customerName",
              cust.customer_code "customerCode",
              c.subscription_id "subscriptionId",
+             c.customer_equipment_id "customerEquipmentId",
+             ic.name "equipmentName",
+             ic.code "equipmentItemCode",
+             eq.serial_number "equipmentSerialNumber",
+             ic.brand "equipmentBrand",
+             ic.model "equipmentModel",
              s.service_account_number "serviceAccountNumber",
              s.installation_location_id "locationId",
              lp.path "locationPath",
@@ -121,6 +149,9 @@ export class PaymentRepository {
       LEFT JOIN auth.users collector ON collector.id = c.collected_by
       LEFT JOIN crm.subscriptions s ON s.id = c.subscription_id
       LEFT JOIN geo.location_paths lp ON lp.id = s.installation_location_id
+      LEFT JOIN inventory.customer_equipment ce ON ce.id = c.customer_equipment_id
+      LEFT JOIN inventory.equipment eq ON eq.id = ce.equipment_id
+      LEFT JOIN inventory.item_catalog ic ON ic.id = eq.catalog_id
     `;
   }
 
@@ -274,5 +305,96 @@ export class PaymentRepository {
 
   async applyDuesPayment(tx: Transaction, tenantId: string, customerId: string, subscriptionId: string, amount: string): Promise<void> {
     return this.customers.applyDuesPayment(tx, tenantId, customerId, subscriptionId, amount);
+  }
+
+  // --- Inventory & Customer Equipment ---------------------------------------
+
+  async findCustomerEquipment(tx: Transaction, tenantId: string, id: string): Promise<CustomerEquipment | null> {
+    const [row] = await tx
+      .select()
+      .from(customerEquipment)
+      .where(and(eq(customerEquipment.id, id), eq(customerEquipment.tenantId, tenantId)))
+      .limit(1);
+
+    return row ?? null;
+  }
+
+  async findCatalogItem(tx: Transaction, tenantId: string, id: string): Promise<ItemCatalogRecord | null> {
+    const [row] = await tx
+      .select()
+      .from(itemCatalog)
+      .where(and(eq(itemCatalog.id, id), eq(itemCatalog.tenantId, tenantId), sql`${itemCatalog.deletedAt} IS NULL`))
+      .limit(1);
+
+    return row ?? null;
+  }
+
+  async findEquipmentUnit(tx: Transaction, tenantId: string, id: string): Promise<Equipment | null> {
+    const [row] = await tx
+      .select()
+      .from(equipment)
+      .where(and(eq(equipment.id, id), eq(equipment.tenantId, tenantId)))
+      .limit(1);
+
+    return row ?? null;
+  }
+
+  async findAvailableUnit(tx: Transaction, tenantId: string, catalogId: string, serialNumber?: string): Promise<Equipment | null> {
+    const conditions = [
+      eq(equipment.tenantId, tenantId),
+      eq(equipment.catalogId, catalogId),
+      eq(equipment.inventoryStatus, 'available'),
+    ];
+
+    if (serialNumber !== undefined)
+      conditions.push(eq(equipment.serialNumber, serialNumber));
+
+    const [row] = await tx
+      .select()
+      .from(equipment)
+      .where(and(...conditions))
+      .limit(1);
+
+    return row ?? null;
+  }
+
+  async createEquipmentUnit(tx: Transaction, values: typeof equipment.$inferInsert): Promise<Equipment> {
+    const [row] = await tx.insert(equipment).values(values).returning();
+    return row!;
+  }
+
+  async updateEquipmentUnit(tx: Transaction, tenantId: string, id: string, values: Partial<typeof equipment.$inferInsert>): Promise<Equipment> {
+    const [row] = await tx
+      .update(equipment)
+      .set({ ...values, updatedAt: new Date() })
+      .where(and(eq(equipment.id, id), eq(equipment.tenantId, tenantId)))
+      .returning();
+
+    return row!;
+  }
+
+  async createCustomerEquipment(tx: Transaction, values: typeof customerEquipment.$inferInsert): Promise<CustomerEquipment> {
+    const [row] = await tx.insert(customerEquipment).values(values).returning();
+    return row!;
+  }
+
+  async updateCustomerEquipment(
+    tx: Transaction,
+    tenantId: string,
+    id: string,
+    values: Partial<typeof customerEquipment.$inferInsert>,
+  ): Promise<CustomerEquipment> {
+    const [row] = await tx
+      .update(customerEquipment)
+      .set({ ...values, updatedAt: new Date() })
+      .where(and(eq(customerEquipment.id, id), eq(customerEquipment.tenantId, tenantId)))
+      .returning();
+
+    return row!;
+  }
+
+  async createStockMovement(tx: Transaction, values: typeof stockMovements.$inferInsert): Promise<StockMovementRecord> {
+    const [row] = await tx.insert(stockMovements).values(values).returning();
+    return row!;
   }
 }

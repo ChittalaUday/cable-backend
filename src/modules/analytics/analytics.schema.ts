@@ -34,6 +34,10 @@ export const AdminDashboardResponse = Type.Object({
     cancelled: Type.Integer(),
     delta: NullableNumber,
     series: Type.Array(Type.Integer()),
+    /** Connections that have stopped, cumulative by month — the churn line. */
+    inactiveSeries: Type.Array(Type.Integer()),
+    /** How this month's endings compare with last month's. */
+    inactiveDelta: NullableNumber,
   }),
   collections: Type.Intersect([CollectionMetrics, Type.Object({
     delta: NullableNumber,
@@ -49,6 +53,13 @@ export const AdminDashboardResponse = Type.Object({
     status: StringEnum(CUSTOMER_STATUSES),
     createdAt: Type.String({ format: 'date-time' }),
     connectionCount: Type.Integer(),
+  })),
+  staff: Type.Array(Type.Object({
+    id: Type.String({ format: 'uuid' }),
+    name: Type.String(),
+    collected: Money,
+    receipts: Type.Integer(),
+    lastCollectedAt: Type.Union([Type.String({ format: 'date-time' }), Type.Null()]),
   })),
   activity: Type.Array(Type.Object({
     id: Type.String(),

@@ -39,6 +39,14 @@ export interface ActivityRow extends Record<string, unknown> {
   createdAt: Date | string;
 }
 
+export interface StaffRow extends Record<string, unknown> {
+  id: string;
+  name: string | null;
+  collected: string;
+  receipts: number;
+  lastCollectedAt: Date | string | null;
+}
+
 export interface RecentCollectionRow extends Record<string, unknown> {
   id: string;
   customerId: string | null;
@@ -94,7 +102,9 @@ export class AnalyticsRepository {
         count(*) FILTER (WHERE status = 'suspended')::int suspended,
         count(*) FILTER (WHERE status = 'cancelled')::int cancelled,
         count(*) FILTER (WHERE start_date >= ${month})::int current_added,
-        count(*) FILTER (WHERE start_date >= ${previousMonth} AND start_date < ${month})::int previous_added
+        count(*) FILTER (WHERE start_date >= ${previousMonth} AND start_date < ${month})::int previous_added,
+        count(*) FILTER (WHERE end_date >= ${month})::int current_ended,
+        count(*) FILTER (WHERE end_date >= ${previousMonth} AND end_date < ${month})::int previous_ended
       FROM crm.subscriptions WHERE tenant_id = ${tenantId} AND deleted_at IS NULL
     `);
 
@@ -210,7 +220,7 @@ export class AnalyticsRepository {
 
   async cumulativeSeries(tenantId: string, now: Date, source: {
     table: 'crm.customers' | 'crm.subscriptions';
-    dateColumn: 'created_at' | 'start_date';
+    dateColumn: 'created_at' | 'start_date' | 'end_date';
   }, months: number): Promise<number[]> {
     const result = await this.db.execute<{ count: number }>(sql`
       WITH buckets AS (
@@ -258,6 +268,29 @@ export class AnalyticsRepository {
     `);
 
     return result.rows[0] ?? {};
+  }
+
+  /**
+   * Who collected what, this period.
+   *
+   * Keyed on the collector rather than on staff records, so somebody who has
+   * taken no money simply is not here — a roster of idle names is the staff
+   * screen's job, not the dashboard's.
+   */
+  async staffLeaderboard(tenantId: string, since: Date, limit: number): Promise<StaffRow[]> {
+    const result = await this.db.execute<StaffRow>(sql`
+      SELECT u.id, coalesce(u.name, u.phone, u.email) name,
+        coalesce(sum(${cashTaken(sql`t.`)}), 0)::numeric(12,2)::text collected,
+        coalesce(sum(${receipt(sql`t.`)}), 0)::int receipts,
+        max(t.transaction_date) "lastCollectedAt"
+      FROM crm.account_transactions t JOIN auth.users u ON u.id = t.collected_by
+      WHERE t.tenant_id = ${tenantId} AND t.transaction_date >= ${since} AND ${isCash(sql`t.`)}
+      GROUP BY u.id, u.name, u.phone, u.email
+      HAVING coalesce(sum(${receipt(sql`t.`)}), 0) > 0
+      ORDER BY sum(${cashTaken(sql`t.`)}) DESC, u.id LIMIT ${limit}
+    `);
+
+    return result.rows;
   }
 
   async recentCollections(filter: SQL, limit: number): Promise<RecentCollectionRow[]> {

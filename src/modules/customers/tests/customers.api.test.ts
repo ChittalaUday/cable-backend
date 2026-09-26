@@ -12,13 +12,15 @@ import {
   equipment,
   locations,
   membershipLocations,
+  rolePermissions,
   subscriptions,
   tenantMemberships,
   users,
 } from '@/db/schema';
 import { hashPassword } from '@/security/password';
+import { PERMISSIONS } from '@/security/permissions';
 import { createTestDb } from '@/test/db';
-import { seedAuthData, TEST_PASSWORD, uniqueDeviceId, uniqueEmail, uniquePhone } from '@/test/fixtures';
+import { seedAuthData, snapshotRoleGrants, TEST_PASSWORD, uniqueDeviceId, uniqueEmail, uniquePhone } from '@/test/fixtures';
 import { bodyOf } from '@/test/http';
 
 const { db, close } = createTestDb();
@@ -591,5 +593,308 @@ describe('the customer detail', () => {
     const searchPage = await list(adminAuth, '?multiBox=true&q=Alpha');
     expect(searchPage.items.map(item => item.id)).toContain(multiSubCustId);
     expect(searchPage.items.map(item => item.id)).not.toContain(multiBoxCustId);
+  });
+});
+
+describe('changing a plan and adding an addon', () => {
+  let planCustomerId: string;
+  let planSubscriptionId: string;
+  let addonPkgId: string;
+  let premiumPkgId: string;
+  let otherProviderPkgId: string;
+  let restoreGrants: () => Promise<void>;
+
+  /** The lines on a customer, newest first, as the detail endpoint returns them. */
+  async function linesOf(customerId: string, auth = adminAuth): Promise<CustomerDetail['subscriptions']> {
+    const response = await app.inject({ method: 'GET', url: `/api/v1/customers/${customerId}`, headers: auth });
+    expect(response.statusCode).toBe(200);
+
+    return bodyOf<CustomerDetail>(response).subscriptions;
+  }
+
+  beforeAll(async () => {
+    // The shipped matrix gives staff `connections.*` at LOCATION; the cut-down
+    // fixture grants do not, and the scope cases below are the point of this
+    // block. Put back in afterAll — the three role rows are shared by every file.
+    restoreGrants = await snapshotRoleGrants(db, [SYSTEM_ROLES.STAFF]);
+    await db.insert(rolePermissions).values([
+      { roleId: SYSTEM_ROLES.STAFF, permissionKey: PERMISSIONS.CONNECTIONS_UPDATE, scope: 'LOCATION' },
+      { roleId: SYSTEM_ROLES.STAFF, permissionKey: PERMISSIONS.CONNECTIONS_CREATE, scope: 'LOCATION' },
+    ]).onConflictDoNothing();
+    // A resolved access context is cached for a minute, and the field user's was
+    // read before the grant above existed.
+    app.access.invalidate();
+
+    const write = { ...adminAuth, 'content-type': 'application/json' };
+
+    const pkg = async (payload: Record<string, unknown>) => bodyOf<{ id: string }>(await app.inject({
+      method: 'POST',
+      url: '/api/v1/packages',
+      headers: write,
+      payload,
+    })).id;
+
+    premiumPkgId = await pkg({
+      serviceProviderId: cableProviderId,
+      name: 'Platinum',
+      slug: `platinum-${unique()}`,
+      price: '549.00',
+    });
+
+    addonPkgId = await pkg({
+      serviceProviderId: cableProviderId,
+      name: 'Sports Pack',
+      slug: `sports-${unique()}`,
+      packageType: 'addon',
+      price: '99.00',
+    });
+
+    // A package nobody on this connection's provider sells, for the refusal.
+    const otherService = bodyOf<{ id: string }>(await app.inject({
+      method: 'POST',
+      url: '/api/v1/services',
+      headers: write,
+      payload: { name: 'Broadband', slug: `bb-${unique()}`, icon: 'wifi' },
+    }));
+    const otherProvider = bodyOf<{ id: string }>(await app.inject({
+      method: 'POST',
+      url: '/api/v1/service-providers',
+      headers: write,
+      payload: { serviceId: otherService.id, name: 'VBC Fiber', slug: `vbc-${unique()}` },
+    }));
+    otherProviderPkgId = await pkg({
+      serviceProviderId: otherProvider.id,
+      name: 'Fibre 100',
+      slug: `fibre-${unique()}`,
+      price: '699.00',
+    });
+
+    // Its own customer, so these writes cannot disturb what the list and search
+    // cases above assert about the shared fixtures.
+    planCustomerId = await makeCustomer({
+      name: 'Devarapalli Sarma',
+      phone: '9000044455',
+      locationId: northAreaId,
+      providerId: cableProviderId,
+      packageId: cablePkgId,
+    });
+    planSubscriptionId = (await linesOf(planCustomerId))[0]!.id;
+  });
+
+  afterAll(async () => {
+    await restoreGrants();
+    app.access.invalidate();
+  });
+
+  async function changePlan(payload: Record<string, unknown>, auth = adminAuth, subscriptionId = planSubscriptionId, customerId = planCustomerId) {
+    return app.inject({
+      method: 'PATCH',
+      url: `/api/v1/customers/${customerId}/subscriptions/${subscriptionId}`,
+      headers: { ...auth, 'content-type': 'application/json' },
+      payload,
+    });
+  }
+
+  async function addLine(payload: Record<string, unknown>, auth = adminAuth, customerId = planCustomerId) {
+    return app.inject({
+      method: 'POST',
+      url: `/api/v1/customers/${customerId}/subscriptions`,
+      headers: { ...auth, 'content-type': 'application/json' },
+      payload,
+    });
+  }
+
+  it('moves the line onto the new package and takes its price and cycle', async () => {
+    const response = await changePlan({ packageId: premiumPkgId });
+
+    expect(response.statusCode).toBe(200);
+    expect(bodyOf(response)).toMatchObject({
+      id: planSubscriptionId,
+      price: '549.00',
+      billingCycle: 'monthly',
+      package: { id: premiumPkgId, name: 'Platinum' },
+    });
+
+    const [line] = await linesOf(planCustomerId);
+    expect(line).toMatchObject({ package: { id: premiumPkgId }, price: '549.00' });
+  });
+
+  it('leaves the balance alone — a plan change is not a charge', async () => {
+    const before = (await linesOf(planCustomerId))[0]!.outstandingBalance;
+    await changePlan({ packageId: cablePkgId });
+
+    expect((await linesOf(planCustomerId))[0]!.outstandingBalance).toBe(before);
+  });
+
+  it('lets a discounted price override the package list price', async () => {
+    const response = await changePlan({ packageId: premiumPkgId, price: '449.00' });
+
+    expect(response.statusCode).toBe(200);
+    expect(bodyOf<{ price: string }>(response).price).toBe('449.00');
+  });
+
+  it('refuses a package belonging to another provider', async () => {
+    const response = await changePlan({ packageId: otherProviderPkgId });
+
+    expect(response.statusCode).toBe(400);
+  });
+
+  it('refuses a move to the package the line is already on', async () => {
+    await changePlan({ packageId: premiumPkgId });
+    const response = await changePlan({ packageId: premiumPkgId });
+
+    expect(response.statusCode).toBe(409);
+  });
+
+  it('answers 404 for a line outside the caller\'s areas rather than admitting it exists', async () => {
+    const southLine = (await linesOf(southCustomerId))[0]!;
+    const response = await changePlan({ packageId: premiumPkgId }, fieldAuth, southLine.id, southCustomerId);
+
+    expect(response.statusCode).toBe(404);
+  });
+
+  it('lets area staff change a line fitted inside their own areas', async () => {
+    const response = await changePlan({ packageId: cablePkgId }, fieldAuth);
+
+    expect(response.statusCode).toBe(200);
+  });
+
+  it('adds an addon as its own line, inheriting the connection it sits beside', async () => {
+    const base = (await linesOf(planCustomerId)).find(row => row.id === planSubscriptionId)!;
+    const response = await addLine({ packageId: addonPkgId, basedOn: planSubscriptionId });
+
+    expect(response.statusCode).toBe(201);
+    expect(bodyOf(response)).toMatchObject({
+      serviceAccountNumber: `${base.serviceAccountNumber}-A1`,
+      price: '99.00',
+      outstandingBalance: '0.00',
+      status: 'active',
+      locationId: base.locationId,
+      provider: { id: base.provider.id },
+      package: { id: addonPkgId, packageType: 'addon' },
+    });
+
+    const lines = await linesOf(planCustomerId);
+    expect(lines).toHaveLength(2);
+  });
+
+  it('numbers a second addon off the same base rather than colliding', async () => {
+    const base = (await linesOf(planCustomerId)).find(row => row.id === planSubscriptionId)!;
+    const response = await addLine({ packageId: premiumPkgId, basedOn: planSubscriptionId });
+
+    expect(response.statusCode).toBe(201);
+    expect(bodyOf<{ serviceAccountNumber: string }>(response).serviceAccountNumber)
+      .toBe(`${base.serviceAccountNumber}-A2`);
+  });
+
+  it('refuses to hang an addon off a line that is not this customer\'s', async () => {
+    const southLine = (await linesOf(southCustomerId))[0]!;
+    const response = await addLine({ packageId: addonPkgId, basedOn: southLine.id });
+
+    expect(response.statusCode).toBe(404);
+  });
+});
+
+describe('registering a customer', () => {
+  let restoreGrants: () => Promise<void>;
+
+  beforeAll(async () => {
+    // The cut-down fixture grants leave staff without customers.create; the
+    // scope cases below are the point of this block. Put back in afterAll.
+    restoreGrants = await snapshotRoleGrants(db, [SYSTEM_ROLES.STAFF]);
+    await db.insert(rolePermissions).values([
+      { roleId: SYSTEM_ROLES.STAFF, permissionKey: PERMISSIONS.CUSTOMERS_CREATE, scope: 'LOCATION' },
+    ]).onConflictDoNothing();
+    app.access.invalidate();
+  });
+
+  afterAll(async () => {
+    await restoreGrants();
+    app.access.invalidate();
+  });
+
+  const detailOf = async (customerId: string): Promise<CustomerDetail> => {
+    const response = await app.inject({ method: 'GET', url: `/api/v1/customers/${customerId}`, headers: adminAuth });
+    expect(response.statusCode).toBe(200);
+
+    return bodyOf<CustomerDetail>(response);
+  };
+
+  const register = async (auth: Record<string, string>, payload: Record<string, unknown>) => app.inject({
+    method: 'POST',
+    url: '/api/v1/customers',
+    headers: { ...auth, 'content-type': 'application/json' },
+    payload,
+  });
+
+  it('fits the first connection with the subscriber, in one call', async () => {
+    const response = await register(adminAuth, {
+      name: 'Peddinti Lakshmi',
+      phone: '9700011223',
+      address: 'Door 4-12, Main Road',
+      connection: { packageId: cablePkgId, locationId: northAreaId },
+    });
+
+    expect(response.statusCode, response.body).toBe(201);
+    const created = bodyOf<CustomerDetail>(response);
+    createdCustomerIds.push(created.id);
+
+    expect(created).toMatchObject({ name: 'Peddinti Lakshmi', phone: '9700011223', status: 'active' });
+    // The code is minted by the database, and the first line takes it whole.
+    expect(created.customerCode).toBeTruthy();
+    expect(created.subscriptions).toHaveLength(1);
+    expect(created.subscriptions[0]).toMatchObject({
+      serviceAccountNumber: created.customerCode!,
+      status: 'active',
+      outstandingBalance: '0.00',
+      installationAddress: 'Door 4-12, Main Road',
+    });
+
+    // And it is immediately findable through the list every screen reads.
+    expect((await list(adminAuth, '?q=Peddinti')).items.map(row => row.id)).toContain(created.id);
+  });
+
+  it('lets an area-scoped collector register inside their own area', async () => {
+    const response = await register(fieldAuth, {
+      name: 'Gollapudi Naveen',
+      phone: '9700011224',
+      connection: { packageId: cablePkgId, locationId: northAreaId },
+    });
+
+    expect(response.statusCode, response.body).toBe(201);
+    createdCustomerIds.push(bodyOf<CustomerDetail>(response).id);
+  });
+
+  it('refuses a location the collector does not cover', async () => {
+    const southLine = (await detailOf(southCustomerId)).subscriptions[0]!;
+    const response = await register(fieldAuth, {
+      name: 'Out Of Area',
+      phone: '9700011225',
+      connection: { packageId: cablePkgId, locationId: southLine.locationId },
+    });
+
+    expect(response.statusCode).toBe(400);
+  });
+
+  it('refuses a scoped caller registering with no connection at all', async () => {
+    const response = await register(fieldAuth, { name: 'No Line', phone: '9700011226' });
+
+    expect(response.statusCode, response.body).toBe(400);
+  });
+
+  it('refuses a package that is not this tenant\'s', async () => {
+    const response = await register(adminAuth, {
+      name: 'Bad Package',
+      phone: '9700011227',
+      connection: { packageId: randomUUID(), locationId: northAreaId },
+    });
+
+    expect(response.statusCode).toBe(404);
+  });
+
+  it('refuses a phone that is not ten digits', async () => {
+    const response = await register(adminAuth, { name: 'Short Phone', phone: '97000' });
+
+    expect(response.statusCode).toBe(400);
   });
 });

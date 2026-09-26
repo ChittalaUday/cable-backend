@@ -1,5 +1,6 @@
 export const AUDIT_ENTITIES = {
   AUTH: 'auth',
+  CUSTOMER: 'customer',
   LOCATION: 'location',
   LOCATION_CATEGORY: 'location_category',
   LOCATION_SCHEMA: 'location_schema',
@@ -20,6 +21,9 @@ export const AUDIT_ENTITIES = {
   INVENTORY_STOCK_MOVEMENT: 'inventory_stock_movement',
   INVENTORY_APPROVAL_REQUEST: 'inventory_approval_request',
   PAYMENT_COLLECTION: 'payment_collection',
+  SUBSCRIPTION: 'subscription',
+  TICKET: 'ticket',
+  TENANT_UPI_ACCOUNT: 'tenant_upi_account',
   REMOTE: 'remote',
   NOTIFICATION: 'notification',
 } as const;

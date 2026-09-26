@@ -101,6 +101,7 @@ export const TAG_READS: Readonly<Record<string, readonly string[]>> = {
     'geo.locations',
   ],
   'remotes': ['remotes.remotes', 'remotes.remote_captures'],
+  'tenant-settings': ['tenancy.tenant_upi_accounts'],
   'service-providers': [
     'crm.service_providers',
     'crm.services',
@@ -212,12 +213,31 @@ export const ROUTE_WRITES: Readonly<Record<string, readonly string[]>> = {
   // Approving one applies the proposed catalog change.
   'PATCH /api/v1/inventory/approval-requests/:id': ['inventory.approval_requests', 'inventory.item_catalog'],
 
-  'POST /api/v1/payments': [
+  'POST /api/v1/payments/subscription': [
     'billing.collections',
     'crm.account_transactions',
     'crm.customers',
     'crm.subscriptions',
   ],
+  // Hardware is a deposit: it books a receipt and moves a unit, and never
+  // touches the balance a recharge settles.
+  'POST /api/v1/payments/equipment': [
+    'billing.collections',
+    'crm.account_transactions',
+    'inventory.customer_equipment',
+    'inventory.equipment',
+    'inventory.stock_movements',
+  ],
+
+  // A plan change rewrites the line's package and price; an addon inserts
+  // another line. Neither moves money, so no ledger or customer row is written.
+  'POST /api/v1/customers': ['crm.customers', 'crm.subscriptions'],
+  'POST /api/v1/tickets': ['crm.tickets', 'tenancy.tenants'],
+  'PATCH /api/v1/tickets/:id': ['crm.tickets'],
+  'POST /api/v1/tickets/:id/assign': ['crm.tickets'],
+  'PATCH /api/v1/customers/:id/subscriptions/:subscriptionId': ['crm.subscriptions'],
+  'POST /api/v1/customers/:id/subscriptions': ['crm.subscriptions'],
+
   'POST /api/v1/payments/:id/reverse': [
     'billing.collections',
     'crm.account_transactions',
@@ -226,6 +246,10 @@ export const ROUTE_WRITES: Readonly<Record<string, readonly string[]>> = {
   ],
 
   'POST /api/v1/remotes': ['remotes.remotes'],
+
+  'POST /api/v1/tenants/me/upi-accounts': ['tenancy.tenant_upi_accounts'],
+  'PATCH /api/v1/tenants/me/upi-accounts/:upiAccountId': ['tenancy.tenant_upi_accounts'],
+  'DELETE /api/v1/tenants/me/upi-accounts/:upiAccountId': ['tenancy.tenant_upi_accounts'],
 };
 
 /**
@@ -234,7 +258,7 @@ export const ROUTE_WRITES: Readonly<Record<string, readonly string[]>> = {
  * column that tag never renders.
  */
 export const NOT_REALLY_READ: Readonly<Record<string, string>> = {
-  'POST /api/v1/payments -> inventory':
+  'POST /api/v1/payments/subscription -> inventory':
     'Payments move crm.customers.outstanding_balance; the inventory reads take only the name and code off that row.',
   'POST /api/v1/payments/:id/reverse -> inventory':
     'Same.',

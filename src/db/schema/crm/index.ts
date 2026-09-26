@@ -7,3 +7,4 @@ export * from './service-coverage';
 export * from './service-providers';
 export * from './services';
 export * from './subscriptions';
+export * from './tickets';

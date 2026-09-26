@@ -4,9 +4,15 @@ import type {
   CollectionPage,
   CollectionResponse,
   ListCollectionsQuery,
-  RecordCollectionBody,
+  RecordEquipmentPaymentBody,
+  RecordSubscriptionPaymentBody,
   ReverseCollectionBody,
 } from './payment.schema';
+import type {
+  EquipmentOwnership,
+  EquipmentReturnCondition,
+  InventoryStatus,
+} from '@/constants/inventory';
 import type { Database, Transaction } from '@/db/client';
 import type { CollectionAccessory, NewCollection } from '@/db/schema';
 import type { CollectableLine } from '@/modules/customers/customers.balance';
@@ -18,6 +24,12 @@ import Decimal from 'decimal.js';
 import { AUDIT_ENTITIES } from '@/constants/audit';
 import { COLLECTION_OUTCOME, PAYMENT_METHOD } from '@/constants/billing';
 import { TRANSACTION_TYPE } from '@/constants/crm';
+import {
+  CUSTOMER_EQUIPMENT_STATUS,
+  EQUIPMENT_RETURN_CONDITION,
+  INVENTORY_STATUS,
+  STOCK_MOVEMENT_TYPE,
+} from '@/constants/inventory';
 import { ERROR_CODES } from '@/errors';
 import { badRequest, conflict, forbidden, notFound } from '@/errors/domain-error';
 import { isUniqueViolation } from '@/errors/postgres';
@@ -69,7 +81,7 @@ export class PaymentService {
     this.repo = repoOrDb instanceof PaymentRepository ? repoOrDb : new PaymentRepository(repoOrDb);
   }
 
-  async record(access: RequestAccess, input: RecordCollectionBody): Promise<CollectionResponse> {
+  async recordSubscription(access: RequestAccess, input: RecordSubscriptionPaymentBody): Promise<CollectionResponse> {
     const replay = await this.replayOf(access, input.reference);
     if (replay !== null)
       return replay;
@@ -78,7 +90,39 @@ export class PaymentService {
     const collectedAt = input.collectedAt === undefined ? new Date() : new Date(input.collectedAt);
     const id = randomUUID();
 
-    const created = await this.insertVisit(access, input, { id, duesPaid, collectedAt });
+    const created = await this.insertSubscriptionVisit(access, input, { id, duesPaid, collectedAt });
+
+    this.announce({
+      tenantId: access.tenantId,
+      collectionId: created.id,
+      customerId: created.customerId,
+      customerUserId: created.customerUserId,
+    });
+
+    return this.hydrateOne(created.id, access.tenantId);
+  }
+
+  async record(access: RequestAccess, input: RecordSubscriptionPaymentBody): Promise<CollectionResponse> {
+    return this.recordSubscription(access, input);
+  }
+
+  async recordEquipment(access: RequestAccess, input: RecordEquipmentPaymentBody): Promise<CollectionResponse> {
+    const replay = await this.replayOf(access, input.reference);
+    if (replay !== null)
+      return replay;
+
+    if (input.customerEquipmentId === undefined && input.catalogId === undefined) {
+      throw badRequest(
+        ERROR_CODES.VALIDATION_FAILED,
+        'Either customerEquipmentId (to update/replace) or catalogId (to issue new equipment) must be specified',
+      );
+    }
+
+    const paidAmount = new Decimal(input.amount);
+    const collectedAt = input.collectedAt === undefined ? new Date() : new Date(input.collectedAt);
+    const id = randomUUID();
+
+    const created = await this.insertEquipmentVisit(access, input, { id, paidAmount, collectedAt });
 
     this.announce({
       tenantId: access.tenantId,
@@ -102,9 +146,9 @@ export class PaymentService {
     return this.hydrateOne(existing.id, access.tenantId);
   }
 
-  private async insertVisit(
+  private async insertSubscriptionVisit(
     access: RequestAccess,
-    input: RecordCollectionBody,
+    input: RecordSubscriptionPaymentBody,
     prepared: { id: string; duesPaid: Decimal; collectedAt: Date },
   ): Promise<{ id: string; customerId: string; customerUserId: string | null }> {
     const { id, duesPaid, collectedAt } = prepared;
@@ -120,12 +164,8 @@ export class PaymentService {
         const line = await this.resolveLine(tx, access.tenantId, input);
         await this.assertReaches(tx, scope, access, line?.installationLocationId ?? null);
 
-        const accessories = await this.priceAccessories(tx, access.tenantId, input.accessories ?? []);
-        const accessoryAmount = accessories.reduce((total, item) => total.plus(item.amount), ZERO);
-        const takings = duesPaid.plus(accessoryAmount);
-
         const dueAmount = new Decimal(line?.outstandingBalance ?? customer.outstandingBalance);
-        const outcome = decideOutcome({ input, duesPaid, dueAmount, takings });
+        const outcome = decideOutcome({ input, duesPaid, dueAmount, takings: duesPaid });
 
         const transactionId = await this.postTakings(tx, {
           id,
@@ -134,8 +174,8 @@ export class PaymentService {
           customerId: customer.id,
           dueAmount,
           duesPaid,
-          accessoryAmount,
-          takings,
+          accessoryAmount: ZERO,
+          takings: duesPaid,
           collectedAt,
           remarks: input.notes ?? null,
         });
@@ -149,11 +189,367 @@ export class PaymentService {
           outcome,
           dueAmount,
           duesPaid,
-          accessoryAmount,
-          accessories,
+          accessoryAmount: ZERO,
+          accessories: [],
           transactionId,
           collectedAt,
         }));
+
+        await audit.created(tx, access.audit, {
+          entityType: AUDIT_ENTITIES.PAYMENT_COLLECTION,
+          entityId: id,
+          after: row,
+        });
+
+        return { ...row, customerUserId: customer.userId };
+      });
+    }
+    catch (error) {
+      if (!isUniqueViolation(error))
+        throw error;
+
+      const winner = await this.replayOf(access, input.reference);
+
+      if (winner === null)
+        throw error;
+
+      return { id: winner.id, customerId: winner.customerId, customerUserId: null };
+    }
+  }
+
+  private async resolveReplacementUnit(
+    tx: Transaction,
+    tenantId: string,
+    existingEquipmentId: string,
+    replacementEquipmentId?: string,
+    replacementSerialNumber?: string,
+    locationId?: string | null,
+  ): Promise<{ id: string; serialNumber: string | null }> {
+    if (replacementEquipmentId !== undefined) {
+      const unit = await this.repo.findEquipmentUnit(tx, tenantId, replacementEquipmentId);
+      if (unit === null)
+        throw notFound('Replacement equipment unit');
+      return unit;
+    }
+
+    const oldUnit = await this.repo.findEquipmentUnit(tx, tenantId, existingEquipmentId);
+    if (oldUnit === null || oldUnit.catalogId === null)
+      throw notFound('Old equipment unit');
+
+    const existing = await this.repo.findAvailableUnit(tx, tenantId, oldUnit.catalogId, replacementSerialNumber);
+    if (existing !== null)
+      return existing;
+
+    return this.repo.createEquipmentUnit(tx, {
+      tenantId,
+      catalogId: oldUnit.catalogId,
+      serialNumber: replacementSerialNumber,
+      inventoryStatus: INVENTORY_STATUS.AVAILABLE,
+      locationId: locationId ?? null,
+    });
+  }
+
+  private async recordReplacementMovements(
+    tx: Transaction,
+    access: RequestAccess,
+    oldEquipmentId: string,
+    newUnit: { id: string; serialNumber: string | null },
+    locationId: string | null,
+    returnCond: string,
+    customerName: string | null,
+  ): Promise<void> {
+    const replacementLabel = newUnit.serialNumber ?? newUnit.id;
+    await this.repo.createStockMovement(tx, {
+      tenantId: access.tenantId,
+      equipmentId: oldEquipmentId,
+      movementType: STOCK_MOVEMENT_TYPE.CUSTOMER_RETURN,
+      performedBy: access.userId,
+      toLocationId: locationId,
+      quantity: 1,
+      notes: `Customer return (${returnCond}) replaced by ${replacementLabel}`,
+    });
+
+    await this.repo.createStockMovement(tx, {
+      tenantId: access.tenantId,
+      equipmentId: newUnit.id,
+      movementType: STOCK_MOVEMENT_TYPE.CUSTOMER_ISSUE,
+      performedBy: access.userId,
+      toLocationId: locationId,
+      quantity: 1,
+      notes: `Issued replacement to customer ${customerName ?? ''}`,
+    });
+  }
+
+  private async replaceCustomerEquipment(
+    tx: Transaction,
+    access: RequestAccess,
+    customer: { id: string; name: string | null },
+    line: CollectableLine | null,
+    existingCE: { id: string; equipmentId: string; subscriptionId: string | null; ownershipType: EquipmentOwnership; notes: string | null },
+    input: RecordEquipmentPaymentBody,
+    collectedAt: Date,
+  ): Promise<string> {
+    const locationId = line?.installationLocationId ?? null;
+    const newUnit = await this.resolveReplacementUnit(
+      tx,
+      access.tenantId,
+      existingCE.equipmentId,
+      input.replacementEquipmentId,
+      input.replacementSerialNumber,
+      locationId,
+    );
+
+    const { returnCond, oldUnitStatus } = determineReturnConditionStatus(input.returnCondition);
+
+    await this.repo.updateEquipmentUnit(tx, access.tenantId, existingCE.equipmentId, {
+      inventoryStatus: oldUnitStatus,
+    });
+
+    await this.repo.updateEquipmentUnit(tx, access.tenantId, newUnit.id, {
+      inventoryStatus: INVENTORY_STATUS.ALLOCATED,
+      locationId,
+    });
+
+    await this.recordReplacementMovements(
+      tx,
+      access,
+      existingCE.equipmentId,
+      newUnit,
+      locationId,
+      returnCond,
+      customer.name,
+    );
+
+    await this.repo.updateCustomerEquipment(tx, access.tenantId, existingCE.id, {
+      status: CUSTOMER_EQUIPMENT_STATUS.REPLACED,
+      returnedAt: collectedAt,
+      returnCondition: returnCond,
+      replacedByEquipmentId: newUnit.id,
+      collectedBy: access.userId,
+      notes: input.notes ?? existingCE.notes,
+    });
+
+    const newAssignment = await this.repo.createCustomerEquipment(tx, {
+      tenantId: access.tenantId,
+      customerId: customer.id,
+      subscriptionId: line?.id ?? existingCE.subscriptionId,
+      equipmentId: newUnit.id,
+      status: CUSTOMER_EQUIPMENT_STATUS.ACTIVE,
+      ownershipType: input.ownershipType ?? existingCE.ownershipType,
+      assignedBy: access.userId,
+      assignedAt: collectedAt,
+      notes: input.notes ?? null,
+    });
+
+    return newAssignment.id;
+  }
+
+  private async resolveOrAddCatalogUnit(
+    tx: Transaction,
+    tenantId: string,
+    catalogId: string,
+    equipmentId?: string,
+    serialNumber?: string,
+    locationId?: string | null,
+    defaultOwnership?: EquipmentOwnership,
+    requestedOwnership?: EquipmentOwnership,
+  ): Promise<{ id: string; locationId: string | null }> {
+    if (equipmentId !== undefined) {
+      const unit = await this.repo.findEquipmentUnit(tx, tenantId, equipmentId);
+      if (unit === null)
+        throw notFound('Equipment');
+      return unit;
+    }
+
+    const available = await this.repo.findAvailableUnit(tx, tenantId, catalogId, serialNumber);
+    if (available !== null)
+      return available;
+
+    return this.repo.createEquipmentUnit(tx, {
+      tenantId,
+      catalogId,
+      locationId: locationId ?? null,
+      serialNumber: serialNumber ?? `SN-${Date.now().toString().slice(-6)}`,
+      inventoryStatus: INVENTORY_STATUS.AVAILABLE,
+      ownershipType: requestedOwnership ?? defaultOwnership,
+    });
+  }
+
+  private async addCustomerEquipment(
+    tx: Transaction,
+    access: RequestAccess,
+    customer: { id: string; name: string | null },
+    line: CollectableLine | null,
+    input: RecordEquipmentPaymentBody,
+    collectedAt: Date,
+  ): Promise<string> {
+    const catalog = await this.repo.findCatalogItem(tx, access.tenantId, input.catalogId!);
+    if (catalog === null)
+      throw notFound('Catalog item');
+
+    const locationId = line?.installationLocationId ?? null;
+    const unit = await this.resolveOrAddCatalogUnit(
+      tx,
+      access.tenantId,
+      input.catalogId!,
+      input.equipmentId,
+      input.serialNumber,
+      locationId,
+      catalog.defaultOwnership,
+      input.ownershipType,
+    );
+
+    await this.repo.updateEquipmentUnit(tx, access.tenantId, unit.id, {
+      inventoryStatus: INVENTORY_STATUS.ALLOCATED,
+      locationId: locationId ?? unit.locationId,
+    });
+
+    const assignment = await this.repo.createCustomerEquipment(tx, {
+      tenantId: access.tenantId,
+      customerId: customer.id,
+      subscriptionId: line?.id ?? null,
+      equipmentId: unit.id,
+      status: input.status ?? CUSTOMER_EQUIPMENT_STATUS.ACTIVE,
+      ownershipType: input.ownershipType ?? catalog.defaultOwnership,
+      assignedBy: access.userId,
+      assignedAt: collectedAt,
+      notes: input.notes ?? null,
+    });
+
+    await this.repo.createStockMovement(tx, {
+      tenantId: access.tenantId,
+      equipmentId: unit.id,
+      movementType: STOCK_MOVEMENT_TYPE.CUSTOMER_ISSUE,
+      toLocationId: locationId ?? unit.locationId,
+      performedBy: access.userId,
+      quantity: 1,
+      notes: `Issued equipment to customer ${customer.name ?? ''}`,
+    });
+
+    return assignment.id;
+  }
+
+  private async resolveTargetEquipmentId(
+    tx: Transaction,
+    access: RequestAccess,
+    customer: { id: string; name: string | null },
+    line: CollectableLine | null,
+    input: RecordEquipmentPaymentBody,
+    collectedAt: Date,
+  ): Promise<string> {
+    if (input.customerEquipmentId === undefined)
+      return this.addCustomerEquipment(tx, access, customer, line, input, collectedAt);
+
+    const existingCE = await this.repo.findCustomerEquipment(tx, access.tenantId, input.customerEquipmentId);
+    if (existingCE === null)
+      throw notFound('Customer equipment');
+
+    if (existingCE.customerId !== input.customerId) {
+      throw badRequest(
+        ERROR_CODES.VALIDATION_FAILED,
+        'Customer equipment does not belong to this customer',
+      );
+    }
+
+    if (input.replacementEquipmentId !== undefined || input.replacementSerialNumber !== undefined)
+      return this.replaceCustomerEquipment(tx, access, customer, line, existingCE, input, collectedAt);
+
+    const updated = await this.repo.updateCustomerEquipment(tx, access.tenantId, existingCE.id, {
+      ...(input.status !== undefined ? { status: input.status } : {}),
+      ...(input.ownershipType !== undefined ? { ownershipType: input.ownershipType } : {}),
+      ...(input.notes !== undefined ? { notes: input.notes } : {}),
+    });
+    return updated.id;
+  }
+
+  private async recordEquipmentCollectionRow(
+    tx: Transaction,
+    access: RequestAccess,
+    input: RecordEquipmentPaymentBody,
+    prepared: { id: string; paidAmount: Decimal; collectedAt: Date },
+    customer: { id: string },
+    line: CollectableLine | null,
+    targetCustomerEquipmentId: string,
+  ) {
+    const { id, paidAmount, collectedAt } = prepared;
+    const isZero = paidAmount.isZero();
+    assertValidEquipmentVisit(isZero, input.reason, input.method);
+
+    let transactionId: string | null = null;
+    if (!isZero && line !== null) {
+      transactionId = await this.repo.insertTransaction(tx, {
+        tenantId: access.tenantId,
+        serviceId: line.serviceId,
+        customerId: customer.id,
+        subscriptionId: line.id,
+        serviceAccountNumber: line.serviceAccountNumber,
+        transactionDate: collectedAt,
+        collectedBy: access.userId,
+        transactionNo: receiptNo('EQP', id),
+        transactionType: TRANSACTION_TYPE.DEPOSIT,
+        debit: '0',
+        credit: paidAmount.toFixed(2),
+        closingBalance: line.outstandingBalance,
+        remarks: input.notes ?? 'Equipment payment',
+      });
+    }
+
+    const outcome = isZero ? COLLECTION_OUTCOME.NONE : COLLECTION_OUTCOME.FULL;
+    const row = equipmentCollectionRow({
+      id,
+      tenantId: access.tenantId,
+      customerId: customer.id,
+      subscriptionId: line?.id ?? null,
+      customerEquipmentId: targetCustomerEquipmentId,
+      collectedBy: access.userId,
+      outcome,
+      paidAmount,
+      transactionId,
+      input,
+      collectedAt,
+    });
+
+    return this.repo.insertCollection(tx, row);
+  }
+
+  private async insertEquipmentVisit(
+    access: RequestAccess,
+    input: RecordEquipmentPaymentBody,
+    prepared: { id: string; paidAmount: Decimal; collectedAt: Date },
+  ): Promise<{ id: string; customerId: string; customerUserId: string | null }> {
+    const { id, collectedAt } = prepared;
+    const scope = requireScope(access, PERMISSIONS.PAYMENTS_COLLECT);
+
+    try {
+      return await this.repo.inTransaction(async (tx) => {
+        const customer = await this.repo.lockCustomer(tx, access.tenantId, input.customerId);
+        if (customer === null)
+          throw notFound('Customer');
+
+        const line = await this.resolveLine(tx, access.tenantId, {
+          customerId: input.customerId,
+          subscriptionId: input.subscriptionId,
+        });
+        await this.assertReaches(tx, scope, access, line?.installationLocationId ?? null);
+
+        const targetCustomerEquipmentId = await this.resolveTargetEquipmentId(
+          tx,
+          access,
+          customer,
+          line,
+          input,
+          collectedAt,
+        );
+
+        const row = await this.recordEquipmentCollectionRow(
+          tx,
+          access,
+          input,
+          prepared,
+          customer,
+          line,
+          targetCustomerEquipmentId,
+        );
 
         await audit.created(tx, access.audit, {
           entityType: AUDIT_ENTITIES.PAYMENT_COLLECTION,
@@ -298,7 +694,7 @@ export class PaymentService {
   private async resolveLine(
     tx: Transaction,
     tenantId: string,
-    input: RecordCollectionBody,
+    input: { customerId: string; subscriptionId?: string | undefined },
   ): Promise<CollectableLine | null> {
     const lines = await this.repo.collectableLines(tx, tenantId, input.customerId, input.subscriptionId ?? null);
 
@@ -334,33 +730,6 @@ export class PaymentService {
 
     if (!await this.repo.nodeUnderGrant(tx, locationId, reach.nodeIds))
       throw notFound('Customer');
-  }
-
-  private async priceAccessories(
-    tx: Transaction,
-    tenantId: string,
-    lines: readonly { catalogId: string; quantity: number; unitPrice: string }[],
-  ): Promise<CollectionAccessory[]> {
-    if (lines.length === 0)
-      return [];
-
-    const ids = [...new Set(lines.map(line => line.catalogId))];
-    const known = await this.repo.accessoryNames(tx, tenantId, ids);
-
-    return lines.map((line) => {
-      const name = known.get(line.catalogId);
-
-      if (name === undefined)
-        throw notFound('Accessory');
-
-      return {
-        catalogId: line.catalogId,
-        name,
-        quantity: line.quantity,
-        unitPrice: money(line.unitPrice),
-        amount: new Decimal(line.unitPrice).times(line.quantity).toFixed(2),
-      };
-    });
   }
 
   private async unpostTakings(tx: Transaction, input: {
@@ -537,7 +906,11 @@ function pageOf(rows: HydratedRow[], summary: Takings | undefined, limit: number
   };
 }
 
-function pointFrom(input: RecordCollectionBody): Pick<NewCollection, 'latitude' | 'longitude' | 'gpsAccuracyM'> {
+function pointFrom(input: {
+  latitude?: number;
+  longitude?: number;
+  gpsAccuracyM?: number;
+}): Pick<NewCollection, 'latitude' | 'longitude' | 'gpsAccuracyM'> {
   if (input.latitude === undefined || input.longitude === undefined)
     return { latitude: null, longitude: null, gpsAccuracyM: null };
 
@@ -551,7 +924,7 @@ function pointFrom(input: RecordCollectionBody): Pick<NewCollection, 'latitude' 
 function collectionRow(input: {
   id: string;
   access: RequestAccess;
-  input: RecordCollectionBody;
+  input: RecordSubscriptionPaymentBody;
   line: CollectableLine | null;
   customerId: string;
   outcome: CollectionResponse['outcome'];
@@ -588,7 +961,7 @@ function collectionRow(input: {
 }
 
 function decideOutcome(input: {
-  input: RecordCollectionBody;
+  input: { reason?: string; method?: string };
   duesPaid: Decimal;
   dueAmount: Decimal;
   takings: Decimal;
@@ -616,6 +989,65 @@ function emptyPage(limit: number): CollectionPage {
   };
 }
 
+function determineReturnConditionStatus(condition?: EquipmentReturnCondition): {
+  returnCond: EquipmentReturnCondition;
+  oldUnitStatus: InventoryStatus;
+} {
+  const returnCond = condition ?? EQUIPMENT_RETURN_CONDITION.WORKING;
+  const isFaultyOrDamaged = returnCond === EQUIPMENT_RETURN_CONDITION.FAULTY || returnCond === EQUIPMENT_RETURN_CONDITION.DAMAGED;
+  return {
+    returnCond,
+    oldUnitStatus: isFaultyOrDamaged ? INVENTORY_STATUS.FAULTY : INVENTORY_STATUS.AVAILABLE,
+  };
+}
+
+function assertValidEquipmentVisit(isZero: boolean, reason?: string, method?: string): void {
+  if (isZero) {
+    if (reason === undefined || reason.trim() === '')
+      throw badRequest(ERROR_CODES.VALIDATION_FAILED, 'A visit that collected nothing needs a reason');
+    return;
+  }
+  if (method === undefined)
+    throw badRequest(ERROR_CODES.VALIDATION_FAILED, 'A payment needs a method');
+}
+
+function equipmentCollectionRow(input: {
+  id: string;
+  tenantId: string;
+  customerId: string;
+  subscriptionId: string | null;
+  customerEquipmentId: string;
+  collectedBy: string;
+  outcome: CollectionResponse['outcome'];
+  paidAmount: Decimal;
+  transactionId: string | null;
+  input: RecordEquipmentPaymentBody;
+  collectedAt: Date;
+}): NewCollection {
+  const isZero = input.paidAmount.isZero();
+  return {
+    id: input.id,
+    tenantId: input.tenantId,
+    customerId: input.customerId,
+    subscriptionId: input.subscriptionId,
+    customerEquipmentId: input.customerEquipmentId,
+    collectedBy: input.collectedBy,
+    outcome: input.outcome,
+    method: !isZero ? (input.input.method ?? PAYMENT_METHOD.CASH) : null,
+    dueAmount: input.paidAmount.toFixed(2),
+    duesPaid: input.paidAmount.toFixed(2),
+    accessoryAmount: '0.00',
+    accessories: [],
+    balanceAfter: '0.00',
+    transactionId: input.transactionId,
+    reason: input.input.reason ?? null,
+    notes: input.input.notes ?? null,
+    reference: input.input.reference,
+    collectedAt: input.collectedAt,
+    ...pointFrom(input.input),
+  };
+}
+
 function toResponse(row: HydratedRow): CollectionResponse {
   return {
     id: row.id,
@@ -623,6 +1055,16 @@ function toResponse(row: HydratedRow): CollectionResponse {
     customerName: row.customerName,
     customerCode: row.customerCode,
     subscriptionId: row.subscriptionId,
+    customerEquipmentId: row.customerEquipmentId ?? null,
+    equipment: row.equipmentName !== null
+      ? {
+          itemName: row.equipmentName,
+          itemCode: row.equipmentItemCode ?? null,
+          serialNumber: row.equipmentSerialNumber ?? null,
+          brand: row.equipmentBrand ?? null,
+          model: row.equipmentModel ?? null,
+        }
+      : null,
     serviceAccountNumber: row.serviceAccountNumber,
     locationId: row.locationId,
     locationPath: row.locationPath,

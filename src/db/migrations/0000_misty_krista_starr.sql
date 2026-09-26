@@ -1,3 +1,5 @@
+CREATE SCHEMA IF NOT EXISTS "public";
+--> statement-breakpoint
 CREATE SCHEMA IF NOT EXISTS "analytics";
 --> statement-breakpoint
 CREATE SCHEMA IF NOT EXISTS "audit";
@@ -108,11 +110,14 @@ CREATE TABLE "auth"."otp_codes" (
 	"code_hash" text NOT NULL,
 	"attempts" integer DEFAULT 0 NOT NULL,
 	"max_attempts" integer NOT NULL,
+	"resend_attempts" integer DEFAULT 0 NOT NULL,
 	"expires_at" timestamp with time zone NOT NULL,
 	"consumed_at" timestamp with time zone,
 	"superseded_at" timestamp with time zone,
 	"last_sent_at" timestamp with time zone DEFAULT now() NOT NULL,
-	"created_at" timestamp with time zone DEFAULT now() NOT NULL
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "otp_codes_resend_attempts_check" CHECK ("auth"."otp_codes"."resend_attempts" >= 0 AND "auth"."otp_codes"."resend_attempts" <= 5),
+	CONSTRAINT "otp_codes_attempts_check" CHECK ("auth"."otp_codes"."attempts" >= 0)
 );
 --> statement-breakpoint
 CREATE TABLE "auth"."sessions" (
@@ -163,7 +168,9 @@ CREATE TABLE "billing"."collections" (
 	"method" text,
 	"due_amount" numeric(12, 2) DEFAULT '0' NOT NULL,
 	"dues_paid" numeric(12, 2) DEFAULT '0' NOT NULL,
-	"total_collected" numeric(12, 2) GENERATED ALWAYS AS (dues_paid) STORED NOT NULL,
+	"accessory_amount" numeric(12, 2) DEFAULT '0' NOT NULL,
+	"accessories" jsonb DEFAULT '[]'::jsonb NOT NULL,
+	"total_collected" numeric(12, 2) GENERATED ALWAYS AS (dues_paid + accessory_amount) STORED NOT NULL,
 	"balance_after" numeric(12, 2) DEFAULT '0' NOT NULL,
 	"transaction_id" uuid,
 	"reverses_id" uuid,
@@ -182,6 +189,7 @@ CREATE TABLE "billing"."collections" (
 	CONSTRAINT "collections_target_check" CHECK ("billing"."collections"."subscription_id" IS NOT NULL OR "billing"."collections"."customer_equipment_id" IS NOT NULL),
 	CONSTRAINT "collections_no_payment_is_empty" CHECK ("billing"."collections"."outcome" <> 'none' OR "billing"."collections"."dues_paid" = 0),
 	CONSTRAINT "collections_takings_not_negative" CHECK ("billing"."collections"."outcome" = 'refund' OR "billing"."collections"."dues_paid" >= 0),
+	CONSTRAINT "collections_accessories_not_negative" CHECK ("billing"."collections"."outcome" = 'refund' OR "billing"."collections"."accessory_amount" >= 0),
 	CONSTRAINT "collections_refund_gives_back" CHECK ("billing"."collections"."outcome" <> 'refund' OR "billing"."collections"."dues_paid" <= 0),
 	CONSTRAINT "collections_point_is_whole" CHECK (("billing"."collections"."latitude" IS NULL) = ("billing"."collections"."longitude" IS NULL)),
 	CONSTRAINT "collections_point_is_on_earth" CHECK ("billing"."collections"."latitude" IS NULL OR ("billing"."collections"."latitude" BETWEEN -90 AND 90 AND "billing"."collections"."longitude" BETWEEN -180 AND 180))
@@ -347,6 +355,29 @@ CREATE TABLE "crm"."subscriptions" (
 	"deleted_at" timestamp with time zone
 );
 --> statement-breakpoint
+CREATE TABLE "crm"."tickets" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"tenant_id" uuid NOT NULL,
+	"ticket_no" text NOT NULL,
+	"customer_id" uuid NOT NULL,
+	"subscription_id" uuid,
+	"location_id" uuid,
+	"category" text DEFAULT 'other' NOT NULL,
+	"priority" text DEFAULT 'normal' NOT NULL,
+	"status" text DEFAULT 'open' NOT NULL,
+	"subject" text NOT NULL,
+	"description" text,
+	"assigned_to" uuid,
+	"team_id" uuid,
+	"resolution" text,
+	"resolved_at" timestamp with time zone,
+	"resolved_by" uuid,
+	"created_by" uuid,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"deleted_at" timestamp with time zone
+);
+--> statement-breakpoint
 CREATE TABLE "geo"."location_aliases" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"tenant_id" uuid NOT NULL,
@@ -365,7 +396,7 @@ CREATE TABLE "geo"."location_categories" (
 	"config" jsonb DEFAULT '{}'::jsonb NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "location_categories_tenant_slug_uq" UNIQUE("tenant_id","slug")
+	"deleted_at" timestamp with time zone
 );
 --> statement-breakpoint
 CREATE TABLE "geo"."location_schema_levels" (
@@ -388,7 +419,7 @@ CREATE TABLE "geo"."location_schemas" (
 	"is_active" boolean DEFAULT true NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "location_schemas_tenant_slug_uq" UNIQUE("tenant_id","slug")
+	"deleted_at" timestamp with time zone
 );
 --> statement-breakpoint
 CREATE TABLE "geo"."locations" (
@@ -408,7 +439,7 @@ CREATE TABLE "geo"."locations" (
 	"created_by" uuid,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "locations_parent_name_uq" UNIQUE NULLS NOT DISTINCT("tenant_id","parent_id","name"),
+	"deleted_at" timestamp with time zone,
 	CONSTRAINT "locations_not_own_parent" CHECK (parent_id IS NULL OR parent_id <> id)
 );
 --> statement-breakpoint
@@ -706,11 +737,25 @@ CREATE TABLE "tenancy"."tenant_memberships" (
 	CONSTRAINT "tenant_memberships_user_tenant_uq" UNIQUE("user_id","tenant_id")
 );
 --> statement-breakpoint
+CREATE TABLE "tenancy"."tenant_upi_accounts" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"tenant_id" uuid NOT NULL,
+	"upi_id" text NOT NULL,
+	"payee_name" text NOT NULL,
+	"label" text,
+	"is_default" boolean DEFAULT false NOT NULL,
+	"status" text DEFAULT 'active' NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"deleted_at" timestamp with time zone
+);
+--> statement-breakpoint
 CREATE TABLE "tenancy"."tenants" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"code" text NOT NULL,
 	"name" text NOT NULL,
 	"customer_seq" integer DEFAULT 0 NOT NULL,
+	"ticket_seq" integer DEFAULT 0 NOT NULL,
 	"status" text DEFAULT 'active' NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
@@ -756,6 +801,14 @@ ALTER TABLE "crm"."subscriptions" ADD CONSTRAINT "subscriptions_customer_id_cust
 ALTER TABLE "crm"."subscriptions" ADD CONSTRAINT "subscriptions_service_provider_id_service_providers_id_fk" FOREIGN KEY ("service_provider_id") REFERENCES "crm"."service_providers"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "crm"."subscriptions" ADD CONSTRAINT "subscriptions_package_id_packages_id_fk" FOREIGN KEY ("package_id") REFERENCES "crm"."packages"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "crm"."subscriptions" ADD CONSTRAINT "subscriptions_installation_location_id_locations_id_fk" FOREIGN KEY ("installation_location_id") REFERENCES "geo"."locations"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "crm"."tickets" ADD CONSTRAINT "tickets_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "tenancy"."tenants"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "crm"."tickets" ADD CONSTRAINT "tickets_customer_id_customers_id_fk" FOREIGN KEY ("customer_id") REFERENCES "crm"."customers"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "crm"."tickets" ADD CONSTRAINT "tickets_subscription_id_subscriptions_id_fk" FOREIGN KEY ("subscription_id") REFERENCES "crm"."subscriptions"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "crm"."tickets" ADD CONSTRAINT "tickets_location_id_locations_id_fk" FOREIGN KEY ("location_id") REFERENCES "geo"."locations"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "crm"."tickets" ADD CONSTRAINT "tickets_assigned_to_users_id_fk" FOREIGN KEY ("assigned_to") REFERENCES "auth"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "crm"."tickets" ADD CONSTRAINT "tickets_team_id_teams_id_fk" FOREIGN KEY ("team_id") REFERENCES "tenancy"."teams"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "crm"."tickets" ADD CONSTRAINT "tickets_resolved_by_users_id_fk" FOREIGN KEY ("resolved_by") REFERENCES "auth"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "crm"."tickets" ADD CONSTRAINT "tickets_created_by_users_id_fk" FOREIGN KEY ("created_by") REFERENCES "auth"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "geo"."location_aliases" ADD CONSTRAINT "location_aliases_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "tenancy"."tenants"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "geo"."location_aliases" ADD CONSTRAINT "location_aliases_location_id_locations_id_fk" FOREIGN KEY ("location_id") REFERENCES "geo"."locations"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "geo"."location_categories" ADD CONSTRAINT "location_categories_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "tenancy"."tenants"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -816,6 +869,7 @@ ALTER TABLE "tenancy"."tenant_memberships" ADD CONSTRAINT "tenant_memberships_us
 ALTER TABLE "tenancy"."tenant_memberships" ADD CONSTRAINT "tenant_memberships_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "tenancy"."tenants"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "tenancy"."tenant_memberships" ADD CONSTRAINT "tenant_memberships_role_id_roles_id_fk" FOREIGN KEY ("role_id") REFERENCES "iam"."roles"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "tenancy"."tenant_memberships" ADD CONSTRAINT "tenant_memberships_team_fk" FOREIGN KEY ("tenant_id","team_id") REFERENCES "tenancy"."teams"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "tenancy"."tenant_upi_accounts" ADD CONSTRAINT "tenant_upi_accounts_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "tenancy"."tenants"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "audit_logs_tenant_created_idx" ON "audit"."audit_logs" USING btree ("tenant_id","created_at" DESC NULLS LAST);--> statement-breakpoint
 CREATE INDEX "audit_logs_tenant_entity_created_idx" ON "audit"."audit_logs" USING btree ("tenant_id","entity_type","entity_id","created_at" DESC NULLS LAST);--> statement-breakpoint
 CREATE INDEX "audit_logs_tenant_actor_created_idx" ON "audit"."audit_logs" USING btree ("tenant_id","actor_id","created_at" DESC NULLS LAST);--> statement-breakpoint
@@ -879,12 +933,23 @@ CREATE INDEX "subscriptions_search_trgm_idx" ON "crm"."subscriptions" USING gin 
     "service_account_number" || ' ' || coalesce("installation_address", '')
   ) gin_trgm_ops) WHERE "crm"."subscriptions"."deleted_at" IS NULL;--> statement-breakpoint
 CREATE INDEX "subscriptions_installation_location_idx" ON "crm"."subscriptions" USING btree ("installation_location_id");--> statement-breakpoint
+CREATE INDEX "tickets_tenant_created_idx" ON "crm"."tickets" USING btree ("tenant_id","created_at" DESC NULLS LAST);--> statement-breakpoint
+CREATE INDEX "tickets_tenant_status_idx" ON "crm"."tickets" USING btree ("tenant_id","status");--> statement-breakpoint
+CREATE INDEX "tickets_customer_idx" ON "crm"."tickets" USING btree ("customer_id");--> statement-breakpoint
+CREATE INDEX "tickets_assigned_idx" ON "crm"."tickets" USING btree ("tenant_id","assigned_to");--> statement-breakpoint
+CREATE INDEX "tickets_location_idx" ON "crm"."tickets" USING btree ("tenant_id","location_id");--> statement-breakpoint
+CREATE INDEX "tickets_no_trgm_idx" ON "crm"."tickets" USING gin ("ticket_no" gin_trgm_ops);--> statement-breakpoint
+CREATE UNIQUE INDEX "tickets_tenant_no_uq" ON "crm"."tickets" USING btree ("tenant_id","ticket_no");--> statement-breakpoint
 CREATE INDEX "location_aliases_tenant_idx" ON "geo"."location_aliases" USING btree ("tenant_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "location_categories_tenant_slug_uq" ON "geo"."location_categories" USING btree ("tenant_id","slug") WHERE deleted_at IS NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX "location_schemas_tenant_slug_uq" ON "geo"."location_schemas" USING btree ("tenant_id","slug") WHERE deleted_at IS NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX "locations_parent_name_uq" ON "geo"."locations" USING btree ("tenant_id",coalesce("parent_id", '00000000-0000-0000-0000-000000000000'::uuid),"name") WHERE deleted_at IS NULL;--> statement-breakpoint
 CREATE INDEX "locations_tenant_parent_idx" ON "geo"."locations" USING btree ("tenant_id","parent_id");--> statement-breakpoint
 CREATE INDEX "locations_tenant_category_idx" ON "geo"."locations" USING btree ("tenant_id","category_id");--> statement-breakpoint
 CREATE INDEX "locations_tenant_schema_idx" ON "geo"."locations" USING btree ("tenant_id","schema_id");--> statement-breakpoint
 CREATE INDEX "locations_tenant_created_idx" ON "geo"."locations" USING btree ("tenant_id","created_at" DESC NULLS LAST);--> statement-breakpoint
 CREATE INDEX "locations_code_trgm_idx" ON "geo"."locations" USING gin ("code" gin_trgm_ops);--> statement-breakpoint
+CREATE INDEX "locations_tenant_live_idx" ON "geo"."locations" USING btree ("tenant_id") WHERE deleted_at IS NULL;--> statement-breakpoint
 CREATE INDEX "approval_requests_tenant_status_idx" ON "inventory"."approval_requests" USING btree ("tenant_id","status");--> statement-breakpoint
 CREATE INDEX "approval_requests_tenant_req_by_idx" ON "inventory"."approval_requests" USING btree ("tenant_id","requested_by");--> statement-breakpoint
 CREATE INDEX "approval_requests_tenant_created_idx" ON "inventory"."approval_requests" USING btree ("tenant_id","created_at" DESC NULLS LAST);--> statement-breakpoint
@@ -945,6 +1010,8 @@ CREATE INDEX "teams_tenant_status_idx" ON "tenancy"."teams" USING btree ("tenant
 CREATE INDEX "tenant_memberships_tenant_idx" ON "tenancy"."tenant_memberships" USING btree ("tenant_id");--> statement-breakpoint
 CREATE INDEX "tenant_memberships_team_idx" ON "tenancy"."tenant_memberships" USING btree ("team_id");--> statement-breakpoint
 CREATE INDEX "tenant_memberships_user_idx" ON "tenancy"."tenant_memberships" USING btree ("user_id");--> statement-breakpoint
+CREATE INDEX "tenant_upi_accounts_tenant_idx" ON "tenancy"."tenant_upi_accounts" USING btree ("tenant_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "tenant_upi_accounts_tenant_vpa_uq" ON "tenancy"."tenant_upi_accounts" USING btree ("tenant_id","upi_id") WHERE "tenancy"."tenant_upi_accounts"."deleted_at" IS NULL;--> statement-breakpoint
 CREATE INDEX "tenants_status_idx" ON "tenancy"."tenants" USING btree ("status");--> statement-breakpoint
 CREATE OR REPLACE FUNCTION crm.next_customer_code(p_tenant_id uuid)
 RETURNS text AS $$
@@ -965,6 +1032,25 @@ BEGIN
   RETURN v_code || '-' || lpad(v_seq::text, 6, '0');
 END;
 $$ LANGUAGE plpgsql VOLATILE;--> statement-breakpoint
+CREATE OR REPLACE FUNCTION crm.next_ticket_no(p_tenant_id uuid)
+RETURNS text AS $$
+DECLARE
+  v_code text;
+  v_seq integer;
+BEGIN
+  UPDATE tenancy.tenants
+  SET ticket_seq = ticket_seq + 1,
+      updated_at = now()
+  WHERE id = p_tenant_id
+  RETURNING code, ticket_seq INTO v_code, v_seq;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Tenant not found: %', p_tenant_id;
+  END IF;
+
+  RETURN v_code || '-T-' || lpad(v_seq::text, 6, '0');
+END;
+$$ LANGUAGE plpgsql VOLATILE;--> statement-breakpoint
 CREATE OR REPLACE FUNCTION geo.location_descendants(root uuid)
 RETURNS TABLE (id uuid, depth integer)
 LANGUAGE sql
@@ -975,13 +1061,14 @@ AS $$
   WITH RECURSIVE tree AS (
     SELECT l.id, 0 AS depth
     FROM geo.locations l
-    WHERE l.id = root
+    WHERE l.id = root AND l.deleted_at IS NULL
 
     UNION ALL
 
     SELECT child.id, tree.depth + 1
     FROM geo.locations child
     JOIN tree ON child.parent_id = tree.id
+    WHERE child.deleted_at IS NULL
   ) CYCLE id SET is_cycle USING visited
   SELECT tree.id, tree.depth FROM tree WHERE NOT is_cycle
 $$;--> statement-breakpoint
@@ -995,13 +1082,14 @@ AS $$
   WITH RECURSIVE chain AS (
     SELECT l.id, l.parent_id, 0 AS depth
     FROM geo.locations l
-    WHERE l.id = node
+    WHERE l.id = node AND l.deleted_at IS NULL
 
     UNION ALL
 
     SELECT parent.id, parent.parent_id, chain.depth + 1
     FROM geo.locations parent
     JOIN chain ON chain.parent_id = parent.id
+    WHERE parent.deleted_at IS NULL
   ) CYCLE id SET is_cycle USING visited
   SELECT chain.id, chain.depth FROM chain WHERE NOT is_cycle
 $$;--> statement-breakpoint
@@ -1044,7 +1132,7 @@ AS $$
     GROUP BY s.service_provider_id, s.package_id
   )
   SELECT bool_and(coalesce(nearest, NOT has_allowlist)) IS NOT FALSE FROM levels
-$$;--> statement-breakpoint--> statement-breakpoint
+$$;--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS customers_tenant_normalized_phone_idx
   ON crm.customers (tenant_id, crm.normalize_phone(phone));--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS location_aliases_trgm_idx
@@ -1063,9 +1151,10 @@ WITH RECURSIVE walk AS (
     l.id                       AS root_id,
     0                          AS depth,
     ARRAY[l.id]                AS path_ids,
-    l.name                     AS path
+    l.name                     AS path,
+    CASE WHEN l.code IS NULL THEN ARRAY[]::text[] ELSE ARRAY[l.code] END AS codes
   FROM geo.locations l
-  WHERE l.parent_id IS NULL
+  WHERE l.parent_id IS NULL AND l.deleted_at IS NULL
 
   UNION ALL
 
@@ -1075,11 +1164,13 @@ WITH RECURSIVE walk AS (
     walk.root_id,
     walk.depth + 1,
     walk.path_ids || child.id,
-    walk.path || ' / ' || child.name
+    walk.path || ' / ' || child.name,
+    CASE WHEN child.code IS NULL THEN walk.codes ELSE walk.codes || child.code END
   FROM geo.locations child
   JOIN walk ON child.parent_id = walk.id
+  WHERE child.deleted_at IS NULL
 ) CYCLE id SET is_cycle USING visited
-SELECT id, tenant_id, root_id, depth, path_ids, path
+SELECT id, tenant_id, root_id, depth, path_ids, path, codes
 FROM walk
 WHERE NOT is_cycle;--> statement-breakpoint
 CREATE OR REPLACE VIEW analytics.tenant_customer_stats AS
@@ -1118,4 +1209,19 @@ SELECT
   (count(*) FILTER (WHERE n.status = 'failed') * 10 <= count(*)) AS healthy
 FROM notify.notifications n
 WHERE n.created_at >= now() - interval '24 hours'
-GROUP BY n.channel;
+GROUP BY n.channel;--> statement-breakpoint
+CREATE OR REPLACE FUNCTION billing.collections_refuse_change()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  RAISE EXCEPTION
+    'billing.collections is append-only: reverse the receipt instead of %ing it',
+    lower(TG_OP)
+    USING ERRCODE = 'restrict_violation';
+END;
+$$;--> statement-breakpoint
+DROP TRIGGER IF EXISTS collections_append_only ON billing.collections;--> statement-breakpoint
+CREATE TRIGGER collections_append_only
+  BEFORE UPDATE OR DELETE ON billing.collections
+  FOR EACH ROW EXECUTE FUNCTION billing.collections_refuse_change();

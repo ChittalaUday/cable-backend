@@ -10,10 +10,13 @@ import {
   accountTransactions,
   auditLogs,
   collections,
+  customerEquipment,
   customers,
+  equipment,
   itemCatalog,
   membershipLocations,
   rolePermissions,
+  stockMovements,
   subscriptions,
   tenantMemberships,
   users,
@@ -94,7 +97,11 @@ async function makeCustomer(locationId: string, providerId: string, packageId: s
 }
 
 async function collect(auth: Record<string, string>, payload: Record<string, unknown>) {
-  return app.inject({ method: 'POST', url: '/api/v1/payments', headers: auth, payload });
+  return app.inject({ method: 'POST', url: '/api/v1/payments/subscription', headers: auth, payload });
+}
+
+async function collectEquipment(auth: Record<string, string>, payload: Record<string, unknown>) {
+  return app.inject({ method: 'POST', url: '/api/v1/payments/equipment', headers: auth, payload });
 }
 
 async function balances(customerId: string): Promise<{ customer: string; line: string }> {
@@ -188,6 +195,9 @@ afterAll(async () => {
   await db.delete(collections).where(inArray(collections.customerId, createdCustomerIds));
   await db.execute(sql`ALTER TABLE billing.collections ENABLE TRIGGER collections_append_only`);
   await db.delete(accountTransactions).where(inArray(accountTransactions.customerId, createdCustomerIds));
+  await db.delete(customerEquipment).where(inArray(customerEquipment.customerId, createdCustomerIds));
+  await db.delete(stockMovements).where(inArray(stockMovements.tenantId, [data.tenantA.id, data.tenantB.id]));
+  await db.delete(equipment).where(inArray(equipment.catalogId, [ourCatalogId, theirCatalogId]));
   await db.delete(customers).where(inArray(customers.id, createdCustomerIds));
   await db.delete(itemCatalog).where(inArray(itemCatalog.id, [ourCatalogId, theirCatalogId]));
   for (const id of createdUserIds)
@@ -263,41 +273,70 @@ describe('recording a visit', () => {
     expect(response.statusCode).toBe(400);
   });
 
-  it('prices accessories itself and bills them alongside the dues', async () => {
+  it('records an equipment payment and issues new equipment to the customer', async () => {
     const { customerId } = await makeCustomerLikeNorth('500.00');
 
-    const receipt = bodyOf<CollectionResponse>(await collect(fieldAuth, {
+    const response = await collectEquipment(fieldAuth, {
       customerId,
-      amount: '500.00',
+      amount: '150.00',
       method: 'cash',
-      accessories: [{ catalogId: ourCatalogId, quantity: 2, unitPrice: '150.00' }],
+      catalogId: ourCatalogId,
+      serialNumber: `SN-${unique()}`,
       reference: ref(),
-    }));
+    });
+
+    expect(response.statusCode).toBe(201);
+    const receipt = bodyOf<CollectionResponse>(response);
 
     expect(receipt).toMatchObject({
       outcome: 'full',
-      duesPaid: '500.00',
-      accessoryAmount: '300.00',
-      totalCollected: '800.00',
+      duesPaid: '150.00',
+      totalCollected: '150.00',
       balanceAfter: '0.00',
     });
-    expect(receipt.accessories[0]).toMatchObject({ name: 'Remote Control', quantity: 2, amount: '300.00' });
+    expect(receipt.customerEquipmentId).not.toBeNull();
+    expect(receipt.equipment).toMatchObject({
+      itemName: 'Remote Control',
+    });
+  });
 
-    const ledger = await db.select().from(accountTransactions).where(eq(accountTransactions.customerId, customerId));
-    expect(ledger.map(row => [row.transactionType, row.debit, row.credit])).toEqual(
-      expect.arrayContaining([['deduction', '300.00', '0.00'], ['deposit', '0.00', '800.00']]),
-    );
-    expect(await balances(customerId)).toEqual({ customer: '0.00', line: '0.00' });
+  it('records an equipment payment and updates or replaces existing equipment', async () => {
+    const { customerId } = await makeCustomerLikeNorth('500.00');
+
+    const initial = bodyOf<CollectionResponse>(await collectEquipment(fieldAuth, {
+      customerId,
+      amount: '150.00',
+      method: 'cash',
+      catalogId: ourCatalogId,
+      serialNumber: `SN-${unique()}`,
+      reference: ref(),
+    }));
+
+    const replaced = bodyOf<CollectionResponse>(await collectEquipment(fieldAuth, {
+      customerId,
+      customerEquipmentId: initial.customerEquipmentId!,
+      replacementSerialNumber: `SN-NEW-${unique()}`,
+      returnCondition: 'damaged',
+      amount: '50.00',
+      method: 'upi',
+      notes: 'Swapped damaged remote',
+      reference: ref(),
+    }));
+
+    expect(replaced.outcome).toBe('full');
+    expect(replaced.duesPaid).toBe('50.00');
+    expect(replaced.customerEquipmentId).not.toBe(initial.customerEquipmentId);
+    expect(replaced.equipment?.serialNumber).toContain('SN-NEW-');
   });
 
   it('refuses another operator\'s catalogue item', async () => {
     const { customerId } = await makeCustomerLikeNorth('500.00');
 
-    const response = await collect(fieldAuth, {
+    const response = await collectEquipment(fieldAuth, {
       customerId,
       amount: '0',
       reason: 'accessory only',
-      accessories: [{ catalogId: theirCatalogId, quantity: 1, unitPrice: '150.00' }],
+      catalogId: theirCatalogId,
       reference: ref(),
     });
 
@@ -721,31 +760,30 @@ describe('edge cases', () => {
     expect(await balances(customerId)).toEqual({ customer: '500.00', line: '500.00' });
   });
 
-  it('takes the accessory charge back off the account when the receipt is reversed', async () => {
+  it('takes the equipment charge back off the account when the receipt is reversed', async () => {
     const { customerId } = await makeCustomerLikeNorth('500.00');
-    const receipt = bodyOf<CollectionResponse>(await collect(fieldAuth, {
+    const receipt = bodyOf<CollectionResponse>(await collectEquipment(fieldAuth, {
       customerId,
-      amount: '500.00',
+      amount: '150.00',
       method: 'cash',
-      accessories: [{ catalogId: ourCatalogId, quantity: 1, unitPrice: '150.00' }],
+      catalogId: ourCatalogId,
       reference: ref(),
     }));
 
-    await app.inject({
+    const response = await app.inject({
       method: 'POST',
       url: `/api/v1/payments/${receipt.id}/reverse`,
       headers: adminAuth,
       payload: { reason: 'Customer returned the remote', reference: ref() },
     });
 
-    expect(await balances(customerId)).toEqual({ customer: '500.00', line: '500.00' });
-
-    const ledger = await db.select().from(accountTransactions).where(eq(accountTransactions.customerId, customerId));
-    const cash = ledger
-      .filter(row => row.transactionType === 'deposit' || row.transactionType === 'reversal')
-      .reduce((total, row) => total + Number(row.credit) - Number(row.debit), 0);
-
-    expect(cash).toBe(0);
+    expect(response.statusCode).toBe(201);
+    const reversal = bodyOf<CollectionResponse>(response);
+    expect(reversal).toMatchObject({
+      outcome: 'refund',
+      duesPaid: '-150.00',
+      customerEquipmentId: receipt.customerEquipmentId,
+    });
   });
 
   it('shows a subscriber their own receipts and nobody else\'s', async () => {

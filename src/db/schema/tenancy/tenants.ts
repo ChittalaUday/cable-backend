@@ -9,6 +9,7 @@ export const tenants = tenancy.table('tenants', {
   name: text('name').notNull(),
 
   customerSeq: integer('customer_seq').notNull().default(0),
+  ticketSeq: integer('ticket_seq').notNull().default(0),
 
   status: text('status', { enum: TENANT_STATUSES }).notNull().default('active'),
 

@@ -16,6 +16,10 @@ export function nextCustomerCode(tenantId: unknown) {
   return sql<string>`crm.next_customer_code(${tenantId})`;
 }
 
+export function nextTicketNo(tenantId: unknown) {
+  return sql<string>`crm.next_ticket_no(${tenantId})`;
+}
+
 export function locationDescendants(rootId: unknown) {
   return sql`geo.location_descendants(${rootId})`;
 }

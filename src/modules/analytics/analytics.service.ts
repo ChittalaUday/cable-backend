@@ -20,6 +20,7 @@ const TOP_AREAS = 5;
 const RECENT_CUSTOMERS = 4;
 const RECENT_ACTIVITY = 6;
 const RECENT_COLLECTIONS = 10;
+const TOP_STAFF = 5;
 
 function boundaries(now: Date): Periods & { previousMonth: Date } {
   const day = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -68,6 +69,8 @@ export class AnalyticsService {
       monthly,
       customerSeries,
       connectionSeries,
+      inactiveSeries,
+      staff,
     ] = await Promise.all([
       this.repo.customerTotals(tenantId, month, previousMonth),
       this.repo.connectionTotals(tenantId, month, previousMonth),
@@ -81,6 +84,8 @@ export class AnalyticsService {
       this.repo.collectionSeries(tenantId, now, 'month', SERIES_STEPS),
       this.repo.cumulativeSeries(tenantId, now, { table: 'crm.customers', dateColumn: 'created_at' }, SERIES_MONTHS),
       this.repo.cumulativeSeries(tenantId, now, { table: 'crm.subscriptions', dateColumn: 'start_date' }, SERIES_MONTHS),
+      this.repo.cumulativeSeries(tenantId, now, { table: 'crm.subscriptions', dateColumn: 'end_date' }, SERIES_MONTHS),
+      this.repo.staffLeaderboard(tenantId, month, TOP_STAFF),
     ]);
 
     const serviceTotal = services.reduce((sum, row) => sum + number(row.count), 0);
@@ -103,6 +108,8 @@ export class AnalyticsService {
         cancelled: number(connections.cancelled),
         delta: growth(number(connections.current_added), number(connections.previous_added)),
         series: connectionSeries,
+        inactiveSeries,
+        inactiveDelta: growth(number(connections.current_ended), number(connections.previous_ended)),
       },
       collections: {
         ...collections,
@@ -113,6 +120,13 @@ export class AnalyticsService {
       services: services.map(row => ({ ...row, count: number(row.count), share: share(number(row.count), serviceTotal) })),
       areas: areas.map(row => ({ ...row, count: number(row.count), share: share(number(row.count), areaTotal) })),
       recentCustomers: recent.map(row => ({ ...row, name: row.name ?? 'Customer', phone: row.phone ?? '', createdAt: iso(row.createdAt) })),
+      staff: staff.map(row => ({
+        id: row.id,
+        name: row.name ?? 'Staff',
+        collected: money(row.collected),
+        receipts: number(row.receipts),
+        lastCollectedAt: row.lastCollectedAt === null ? null : iso(row.lastCollectedAt),
+      })),
       activity: activity.map(row => ({ ...row, createdAt: iso(row.createdAt) })),
       generatedAt: now.toISOString(),
     };

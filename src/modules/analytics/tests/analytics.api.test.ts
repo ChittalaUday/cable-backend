@@ -124,6 +124,18 @@ describe('analytics dashboards', () => {
     expect(bodyOf<{ services: { label: string; count: number }[] }>(response).services).toContainEqual(expect.objectContaining({ label: 'Cable', count: 1 }));
   });
 
+  it('ranks collectors by what they took this month', async () => {
+    const response = await app.inject({ method: 'GET', url: '/api/v1/analytics/dashboard/admin', headers: auth });
+
+    expect(response.statusCode, response.body).toBe(200);
+    // Collector took ₹500, Teammate ₹300 — biggest first, and nobody who
+    // collected nothing appears at all.
+    expect(bodyOf<{ staff: { name: string; collected: string; receipts: number }[] }>(response).staff).toMatchObject([
+      { name: 'Collector', collected: '500.00', receipts: 1 },
+      { name: 'Teammate', collected: '300.00', receipts: 1 },
+    ]);
+  });
+
   it('does not expose the staff dashboard to an admin', async () => {
     const response = await app.inject({ method: 'GET', url: '/api/v1/analytics/dashboard/staff', headers: auth });
     expect(response.statusCode).toBe(403);

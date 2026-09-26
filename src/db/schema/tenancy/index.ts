@@ -3,4 +3,5 @@ export * from './team-locations';
 export * from './team-member-locations';
 export * from './teams';
 export * from './tenant-memberships';
+export * from './tenant-upi-accounts';
 export * from './tenants';

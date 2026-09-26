@@ -304,7 +304,7 @@ describe('a change in another module reaches a cached reader', () => {
 
   it('re-renders the collector name on a receipt when that staff member is renamed', async () => {
     // The engineer collects, so the receipt carries their name.
-    await post('/api/v1/payments', staffAuth, {
+    await post('/api/v1/payments/subscription', staffAuth, {
       customerId: north.customerId,
       amount: '0',
       reason: 'cache probe',
