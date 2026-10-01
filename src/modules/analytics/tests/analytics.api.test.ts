@@ -1,9 +1,9 @@
 import type { BuiltApp } from '@/app';
 import { randomUUID } from 'node:crypto';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from '@/app';
-import { accountTransactions, customers, membershipLocations, rolePermissions, subscriptions, teams, tenantMemberships, users } from '@/db/schema';
+import { accountTransactions, collections, customers, membershipLocations, rolePermissions, subscriptions, teams, tenantMemberships, users } from '@/db/schema';
 import { hashPassword } from '@/security/password';
 import { PERMISSIONS } from '@/security/permissions';
 import { createTestDb } from '@/test/db';
@@ -15,12 +15,14 @@ const unique = () => randomUUID().slice(0, 8);
 let app: BuiltApp;
 let auth: Record<string, string>;
 let staffAuth: Record<string, string>;
+let teammateEmail: string;
 let cleanup: () => Promise<void>;
 let tenantId: string;
 let areaId: string;
 let schemaId: string;
 let providerId: string;
 let packageId: string;
+const accessoryReference = `analytics-accessory-${unique()}`;
 
 beforeAll(async () => {
   app = await buildApp();
@@ -64,6 +66,8 @@ beforeAll(async () => {
     { userId: teammate!.id, tenantId: data.tenantA.id, roleId: 'staff', teamId: team!.id },
   ]).returning();
   await db.insert(membershipLocations).values({ membershipId: membership!.id, locationId: location.id });
+  await db.update(teams).set({ leaderMembershipId: membership!.id }).where(eq(teams.id, team!.id));
+  teammateEmail = teammate!.email!;
 
   const [customer] = await db.insert(customers).values({
     tenantId: data.tenantA.id,
@@ -72,7 +76,7 @@ beforeAll(async () => {
     status: 'active',
     outstandingBalance: '125.00',
   }).returning();
-  await db.insert(subscriptions).values({
+  const [subscription] = await db.insert(subscriptions).values({
     tenantId: data.tenantA.id,
     customerId: customer!.id,
     serviceProviderId: provider.id,
@@ -81,7 +85,7 @@ beforeAll(async () => {
     installationLocationId: location.id,
     status: 'active',
     price: '350.00',
-  });
+  }).returning();
   const transaction = (collectedBy: string, credit: string) => ({
     tenantId: data.tenantA.id,
     serviceId: service.id,
@@ -94,6 +98,17 @@ beforeAll(async () => {
     collectedBy,
   });
   await db.insert(accountTransactions).values([transaction(staff!.id, '500.00'), transaction(teammate!.id, '300.00')]);
+  await db.insert(collections).values({
+    tenantId: data.tenantA.id,
+    customerId: customer!.id,
+    subscriptionId: subscription!.id,
+    collectedBy: staff!.id,
+    outcome: 'full',
+    method: 'cash',
+    accessoryAmount: '50.00',
+    balanceAfter: '125.00',
+    reference: accessoryReference,
+  });
 
   const staffLogin = await app.inject({
     method: 'POST',
@@ -105,6 +120,9 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  await db.execute(sql`ALTER TABLE billing.collections DISABLE TRIGGER collections_append_only`);
+  await db.delete(collections).where(eq(collections.reference, accessoryReference));
+  await db.execute(sql`ALTER TABLE billing.collections ENABLE TRIGGER collections_append_only`);
   await app.close();
   await cleanup();
   await close();
@@ -118,7 +136,7 @@ describe('analytics dashboards', () => {
     expect(bodyOf(response)).toMatchObject({
       customers: { total: 1, active: 1, inactive: 0, pending: 0 },
       connections: { total: 1, active: 1, inactive: 0, suspended: 0, cancelled: 0 },
-      collections: { today: '800.00', week: '800.00', month: '800.00' },
+      collections: { today: '850.00', week: '850.00', month: '850.00', todayReceipts: 3 },
       outstanding: { amount: '125.00', accounts: 1 },
     });
     expect(bodyOf<{ services: { label: string; count: number }[] }>(response).services).toContainEqual(expect.objectContaining({ label: 'Cable', count: 1 }));
@@ -128,10 +146,9 @@ describe('analytics dashboards', () => {
     const response = await app.inject({ method: 'GET', url: '/api/v1/analytics/dashboard/admin', headers: auth });
 
     expect(response.statusCode, response.body).toBe(200);
-    // Collector took ₹500, Teammate ₹300 — biggest first, and nobody who
-    // collected nothing appears at all.
+    // Collector took ₹500 plus a ₹50 accessory sale; Teammate took ₹300.
     expect(bodyOf<{ staff: { name: string; collected: string; receipts: number }[] }>(response).staff).toMatchObject([
-      { name: 'Collector', collected: '500.00', receipts: 1 },
+      { name: 'Collector', collected: '550.00', receipts: 2 },
       { name: 'Teammate', collected: '300.00', receipts: 1 },
     ]);
   });
@@ -209,9 +226,23 @@ describe('analytics dashboards', () => {
     const response = await app.inject({ method: 'GET', url: '/api/v1/analytics/dashboard/staff', headers: staffAuth });
     expect(response.statusCode, response.body).toBe(200);
     expect(bodyOf(response)).toMatchObject({
-      personal: { today: '500.00', month: '500.00', todayReceipts: 1 },
-      team: { today: '800.00', month: '800.00', todayReceipts: 2 },
+      personal: { today: '550.00', month: '550.00', todayReceipts: 2 },
+      team: { today: '850.00', month: '850.00', todayReceipts: 3 },
       workload: { customers: 1, dueCustomers: 1, outstanding: '125.00', activeConnections: 1, inactiveConnections: 0 },
     });
+  });
+
+  it('shows team status only to the team leader', async () => {
+    const login = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/login',
+      headers: { 'x-device-id': uniqueDeviceId(), 'x-platform': 'android' },
+      payload: { identifier: teammateEmail, password: TEST_PASSWORD },
+    });
+    const headers = { 'authorization': `Bearer ${bodyOf(login).accessToken}`, 'x-tenant-id': tenantId };
+
+    const response = await app.inject({ method: 'GET', url: '/api/v1/analytics/dashboard/staff', headers });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(bodyOf(response)).toMatchObject({ personal: { todayReceipts: 1 }, team: null });
   });
 });

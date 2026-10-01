@@ -8,6 +8,27 @@
       "when": 1790441327790,
       "tag": "0000_misty_krista_starr",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1790444194736,
+      "tag": "0001_chemical_vengeance",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1790444330050,
+      "tag": "0002_goofy_xavin",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1790577285000,
+      "tag": "0003_default_sscn_upi",
+      "breakpoints": true
     }
   ]
 }

@@ -19,7 +19,7 @@ import type { CollectableLine } from '@/modules/customers/customers.balance';
 import type { RequestAccess } from '@/modules/iam/access.service';
 import type { PermissionScope } from '@/security/permissions';
 import { Buffer } from 'node:buffer';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import Decimal from 'decimal.js';
 import { AUDIT_ENTITIES } from '@/constants/audit';
 import { COLLECTION_OUTCOME, PAYMENT_METHOD } from '@/constants/billing';
@@ -57,6 +57,23 @@ function receiptNo(prefix: string, id: string): string {
   return `${prefix}-${id.replaceAll('-', '').slice(0, 10).toUpperCase()}`;
 }
 
+function canonical(value: unknown): unknown {
+  if (Array.isArray(value))
+    return value.map(canonical);
+
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).map(([key, item]) => [key, canonical(item)]),
+    );
+  }
+
+  return value;
+}
+
+function requestFingerprint(kind: 'subscription' | 'equipment' | 'reversal', input: object): string {
+  return createHash('sha256').update(`${kind}:${JSON.stringify(canonical(input))}`).digest('hex');
+}
+
 function encodeCursor(collectedAt: Date, id: string): string {
   return Buffer.from(`${collectedAt.toISOString()}|${id}`).toString('base64url');
 }
@@ -82,7 +99,8 @@ export class PaymentService {
   }
 
   async recordSubscription(access: RequestAccess, input: RecordSubscriptionPaymentBody): Promise<CollectionResponse> {
-    const replay = await this.replayOf(access, input.reference);
+    const requestHash = requestFingerprint('subscription', input);
+    const replay = await this.replayOf(access, input.reference, requestHash);
     if (replay !== null)
       return replay;
 
@@ -90,14 +108,16 @@ export class PaymentService {
     const collectedAt = input.collectedAt === undefined ? new Date() : new Date(input.collectedAt);
     const id = randomUUID();
 
-    const created = await this.insertSubscriptionVisit(access, input, { id, duesPaid, collectedAt });
+    const created = await this.insertSubscriptionVisit(access, input, { id, duesPaid, collectedAt, requestHash });
 
-    this.announce({
-      tenantId: access.tenantId,
-      collectionId: created.id,
-      customerId: created.customerId,
-      customerUserId: created.customerUserId,
-    });
+    if (created.shouldAnnounce) {
+      this.announce({
+        tenantId: access.tenantId,
+        collectionId: created.id,
+        customerId: created.customerId,
+        customerUserId: created.customerUserId,
+      });
+    }
 
     return this.hydrateOne(created.id, access.tenantId);
   }
@@ -107,14 +127,15 @@ export class PaymentService {
   }
 
   async recordEquipment(access: RequestAccess, input: RecordEquipmentPaymentBody): Promise<CollectionResponse> {
-    const replay = await this.replayOf(access, input.reference);
+    const requestHash = requestFingerprint('equipment', input);
+    const replay = await this.replayOf(access, input.reference, requestHash);
     if (replay !== null)
       return replay;
 
-    if (input.customerEquipmentId === undefined && input.catalogId === undefined) {
+    if ((input.customerEquipmentId === undefined) === (input.catalogId === undefined)) {
       throw badRequest(
         ERROR_CODES.VALIDATION_FAILED,
-        'Either customerEquipmentId (to update/replace) or catalogId (to issue new equipment) must be specified',
+        'Specify exactly one of customerEquipmentId or catalogId',
       );
     }
 
@@ -122,19 +143,21 @@ export class PaymentService {
     const collectedAt = input.collectedAt === undefined ? new Date() : new Date(input.collectedAt);
     const id = randomUUID();
 
-    const created = await this.insertEquipmentVisit(access, input, { id, paidAmount, collectedAt });
+    const created = await this.insertEquipmentVisit(access, input, { id, paidAmount, collectedAt, requestHash });
 
-    this.announce({
-      tenantId: access.tenantId,
-      collectionId: created.id,
-      customerId: created.customerId,
-      customerUserId: created.customerUserId,
-    });
+    if (created.shouldAnnounce) {
+      this.announce({
+        tenantId: access.tenantId,
+        collectionId: created.id,
+        customerId: created.customerId,
+        customerUserId: created.customerUserId,
+      });
+    }
 
     return this.hydrateOne(created.id, access.tenantId);
   }
 
-  private async replayOf(access: RequestAccess, reference: string): Promise<CollectionResponse | null> {
+  private async replayOf(access: RequestAccess, reference: string, requestHash: string): Promise<CollectionResponse | null> {
     const existing = await this.findByReference(access.tenantId, reference);
 
     if (existing === null)
@@ -143,14 +166,17 @@ export class PaymentService {
     if (existing.collectedBy !== access.userId)
       throw conflict('That reference already belongs to another collector\'s receipt');
 
+    if (existing.requestHash !== null && existing.requestHash !== requestHash)
+      throw conflict('That reference was already used for a different payment request');
+
     return this.hydrateOne(existing.id, access.tenantId);
   }
 
   private async insertSubscriptionVisit(
     access: RequestAccess,
     input: RecordSubscriptionPaymentBody,
-    prepared: { id: string; duesPaid: Decimal; collectedAt: Date },
-  ): Promise<{ id: string; customerId: string; customerUserId: string | null }> {
+    prepared: { id: string; duesPaid: Decimal; collectedAt: Date; requestHash: string },
+  ): Promise<{ id: string; customerId: string; customerUserId: string | null; shouldAnnounce: boolean }> {
     const { id, duesPaid, collectedAt } = prepared;
     const scope = requireScope(access, PERMISSIONS.PAYMENTS_COLLECT);
 
@@ -161,11 +187,27 @@ export class PaymentService {
         if (customer === null)
           throw notFound('Customer');
 
+        const replay = await this.replayOf(access, input.reference, prepared.requestHash);
+        if (replay !== null)
+          return { id: replay.id, customerId: replay.customerId, customerUserId: null, shouldAnnounce: false };
+
         const line = await this.resolveLine(tx, access.tenantId, input);
         await this.assertReaches(tx, scope, access, line?.installationLocationId ?? null);
 
         const dueAmount = new Decimal(line?.outstandingBalance ?? customer.outstandingBalance);
-        const outcome = decideOutcome({ input, duesPaid, dueAmount, takings: duesPaid });
+        const accessoryInputs = input.accessories ?? [];
+        const names = await this.repo.accessoryNames(tx, access.tenantId, accessoryInputs.map(item => item.catalogId));
+        if (names.size !== new Set(accessoryInputs.map(item => item.catalogId)).size)
+          throw notFound('Accessory');
+
+        const accessories = accessoryInputs.map((item): CollectionAccessory => ({
+          ...item,
+          name: names.get(item.catalogId)!,
+          amount: new Decimal(item.unitPrice).mul(item.quantity).toFixed(2),
+        }));
+        const accessoryAmount = accessories.reduce((total, item) => total.plus(item.amount), ZERO);
+        const takings = duesPaid.plus(accessoryAmount);
+        const outcome = decideOutcome({ input, duesPaid, dueAmount, takings });
 
         const transactionId = await this.postTakings(tx, {
           id,
@@ -174,8 +216,8 @@ export class PaymentService {
           customerId: customer.id,
           dueAmount,
           duesPaid,
-          accessoryAmount: ZERO,
-          takings: duesPaid,
+          accessoryAmount,
+          takings,
           collectedAt,
           remarks: input.notes ?? null,
         });
@@ -189,10 +231,11 @@ export class PaymentService {
           outcome,
           dueAmount,
           duesPaid,
-          accessoryAmount: ZERO,
-          accessories: [],
+          accessoryAmount,
+          accessories,
           transactionId,
           collectedAt,
+          requestHash: prepared.requestHash,
         }));
 
         await audit.created(tx, access.audit, {
@@ -201,19 +244,19 @@ export class PaymentService {
           after: row,
         });
 
-        return { ...row, customerUserId: customer.userId };
+        return { ...row, customerUserId: customer.userId, shouldAnnounce: true };
       });
     }
     catch (error) {
       if (!isUniqueViolation(error))
         throw error;
 
-      const winner = await this.replayOf(access, input.reference);
+      const winner = await this.replayOf(access, input.reference, prepared.requestHash);
 
       if (winner === null)
         throw error;
 
-      return { id: winner.id, customerId: winner.customerId, customerUserId: null };
+      return { id: winner.id, customerId: winner.customerId, customerUserId: null, shouldAnnounce: false };
     }
   }
 
@@ -223,12 +266,13 @@ export class PaymentService {
     existingEquipmentId: string,
     replacementEquipmentId?: string,
     replacementSerialNumber?: string,
-    locationId?: string | null,
   ): Promise<{ id: string; serialNumber: string | null }> {
     if (replacementEquipmentId !== undefined) {
       const unit = await this.repo.findEquipmentUnit(tx, tenantId, replacementEquipmentId);
       if (unit === null)
         throw notFound('Replacement equipment unit');
+      if (unit.inventoryStatus !== INVENTORY_STATUS.AVAILABLE)
+        throw conflict('Replacement equipment unit is not available');
       return unit;
     }
 
@@ -236,17 +280,17 @@ export class PaymentService {
     if (oldUnit === null || oldUnit.catalogId === null)
       throw notFound('Old equipment unit');
 
-    const existing = await this.repo.findAvailableUnit(tx, tenantId, oldUnit.catalogId, replacementSerialNumber);
+    const serialized = replacementSerialNumber === undefined
+      ? null
+      : await this.repo.findEquipmentBySerial(tx, tenantId, replacementSerialNumber);
+    if (serialized !== null && (serialized.catalogId !== oldUnit.catalogId || serialized.inventoryStatus !== INVENTORY_STATUS.AVAILABLE))
+      throw conflict('That serial number is already in use or belongs to another catalogue item');
+
+    const existing = serialized ?? await this.repo.findAvailableUnit(tx, tenantId, oldUnit.catalogId);
     if (existing !== null)
       return existing;
 
-    return this.repo.createEquipmentUnit(tx, {
-      tenantId,
-      catalogId: oldUnit.catalogId,
-      serialNumber: replacementSerialNumber,
-      inventoryStatus: INVENTORY_STATUS.AVAILABLE,
-      locationId: locationId ?? null,
-    });
+    throw conflict('No matching replacement equipment is available in stock');
   }
 
   private async recordReplacementMovements(
@@ -296,7 +340,6 @@ export class PaymentService {
       existingCE.equipmentId,
       input.replacementEquipmentId,
       input.replacementSerialNumber,
-      locationId,
     );
 
     const { returnCond, oldUnitStatus } = determineReturnConditionStatus(input.returnCondition);
@@ -344,35 +387,37 @@ export class PaymentService {
     return newAssignment.id;
   }
 
+  // Existing id, serial lookup, then stock fallback. Inward stock is the only creator.
   private async resolveOrAddCatalogUnit(
     tx: Transaction,
     tenantId: string,
     catalogId: string,
     equipmentId?: string,
     serialNumber?: string,
-    locationId?: string | null,
-    defaultOwnership?: EquipmentOwnership,
-    requestedOwnership?: EquipmentOwnership,
   ): Promise<{ id: string; locationId: string | null }> {
     if (equipmentId !== undefined) {
       const unit = await this.repo.findEquipmentUnit(tx, tenantId, equipmentId);
       if (unit === null)
         throw notFound('Equipment');
+      if (unit.catalogId !== catalogId || unit.inventoryStatus !== INVENTORY_STATUS.AVAILABLE)
+        throw conflict('That equipment unit is not available for this catalogue item');
       return unit;
+    }
+
+    if (serialNumber !== undefined) {
+      const serialized = await this.repo.findEquipmentBySerial(tx, tenantId, serialNumber);
+      if (serialized !== null) {
+        if (serialized.catalogId !== catalogId || serialized.inventoryStatus !== INVENTORY_STATUS.AVAILABLE)
+          throw conflict('That serial number is already in use');
+        return serialized;
+      }
     }
 
     const available = await this.repo.findAvailableUnit(tx, tenantId, catalogId, serialNumber);
     if (available !== null)
       return available;
 
-    return this.repo.createEquipmentUnit(tx, {
-      tenantId,
-      catalogId,
-      locationId: locationId ?? null,
-      serialNumber: serialNumber ?? `SN-${Date.now().toString().slice(-6)}`,
-      inventoryStatus: INVENTORY_STATUS.AVAILABLE,
-      ownershipType: requestedOwnership ?? defaultOwnership,
-    });
+    throw conflict('No matching equipment is available in stock');
   }
 
   private async addCustomerEquipment(
@@ -394,9 +439,6 @@ export class PaymentService {
       input.catalogId!,
       input.equipmentId,
       input.serialNumber,
-      locationId,
-      catalog.defaultOwnership,
-      input.ownershipType,
     );
 
     await this.repo.updateEquipmentUnit(tx, access.tenantId, unit.id, {
@@ -409,7 +451,7 @@ export class PaymentService {
       customerId: customer.id,
       subscriptionId: line?.id ?? null,
       equipmentId: unit.id,
-      status: input.status ?? CUSTOMER_EQUIPMENT_STATUS.ACTIVE,
+      status: CUSTOMER_EQUIPMENT_STATUS.ACTIVE,
       ownershipType: input.ownershipType ?? catalog.defaultOwnership,
       assignedBy: access.userId,
       assignedAt: collectedAt,
@@ -455,7 +497,6 @@ export class PaymentService {
       return this.replaceCustomerEquipment(tx, access, customer, line, existingCE, input, collectedAt);
 
     const updated = await this.repo.updateCustomerEquipment(tx, access.tenantId, existingCE.id, {
-      ...(input.status !== undefined ? { status: input.status } : {}),
       ...(input.ownershipType !== undefined ? { ownershipType: input.ownershipType } : {}),
       ...(input.notes !== undefined ? { notes: input.notes } : {}),
     });
@@ -466,45 +507,26 @@ export class PaymentService {
     tx: Transaction,
     access: RequestAccess,
     input: RecordEquipmentPaymentBody,
-    prepared: { id: string; paidAmount: Decimal; collectedAt: Date },
+    prepared: { id: string; paidAmount: Decimal; collectedAt: Date; requestHash: string },
     customer: { id: string },
-    line: CollectableLine | null,
     targetCustomerEquipmentId: string,
   ) {
     const { id, paidAmount, collectedAt } = prepared;
     const isZero = paidAmount.isZero();
     assertValidEquipmentVisit(isZero, input.reason, input.method);
 
-    let transactionId: string | null = null;
-    if (!isZero && line !== null) {
-      transactionId = await this.repo.insertTransaction(tx, {
-        tenantId: access.tenantId,
-        serviceId: line.serviceId,
-        customerId: customer.id,
-        subscriptionId: line.id,
-        serviceAccountNumber: line.serviceAccountNumber,
-        transactionDate: collectedAt,
-        collectedBy: access.userId,
-        transactionNo: receiptNo('EQP', id),
-        transactionType: TRANSACTION_TYPE.DEPOSIT,
-        debit: '0',
-        credit: paidAmount.toFixed(2),
-        closingBalance: line.outstandingBalance,
-        remarks: input.notes ?? 'Equipment payment',
-      });
-    }
-
     const outcome = isZero ? COLLECTION_OUTCOME.NONE : COLLECTION_OUTCOME.FULL;
     const row = equipmentCollectionRow({
       id,
       tenantId: access.tenantId,
       customerId: customer.id,
-      subscriptionId: line?.id ?? null,
+      subscriptionId: null,
       customerEquipmentId: targetCustomerEquipmentId,
       collectedBy: access.userId,
       outcome,
       paidAmount,
-      transactionId,
+      transactionId: null,
+      requestHash: prepared.requestHash,
       input,
       collectedAt,
     });
@@ -515,8 +537,8 @@ export class PaymentService {
   private async insertEquipmentVisit(
     access: RequestAccess,
     input: RecordEquipmentPaymentBody,
-    prepared: { id: string; paidAmount: Decimal; collectedAt: Date },
-  ): Promise<{ id: string; customerId: string; customerUserId: string | null }> {
+    prepared: { id: string; paidAmount: Decimal; collectedAt: Date; requestHash: string },
+  ): Promise<{ id: string; customerId: string; customerUserId: string | null; shouldAnnounce: boolean }> {
     const { id, collectedAt } = prepared;
     const scope = requireScope(access, PERMISSIONS.PAYMENTS_COLLECT);
 
@@ -526,11 +548,12 @@ export class PaymentService {
         if (customer === null)
           throw notFound('Customer');
 
-        const line = await this.resolveLine(tx, access.tenantId, {
-          customerId: input.customerId,
-          subscriptionId: input.subscriptionId,
-        });
-        await this.assertReaches(tx, scope, access, line?.installationLocationId ?? null);
+        const replay = await this.replayOf(access, input.reference, prepared.requestHash);
+        if (replay !== null)
+          return { id: replay.id, customerId: replay.customerId, customerUserId: null, shouldAnnounce: false };
+
+        const lines = await this.repo.collectableLines(tx, access.tenantId, input.customerId, null);
+        const line = await this.firstReachableLine(tx, scope, access, lines);
 
         const targetCustomerEquipmentId = await this.resolveTargetEquipmentId(
           tx,
@@ -547,7 +570,6 @@ export class PaymentService {
           input,
           prepared,
           customer,
-          line,
           targetCustomerEquipmentId,
         );
 
@@ -557,19 +579,19 @@ export class PaymentService {
           after: row,
         });
 
-        return { ...row, customerUserId: customer.userId };
+        return { ...row, customerUserId: customer.userId, shouldAnnounce: true };
       });
     }
     catch (error) {
       if (!isUniqueViolation(error))
         throw error;
 
-      const winner = await this.replayOf(access, input.reference);
+      const winner = await this.replayOf(access, input.reference, prepared.requestHash);
 
       if (winner === null)
-        throw error;
+        throw conflict('That equipment unit or serial number is already in use');
 
-      return { id: winner.id, customerId: winner.customerId, customerUserId: null };
+      return { id: winner.id, customerId: winner.customerId, customerUserId: null, shouldAnnounce: false };
     }
   }
 
@@ -577,81 +599,101 @@ export class PaymentService {
     if (requireScope(access, PERMISSIONS.PAYMENTS_UPDATE) !== 'ALL')
       throw forbidden(ERROR_CODES.PERM_SCOPE_DENIED, 'Reversing a receipt needs payments.update at ALL');
 
-    const replay = await this.replayOf(access, input.reference);
+    const requestHash = requestFingerprint('reversal', { id, ...input });
+    const replay = await this.replayOf(access, input.reference, requestHash);
     if (replay !== null)
       return replay;
 
     const reversalId = randomUUID();
 
-    const created = await this.repo.inTransaction(async (tx) => {
-      const original = await this.repo.findForReversal(tx, access.tenantId, id);
+    let created: { id: string; customerId: string; customerUserId: string | null; shouldAnnounce: boolean };
+    try {
+      created = await this.repo.inTransaction(async (tx) => {
+        const original = await this.repo.findForReversal(tx, access.tenantId, id);
 
-      if (original === null)
-        throw notFound('Collection');
+        if (original === null)
+          throw notFound('Collection');
 
-      if (original.outcome === COLLECTION_OUTCOME.REFUND)
-        throw conflict('That row is itself a refund');
+        if (original.outcome === COLLECTION_OUTCOME.REFUND)
+          throw conflict('That row is itself a refund');
 
-      if (await this.repo.findReversalOf(tx, access.tenantId, id) !== null)
+        if (await this.repo.findReversalOf(tx, access.tenantId, id) !== null) {
+          const winner = await this.replayOf(access, input.reference, requestHash);
+          if (winner !== null)
+            return { id: winner.id, customerId: winner.customerId, customerUserId: null, shouldAnnounce: false };
+          throw conflict('That receipt has already been refunded');
+        }
+
+        const customer = await this.repo.lockCustomer(tx, access.tenantId, original.customerId);
+        if (customer === null)
+          throw notFound('Customer');
+
+        const duesPaid = new Decimal(original.duesPaid);
+        // An accessory sold on the visit was charged to the account, so undoing
+        // the receipt has to take that charge back off too — not just the dues.
+        const accessoryAmount = new Decimal(original.accessoryAmount);
+        const takings = duesPaid.plus(accessoryAmount);
+
+        const transactionId = await this.unpostTakings(tx, {
+          reversalId,
+          access,
+          original,
+          duesPaid,
+          accessoryAmount,
+          takings,
+          reason: input.reason,
+        });
+
+        const row = await this.repo.insertCollection(tx, {
+          id: reversalId,
+          tenantId: access.tenantId,
+          customerId: original.customerId,
+          subscriptionId: original.subscriptionId,
+          customerEquipmentId: original.customerEquipmentId,
+          collectedBy: access.userId,
+          outcome: COLLECTION_OUTCOME.REFUND,
+          method: original.method,
+          dueAmount: original.balanceAfter,
+          duesPaid: duesPaid.negated().toFixed(2),
+          accessoryAmount: accessoryAmount.negated().toFixed(2),
+          accessories: original.accessories,
+          balanceAfter: new Decimal(original.balanceAfter).plus(duesPaid).toFixed(2),
+          transactionId,
+          reversesId: original.id,
+          reason: input.reason,
+          reference: input.reference,
+          requestHash,
+          collectedAt: new Date(),
+        });
+
+        await audit.created(tx, access.audit, {
+          entityType: AUDIT_ENTITIES.PAYMENT_COLLECTION,
+          entityId: reversalId,
+          after: row,
+          metadata: { reverses: original.id, reference: original.reference },
+        });
+
+        return { ...row, customerUserId: customer.userId, shouldAnnounce: true };
+      });
+    }
+    catch (error) {
+      if (!isUniqueViolation(error))
+        throw error;
+
+      const winner = await this.replayOf(access, input.reference, requestHash);
+      if (winner === null)
         throw conflict('That receipt has already been refunded');
+      return winner;
+    }
 
-      const customer = await this.repo.lockCustomer(tx, access.tenantId, original.customerId);
-      if (customer === null)
-        throw notFound('Customer');
-
-      const duesPaid = new Decimal(original.duesPaid);
-      // An accessory sold on the visit was charged to the account, so undoing
-      // the receipt has to take that charge back off too — not just the dues.
-      const accessoryAmount = new Decimal(original.accessoryAmount);
-      const takings = duesPaid.plus(accessoryAmount);
-
-      const transactionId = await this.unpostTakings(tx, {
-        reversalId,
-        access,
-        original,
-        duesPaid,
-        accessoryAmount,
-        takings,
-        reason: input.reason,
-      });
-
-      const row = await this.repo.insertCollection(tx, {
-        id: reversalId,
+    if (created.shouldAnnounce) {
+      this.announce({
         tenantId: access.tenantId,
-        customerId: original.customerId,
-        subscriptionId: original.subscriptionId,
-        customerEquipmentId: original.customerEquipmentId,
-        collectedBy: access.userId,
-        outcome: COLLECTION_OUTCOME.REFUND,
-        method: original.method,
-        dueAmount: original.balanceAfter,
-        duesPaid: duesPaid.negated().toFixed(2),
-        accessoryAmount: accessoryAmount.negated().toFixed(2),
-        accessories: original.accessories,
-        balanceAfter: new Decimal(original.balanceAfter).plus(duesPaid).toFixed(2),
-        transactionId,
-        reversesId: original.id,
-        reason: input.reason,
-        reference: input.reference,
-        collectedAt: new Date(),
+        collectionId: created.id,
+        customerId: created.customerId,
+        customerUserId: created.customerUserId,
       });
-
-      await audit.created(tx, access.audit, {
-        entityType: AUDIT_ENTITIES.PAYMENT_COLLECTION,
-        entityId: reversalId,
-        after: row,
-        metadata: { reverses: original.id, reference: original.reference },
-      });
-
-      return { ...row, customerUserId: customer.userId };
-    });
-
-    this.announce({
-      tenantId: access.tenantId,
-      collectionId: created.id,
-      customerId: created.customerId,
-      customerUserId: created.customerUserId,
-    });
+    }
 
     return this.hydrateOne(created.id, access.tenantId);
   }
@@ -730,6 +772,30 @@ export class PaymentService {
 
     if (!await this.repo.nodeUnderGrant(tx, locationId, reach.nodeIds))
       throw notFound('Customer');
+  }
+
+  private async firstReachableLine(
+    tx: Transaction,
+    scope: PermissionScope,
+    access: RequestAccess,
+    lines: CollectableLine[],
+  ): Promise<CollectableLine | null> {
+    if (scope === 'ALL')
+      return lines[0] ?? null;
+
+    const reach = locationScopeFor(access, PERMISSIONS.PAYMENTS_COLLECT);
+    if (reach.kind === 'ALL_TENANT_LOCATIONS')
+      return lines[0] ?? null;
+    if (reach.nodeIds.length === 0)
+      throw notFound('Customer');
+
+    for (const line of lines) {
+      if (await this.repo.nodeUnderGrant(tx, line.installationLocationId, reach.nodeIds)) {
+        return line;
+      }
+    }
+
+    throw notFound('Customer');
   }
 
   private async unpostTakings(tx: Transaction, input: {
@@ -873,7 +939,7 @@ export class PaymentService {
     });
   }
 
-  private async findByReference(tenantId: string, reference: string): Promise<{ id: string; collectedBy: string } | null> {
+  private async findByReference(tenantId: string, reference: string): Promise<{ id: string; collectedBy: string; requestHash: string | null } | null> {
     return this.repo.findByReference(tenantId, reference);
   }
 
@@ -934,6 +1000,7 @@ function collectionRow(input: {
   accessories: CollectionAccessory[];
   transactionId: string | null;
   collectedAt: Date;
+  requestHash: string;
 }): NewCollection {
   const paid = input.outcome !== COLLECTION_OUTCOME.NONE;
 
@@ -955,6 +1022,7 @@ function collectionRow(input: {
     reason: input.input.reason ?? null,
     notes: input.input.notes ?? null,
     reference: input.input.reference,
+    requestHash: input.requestHash,
     collectedAt: input.collectedAt,
     ...pointFrom(input.input),
   };
@@ -1023,6 +1091,7 @@ function equipmentCollectionRow(input: {
   transactionId: string | null;
   input: RecordEquipmentPaymentBody;
   collectedAt: Date;
+  requestHash: string;
 }): NewCollection {
   const isZero = input.paidAmount.isZero();
   return {
@@ -1043,6 +1112,7 @@ function equipmentCollectionRow(input: {
     reason: input.input.reason ?? null,
     notes: input.input.notes ?? null,
     reference: input.input.reference,
+    requestHash: input.requestHash,
     collectedAt: input.collectedAt,
     ...pointFrom(input.input),
   };

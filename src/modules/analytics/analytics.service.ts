@@ -72,7 +72,7 @@ export class AnalyticsService {
       inactiveSeries,
       staff,
     ] = await Promise.all([
-      this.repo.customerTotals(tenantId, month, previousMonth),
+      this.repo.customerTotals(tenantId, month),
       this.repo.connectionTotals(tenantId, month, previousMonth),
       this.repo.subscriptionsByService(tenantId),
       this.repo.subscriptionsByArea(tenantId, TOP_AREAS),
@@ -97,7 +97,8 @@ export class AnalyticsService {
         active: number(customers.active),
         inactive: number(customers.inactive),
         pending: number(customers.pending),
-        delta: growth(number(customers.current_added), number(customers.previous_added)),
+        // Total now vs total at the start of the month, the same units as the tile.
+        delta: growth(number(customers.total), number(customers.total) - number(customers.current_added)),
         series: customerSeries,
       },
       connections: {
@@ -106,7 +107,7 @@ export class AnalyticsService {
         inactive: number(connections.inactive),
         suspended: number(connections.suspended),
         cancelled: number(connections.cancelled),
-        delta: growth(number(connections.current_added), number(connections.previous_added)),
+        delta: growth(number(connections.active), number(connections.active) - number(connections.current_added) + number(connections.current_ended)),
         series: connectionSeries,
         inactiveSeries,
         inactiveDelta: growth(number(connections.current_ended), number(connections.previous_ended)),
@@ -137,14 +138,15 @@ export class AnalyticsService {
       throw forbidden(ERROR_CODES.PERM_SCOPE_DENIED, 'This is the scoped view — a tenant-wide grant gets the admin dashboard');
 
     const periods = boundaries(now);
-    const teamId = await this.repo.teamOfMembership(access.tenantId, access.membershipId);
+    // Only the crew's leader sees the crew's totals.
+    const teamId = access.isTeamLeader ? access.teamId : null;
     const personalFilter = this.repo.collectorFilter(access.tenantId, access.userId);
 
     const [personal, team, workload, recent] = await Promise.all([
-      this.repo.collectionMetrics(personalFilter, periods, 't').then(toMetrics),
+      this.repo.collectionMetrics(personalFilter, periods).then(toMetrics),
       teamId === null
         ? Promise.resolve(null)
-        : this.repo.collectionMetrics(this.repo.teamFilter(access.tenantId, teamId), periods, 't').then(toMetrics),
+        : this.repo.collectionMetrics(this.repo.teamFilter(access.tenantId, teamId), periods).then(toMetrics),
       this.staffWorkload(access),
       this.repo.recentCollections(personalFilter, RECENT_COLLECTIONS),
     ]);

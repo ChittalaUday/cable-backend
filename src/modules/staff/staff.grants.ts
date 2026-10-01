@@ -135,14 +135,14 @@ export interface AreaGrants {
   narrowed: Map<string, LocationRef[]>;
 }
 
-interface GrantRow { owner: string; id: string; name: string; path: string }
+interface GrantRow { owner: string; id: string; name: string; path: string; pathIds: string[] }
 
 function groupRefs(rows: readonly GrantRow[]): Map<string, LocationRef[]> {
   const grouped = new Map<string, LocationRef[]>();
 
   for (const row of rows) {
     const list = grouped.get(row.owner) ?? [];
-    list.push({ id: row.id, name: row.name, path: row.path });
+    list.push({ id: row.id, name: row.name, path: row.path, pathIds: row.pathIds });
     grouped.set(row.owner, list);
   }
 
@@ -161,7 +161,7 @@ export async function areaGrantsFor(
     membershipIds.length === 0
       ? empty
       : db
-          .select({ owner: membershipLocations.membershipId, id: locations.id, name: locations.name, path: locationPaths.path })
+          .select({ owner: membershipLocations.membershipId, id: locations.id, name: locations.name, path: locationPaths.path, pathIds: locationPaths.pathIds })
           .from(membershipLocations)
           .innerJoin(locations, eq(locations.id, membershipLocations.locationId))
           .innerJoin(locationPaths, eq(locationPaths.id, locations.id))
@@ -169,7 +169,7 @@ export async function areaGrantsFor(
     teamIds.length === 0
       ? empty
       : db
-          .select({ owner: teamLocations.teamId, id: locations.id, name: locations.name, path: locationPaths.path })
+          .select({ owner: teamLocations.teamId, id: locations.id, name: locations.name, path: locationPaths.path, pathIds: locationPaths.pathIds })
           .from(teamLocations)
           .innerJoin(locations, eq(locations.id, teamLocations.locationId))
           .innerJoin(locationPaths, eq(locationPaths.id, locations.id))
@@ -177,7 +177,7 @@ export async function areaGrantsFor(
     membershipIds.length === 0
       ? empty
       : db
-          .select({ owner: teamMemberLocations.membershipId, id: locations.id, name: locations.name, path: locationPaths.path })
+          .select({ owner: teamMemberLocations.membershipId, id: locations.id, name: locations.name, path: locationPaths.path, pathIds: locationPaths.pathIds })
           .from(teamMemberLocations)
           .innerJoin(locations, eq(locations.id, teamMemberLocations.locationId))
           .innerJoin(locationPaths, eq(locationPaths.id, locations.id))

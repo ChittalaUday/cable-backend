@@ -18,7 +18,6 @@ import type {
   StockItemResponse,
   TransferStockBody,
 } from './inventory.schema';
-import type { EquipmentOwnership } from '@/constants/inventory';
 import type { Database } from '@/db/client';
 import type { StockMovementRecord } from '@/db/schema';
 import type { RequestAccess } from '@/modules/iam/access.service';
@@ -238,16 +237,20 @@ export class InventoryService {
   private async resolveIssuableUnit(spec: {
     tenantId: string;
     input: IssueEquipmentBody;
-    installedAt: string | null;
-    defaultOwnership: EquipmentOwnership;
   }): Promise<IssuableUnit> {
-    const { tenantId, input, installedAt, defaultOwnership } = spec;
+    const { tenantId, input } = spec;
 
     if (input.equipmentId !== undefined) {
       const existingUnit = await this.repo.findUnitRef(tenantId, input.equipmentId);
 
       if (existingUnit === null)
         throw notFound('Equipment');
+
+      if (existingUnit.catalogId !== input.catalogId)
+        throw conflict('That equipment unit belongs to another catalogue item');
+
+      if (!await this.repo.isUnitAvailable(tenantId, existingUnit.id))
+        throw conflict('That equipment unit is already assigned or unavailable');
 
       return { ...existingUnit, serialNumber: existingUnit.serialNumber ?? input.serialNumber ?? null };
     }
@@ -256,14 +259,7 @@ export class InventoryService {
     if (unit !== null)
       return unit;
 
-    return this.repo.createUnit({
-      tenantId,
-      catalogId: input.catalogId,
-      locationId: installedAt,
-      serialNumber: input.serialNumber ?? `SN-${Date.now().toString().slice(-6)}`,
-      inventoryStatus: INVENTORY_STATUS.AVAILABLE,
-      ownershipType: input.ownershipType ?? defaultOwnership,
-    });
+    throw conflict('No matching equipment is available in stock');
   }
 
   private async resolveSubscriptionId(tenantId: string, customer: { id: string; code: string | null }): Promise<string> {
@@ -315,8 +311,6 @@ export class InventoryService {
     const unit = await this.resolveIssuableUnit({
       tenantId,
       input,
-      installedAt,
-      defaultOwnership: catalog.defaultOwnership,
     });
 
     const result = await this.repo.inTransaction(async (tx) => {
@@ -612,8 +606,8 @@ export class InventoryService {
 
     await this.assertCustomerInReach(access, assignment.customerId);
 
-    if (assignment.status === CUSTOMER_EQUIPMENT_STATUS.RETURNED)
-      throw badRequest(ERROR_CODES.RESOURCE_CONFLICT, 'Equipment has already been returned');
+    if (assignment.status !== CUSTOMER_EQUIPMENT_STATUS.ACTIVE && assignment.status !== CUSTOMER_EQUIPMENT_STATUS.STANDBY)
+      throw badRequest(ERROR_CODES.RESOURCE_CONFLICT, 'Equipment is not actively assigned to this customer');
 
     const unit = await this.repo.findUnitById(tenantId, assignment.equipmentId);
 
@@ -746,6 +740,9 @@ export class InventoryService {
 
     if (existing === null)
       throw notFound('Equipment');
+
+    if (!await this.repo.isUnitAvailable(tenantId, existing.id))
+      throw conflict('Assigned or unavailable equipment cannot be transferred');
 
     const nextStatus = input.toStaffId !== undefined ? INVENTORY_STATUS.STAFF_VAN : INVENTORY_STATUS.AVAILABLE;
     const nextLocationId = input.toLocationId ?? (input.toStaffId !== undefined ? null : existing.locationId);

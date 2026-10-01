@@ -541,6 +541,18 @@ describe('every unit is a row', () => {
     return db.select().from(equipment).where(eq(equipment.catalogId, catalogId));
   }
 
+  async function stockOf(catalogId: string) {
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/v1/inventory/stock',
+      headers: { ...alphaAuth, 'x-tenant-id': alpha.id },
+    });
+    expect(response.statusCode).toBe(200);
+
+    return bodyOf<{ id: string; totalStock: number; availableStock: number; issuedStock: number }[]>(response)
+      .find(row => row.id === catalogId)!;
+  }
+
   it('receives fifty cords as fifty rows, not one row that says fifty', async () => {
     const catalogId = await newCatalogItem();
 
@@ -635,6 +647,25 @@ describe('every unit is a row', () => {
     expect(issue1.statusCode).toBe(201);
     const assignment1 = bodyOf<{ id: string; equipmentId: string; status: string }>(issue1);
     expect(assignment1.status).toBe('active');
+    expect(await stockOf(catalogId)).toMatchObject({ totalStock: 1, availableStock: 0, issuedStock: 1 });
+
+    const duplicateIssue = await post('/api/v1/inventory/issue', {
+      customerId: alpha.customerId,
+      catalogId,
+      equipmentId: assignment1.equipmentId,
+    });
+    expect(duplicateIssue.statusCode).toBe(409);
+
+    const assignedTransfer = await post('/api/v1/inventory/transfer', {
+      equipmentId: assignment1.equipmentId,
+      toLocationId: alpha.locationId,
+    });
+    expect(assignedTransfer.statusCode).toBe(409);
+
+    // Even legacy or manually-corrupted status cannot make an active assignment
+    // appear as warehouse stock: the relationship is part of availability.
+    await db.update(equipment).set({ inventoryStatus: 'available' }).where(eq(equipment.id, assignment1.equipmentId));
+    expect(await stockOf(catalogId)).toMatchObject({ totalStock: 1, availableStock: 0, issuedStock: 1 });
 
     // Create customer B
     const [customerB] = await db
@@ -657,6 +688,7 @@ describe('every unit is a row', () => {
     const returned = bodyOf<{ status: string; equipmentStatus: string }>(returnRes);
     expect(returned.status).toBe('returned');
     expect(returned.equipmentStatus).toBe('available');
+    expect(await stockOf(catalogId)).toMatchObject({ totalStock: 1, availableStock: 1, issuedStock: 0 });
 
     // 4. Reassign the exact same physical equipment to Customer B
     const issue2 = await post('/api/v1/inventory/issue', {
@@ -669,6 +701,7 @@ describe('every unit is a row', () => {
     expect(assignment2.equipmentId).toBe(assignment1.equipmentId);
     expect(assignment2.id).not.toBe(assignment1.id);
     expect(assignment2.status).toBe('active');
+    expect(await stockOf(catalogId)).toMatchObject({ totalStock: 1, availableStock: 0, issuedStock: 1 });
 
     // 5. Query customer-equipment for this equipment unit: must return both rows chronologically
     const historyRes = await app.inject({

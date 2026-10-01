@@ -6,6 +6,7 @@ import { buildApp } from '@/app';
 import { SYSTEM_ROLES } from '@/config/constants';
 import {
   customers,
+  equipment,
   itemCatalog,
   locationCategories,
   locations,
@@ -42,11 +43,14 @@ const theirs = { locationId: '', customerId: '' };
 const createdUserIds: string[] = [];
 
 async function issue(customerId: string, headers: Record<string, string>) {
+  const serialNumber = `SN-${unique()}`;
+  await db.insert(equipment).values({ tenantId, catalogId, serialNumber });
+
   return app.inject({
     method: 'POST',
     url: '/api/v1/inventory/issue',
     headers: { ...headers, 'content-type': 'application/json' },
-    payload: { customerId, catalogId, serialNumber: `SN-${unique()}` },
+    payload: { customerId, catalogId, serialNumber },
   });
 }
 

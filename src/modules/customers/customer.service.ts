@@ -31,6 +31,10 @@ interface PlannedLine {
   input: NonNullable<CreateCustomerBody['connection']>;
 }
 
+export interface CustomerAnnouncer {
+  (event: { tenantId: string; customerId: string }): void;
+}
+
 /** A trimmed value, or null when nothing was actually typed. */
 function trimmed(value: string | undefined): string | null {
   const text = value?.trim() ?? '';
@@ -41,7 +45,10 @@ function trimmed(value: string | undefined): string | null {
 export class CustomerService {
   private readonly repo: CustomerRepository;
 
-  constructor(repoOrDb: CustomerRepository | Database) {
+  constructor(
+    repoOrDb: CustomerRepository | Database,
+    private readonly announce: CustomerAnnouncer = () => {},
+  ) {
     this.repo = 'findDetailRecord' in repoOrDb
       ? repoOrDb
       : new CustomerRepository(repoOrDb);
@@ -141,7 +148,7 @@ export class CustomerService {
     subscriptionId: string,
     input: ChangePlanBody,
   ): Promise<Subscription> {
-    return this.repo.inTransaction(async (tx) => {
+    const changed = await this.repo.inTransaction(async (tx) => {
       const line = await this.reachableLine(tx, access, customerId, subscriptionId);
       const chosen = await this.samePackageProvider(tx, access.tenantId, input.packageId, line.serviceProviderId);
 
@@ -163,6 +170,9 @@ export class CustomerService {
 
       return this.lineOf(tx, access.tenantId, after.id);
     });
+
+    this.changed(access.tenantId, customerId);
+    return changed;
   }
 
   /**
@@ -229,7 +239,9 @@ export class CustomerService {
       return customer.id;
     });
 
-    return this.detail(access, id);
+    const created = await this.detail(access, id);
+    this.changed(access.tenantId, id);
+    return created;
   }
 
   /** The customer's first line, taking the subscriber code as its account number. */
@@ -298,7 +310,7 @@ export class CustomerService {
     customerId: string,
     input: AddSubscriptionBody,
   ): Promise<Subscription> {
-    return this.repo.inTransaction(async (tx) => {
+    const added = await this.repo.inTransaction(async (tx) => {
       const base = await this.reachableLine(tx, access, customerId, input.basedOn);
       const chosen = await this.samePackageProvider(tx, access.tenantId, input.packageId, base.serviceProviderId);
 
@@ -327,6 +339,13 @@ export class CustomerService {
 
       return this.lineOf(tx, access.tenantId, created.id);
     });
+
+    this.changed(access.tenantId, customerId);
+    return added;
+  }
+
+  private changed(tenantId: string, customerId: string): void {
+    this.announce({ tenantId, customerId });
   }
 
   /** The customer's line, once the caller is known to reach where it is fitted. */

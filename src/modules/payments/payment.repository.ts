@@ -236,9 +236,9 @@ export class PaymentRepository {
     return sql`(c.collected_at, c.id) < (${collectedAt}, ${id}::uuid)`;
   }
 
-  async findByReference(tenantId: string, reference: string): Promise<{ id: string; collectedBy: string } | null> {
+  async findByReference(tenantId: string, reference: string): Promise<{ id: string; collectedBy: string; requestHash: string | null } | null> {
     const [row] = await this.db
-      .select({ id: collections.id, collectedBy: collections.collectedBy })
+      .select({ id: collections.id, collectedBy: collections.collectedBy, requestHash: collections.requestHash })
       .from(collections)
       .where(and(eq(collections.tenantId, tenantId), eq(collections.reference, reference)))
       .limit(1);
@@ -339,11 +339,27 @@ export class PaymentRepository {
     return row ?? null;
   }
 
+  async findEquipmentBySerial(tx: Transaction, tenantId: string, serialNumber: string): Promise<Equipment | null> {
+    const [row] = await tx
+      .select()
+      .from(equipment)
+      .where(and(eq(equipment.tenantId, tenantId), eq(equipment.serialNumber, serialNumber)))
+      .limit(1);
+
+    return row ?? null;
+  }
+
   async findAvailableUnit(tx: Transaction, tenantId: string, catalogId: string, serialNumber?: string): Promise<Equipment | null> {
     const conditions = [
       eq(equipment.tenantId, tenantId),
       eq(equipment.catalogId, catalogId),
       eq(equipment.inventoryStatus, 'available'),
+      sql`not exists (
+        select 1 from inventory.customer_equipment active_assignment
+        where active_assignment.tenant_id = ${tenantId}
+          and active_assignment.equipment_id = ${equipment.id}
+          and active_assignment.status in ('active', 'standby')
+      )`,
     ];
 
     if (serialNumber !== undefined)

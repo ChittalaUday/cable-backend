@@ -1,4 +1,4 @@
-import type { ChannelGenre, ChannelResolution, PackageType, TransactionType } from '@/constants/crm';
+import type { ChannelGenre, ChannelResolution, PackageType } from '@/constants/crm';
 import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
@@ -7,7 +7,6 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import pg from 'pg';
 import { env } from '@/config/env';
 import {
-  accountTransactions,
   channels,
   customerEquipment,
   customers,
@@ -33,7 +32,6 @@ const pool = new pg.Pool({ connectionString: env.DATABASE_URL, max: 2 });
 const db = drizzle(pool);
 
 const MSO_REPORT_PATH = path.resolve(process.cwd(), 'data/Customer_account_status_report_2026-09-08 14_09_35.xls');
-const LEDGER_REPORT_PATH = path.resolve(process.cwd(), 'data/LCODepositLedgerReport_2026-09-0814:09:51-0-1000000.csv');
 
 interface ParsedCustomerRow {
   sNo: string;
@@ -87,66 +85,6 @@ function parseMsoHtml(content: string): ParsedCustomerRow[] {
   return list;
 }
 
-interface ParsedLedgerRow {
-  sNo: string;
-  businessName: string;
-  dateStr: string;
-  transactionNo: string;
-  remarks: string;
-  accountNumber: string;
-  credit: string;
-  debit: string;
-  closingBalance: string;
-}
-
-function parseLedgerCsv(content: string): ParsedLedgerRow[] {
-  const lines = content.split(/\r?\n/);
-  const rows: ParsedLedgerRow[] = [];
-
-  for (let i = 2; i < lines.length; i++) {
-    const line = lines[i]?.trim();
-    if (line === undefined || line.length === 0)
-      continue;
-
-    const cols: string[] = [];
-    let cur = '';
-    let inQuotes = false;
-    for (let c = 0; c < line.length; c++) {
-      const char = line[c];
-      if (char === '"') {
-        inQuotes = !inQuotes;
-      }
-      else if (char === ',' && !inQuotes) {
-        cols.push(cur.trim());
-        cur = '';
-      }
-      else {
-        cur += char;
-      }
-    }
-    cols.push(cur.trim());
-
-    if (cols.length >= 9) {
-      const creditVal = cols[6]?.replace(/^"|"$/g, '');
-      const debitVal = cols[7]?.replace(/^"|"$/g, '');
-      const closingVal = cols[8]?.replace(/^"|"$/g, '');
-
-      rows.push({
-        sNo: cols[0]?.replace(/^"|"$/g, '') ?? '',
-        businessName: cols[1]?.replace(/^"|"$/g, '') ?? '',
-        dateStr: cols[2]?.replace(/^['"]|['"]$/g, '') ?? '',
-        transactionNo: cols[3]?.replace(/^"|"$/g, '') ?? '',
-        remarks: cols[4]?.replace(/^"|"$/g, '') ?? '',
-        accountNumber: cols[5]?.replace(/^"|"$/g, '') ?? '',
-        credit: creditVal !== undefined && creditVal.length > 0 ? creditVal : '0',
-        debit: debitVal !== undefined && debitVal.length > 0 ? debitVal : '0',
-        closingBalance: closingVal !== undefined && closingVal.length > 0 ? closingVal : '0',
-      });
-    }
-  }
-  return rows;
-}
-
 function parseCreatedDate(dateStr: string): Date {
   if (dateStr.length === 0)
     return new Date();
@@ -160,28 +98,6 @@ function parseCreatedDate(dateStr: string): Date {
       return new Date(Date.UTC(year, month, day, 6, 0, 0));
   }
   return new Date();
-}
-
-function parseTxDate(dateStr: string): Date {
-  if (dateStr.length === 0)
-    return new Date();
-
-  const cleaned = dateStr.replace(/^'/, '').trim();
-  const d = new Date(cleaned);
-  return Number.isNaN(d.getTime()) ? new Date() : d;
-}
-
-function resolveTxType(remarks: string): TransactionType {
-  const r = remarks.toLowerCase();
-  if (r.includes('deduction'))
-    return 'deduction';
-  if (r.includes('deposit reversal'))
-    return 'reversal';
-  if (r.includes('normal deposit') || r.includes('amount deposited'))
-    return 'deposit';
-  if (r.includes('adjustment'))
-    return 'adjustment';
-  return 'other';
 }
 
 function cleanPhone(rawPhone: string): string | null {
@@ -836,8 +752,10 @@ async function run() {
     subByAccount.set(s.acc, { id: s.id, customerId: s.customerId });
 
   // Movement history pins the equipment it describes (ON DELETE restrict), so the
-  // ledger goes before the units it points at.
-  await db.delete(stockMovements).where(sql`${stockMovements.tenantId} = ${tenant.id}`);
+  // ledger goes before the units it points at. Matched by equipment too: a
+  // movement filed under another tenant can still point at this tenant's units.
+  await db.delete(stockMovements).where(sql`${stockMovements.tenantId} = ${tenant.id}
+    OR ${stockMovements.equipmentId} IN (SELECT id FROM ${equipment} WHERE ${equipment.tenantId} = ${tenant.id})`);
   await db.delete(equipment).where(sql`${equipment.tenantId} = ${tenant.id}`);
 
   const typeDefs = [
@@ -1023,6 +941,8 @@ async function run() {
         .update(customers)
         .set({
           userId: null,
+          name: custRow.name || null,
+          phone: cleanedPhone,
           address: addressText,
           notes: 'Imported from ACT Digital MSO status report',
           metadata: customerInfo,
@@ -1046,6 +966,8 @@ async function run() {
           tenantId: tenant.id,
           customerCode: generatedCode,
           userId: null,
+          name: custRow.name || null,
+          phone: cleanedPhone,
           address: addressText,
           status: custRow.status as 'active' | 'inactive',
           outstandingBalance: '0.00',
@@ -1120,66 +1042,6 @@ async function run() {
   }
 
   console.log(`✅ Customers Processed: ${parsedCustomers.length} records (${insertedCustomers} new customers), ${insertedSubs} new subscriptions, ${insertedEquipment} equipment assets`);
-
-  if (fs.existsSync(LEDGER_REPORT_PATH)) {
-    const csvContent = fs.readFileSync(LEDGER_REPORT_PATH, 'utf8');
-    const ledgerRows = parseLedgerCsv(csvContent);
-    console.log(`📋 Parsed ${ledgerRows.length} transactions from ledger report`);
-
-    const allSubs = await db
-      .select({ id: subscriptions.id, customerId: subscriptions.customerId, acc: subscriptions.serviceAccountNumber })
-      .from(subscriptions)
-      .where(sql`${subscriptions.tenantId} = ${tenant.id}`);
-
-    const subAccMap = new Map<string, { id: string; customerId: string }>();
-    for (const s of allSubs)
-      subAccMap.set(s.acc, { id: s.id, customerId: s.customerId });
-
-    let insertedTxs = 0;
-    const batchSize = 500;
-    const txRecords: Array<typeof accountTransactions.$inferInsert> = [];
-
-    const existingTxCount = await db
-      .select({ count: sql<string>`count(*)` })
-      .from(accountTransactions)
-      .where(sql`${accountTransactions.tenantId} = ${tenant.id}`);
-
-    if (Number(existingTxCount[0]?.count ?? 0) === 0) {
-      for (const row of ledgerRows) {
-        const matched = subAccMap.get(row.accountNumber);
-        txRecords.push({
-          tenantId: tenant.id,
-          serviceId: cableServiceId,
-          customerId: matched !== undefined ? matched.customerId : null,
-          subscriptionId: matched !== undefined ? matched.id : null,
-          serviceAccountNumber: row.accountNumber.length > 0 ? row.accountNumber : 'SYSTEM',
-          transactionNo: row.transactionNo,
-          transactionDate: parseTxDate(row.dateStr),
-          transactionType: resolveTxType(row.remarks),
-          remarks: row.remarks,
-          debit: row.debit,
-          credit: row.credit,
-          closingBalance: row.closingBalance,
-          createdAt: parseTxDate(row.dateStr),
-        });
-
-        if (txRecords.length >= batchSize) {
-          await db.insert(accountTransactions).values(txRecords);
-          insertedTxs += txRecords.length;
-          txRecords.length = 0;
-        }
-      }
-
-      if (txRecords.length > 0) {
-        await db.insert(accountTransactions).values(txRecords);
-        insertedTxs += txRecords.length;
-      }
-      console.log(`✅ Seeded ${insertedTxs} Account Transactions`);
-    }
-    else {
-      console.log(`ℹ️ Account transactions already present (${existingTxCount[0]?.count} rows) — skipping insert`);
-    }
-  }
 
   console.log('🎉 Seeding completed successfully!');
 }

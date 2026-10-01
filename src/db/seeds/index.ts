@@ -1,11 +1,11 @@
 import process from 'node:process';
-import { eq, or } from 'drizzle-orm';
+import { and, eq, isNull, or } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import pg from 'pg';
 import { SYSTEM_ROLES } from '@/config/constants';
 import { env } from '@/config/env';
 import * as schema from '@/db/schema';
-import { tenantMemberships, tenants, users } from '@/db/schema';
+import { tenantMemberships, tenants, tenantUpiAccounts, users } from '@/db/schema';
 import { hashPassword } from '@/security/password';
 import { SYSTEM_ROLE_GRANTS } from '@/security/role-grants';
 import { seedLocations } from './seed-locations';
@@ -126,6 +126,36 @@ try {
 
   const sscnTenantId = tenantMap.get('SSCN');
   if (sscnTenantId !== undefined) {
+    const upiId = '9951179664@ybl';
+    const [existingUpi] = await db.select({ id: tenantUpiAccounts.id })
+      .from(tenantUpiAccounts)
+      .where(and(
+        eq(tenantUpiAccounts.tenantId, sscnTenantId),
+        eq(tenantUpiAccounts.upiId, upiId),
+        isNull(tenantUpiAccounts.deletedAt),
+      ));
+
+    await db.transaction(async (tx) => {
+      await tx.update(tenantUpiAccounts)
+        .set({ isDefault: false, updatedAt: new Date() })
+        .where(eq(tenantUpiAccounts.tenantId, sscnTenantId));
+
+      if (existingUpi === undefined) {
+        await tx.insert(tenantUpiAccounts).values({
+          tenantId: sscnTenantId,
+          upiId,
+          payeeName: 'Sri Satya Cable Network',
+          label: 'Primary QR',
+          isDefault: true,
+        });
+      }
+      else {
+        await tx.update(tenantUpiAccounts)
+          .set({ isDefault: true, status: 'active', updatedAt: new Date() })
+          .where(eq(tenantUpiAccounts.id, existingUpi.id));
+      }
+    });
+
     await seedLocations(db, sscnTenantId);
     await seedStaff(db, sscnTenantId);
   }

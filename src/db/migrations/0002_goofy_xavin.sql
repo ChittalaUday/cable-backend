@@ -1,0 +1,2 @@
+DROP INDEX "inventory"."equipment_tenant_serial_idx";--> statement-breakpoint
+CREATE UNIQUE INDEX "equipment_tenant_serial_uq" ON "inventory"."equipment" USING btree ("tenant_id","serial_number") WHERE "inventory"."equipment"."serial_number" IS NOT NULL;

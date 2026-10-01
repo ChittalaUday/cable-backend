@@ -20,6 +20,7 @@ export const LocationRef = Type.Object({
   id: Uuid,
   name: Type.String(),
   path: Type.String({ description: 'Root-first breadcrumb, e.g. "Mandapeta / Sai Nagar"' }),
+  pathIds: Type.Array(Uuid, { description: 'Root-first ids, ending with this node' }),
 });
 
 export const TeamRef = Type.Object({ id: Uuid, name: Type.String(), slug: Type.String() });

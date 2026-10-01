@@ -136,7 +136,24 @@ export default fp(async (app) => {
   const customerRepo = new CustomerRepository(app.db);
   const locationRepo = new LocationRepository(app.db);
   const locations = new LocationsService(locationRepo);
-  const customers = new CustomerService(customerRepo);
+  const customers = new CustomerService(customerRepo, (event) => {
+    notifications
+      .signal(
+        event.tenantId,
+        [
+          { kind: 'role', roleId: 'admin' },
+          { kind: 'role', roleId: 'staff' },
+          { kind: 'role', roleId: 'customer' },
+        ],
+        { sync: 'customers', customerId: event.customerId },
+      )
+      .catch((error: unknown) => {
+        app.log.error(
+          { err: error, customerId: event.customerId, tenantId: event.tenantId },
+          'customer changed, but the live update was not delivered',
+        );
+      });
+  });
   const inventory = new InventoryService(app.db, locations);
   // The one the request guard resolves against — see plugins/iam.plugin.ts.
   const access = app.access;

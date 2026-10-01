@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { boolean, index, jsonb, numeric, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { boolean, index, jsonb, numeric, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 import {
   EQUIPMENT_OWNERSHIPS,
   INVENTORY_STATUSES,
@@ -29,7 +29,7 @@ export const equipment = inventory.table('equipment', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, table => [
-  index('equipment_tenant_serial_idx').on(table.tenantId, table.serialNumber),
+  uniqueIndex('equipment_tenant_serial_uq').on(table.tenantId, table.serialNumber).where(sql`${table.serialNumber} IS NOT NULL`),
   index('equipment_tenant_vc_idx').on(table.tenantId, table.vcNumber),
   index('equipment_tenant_mac_idx').on(table.tenantId, table.macAddress),
   index('equipment_tenant_inv_status_idx').on(table.tenantId, table.inventoryStatus),

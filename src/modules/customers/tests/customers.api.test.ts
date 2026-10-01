@@ -3,7 +3,7 @@ import type { BuiltApp } from '@/app';
 import type { SeededAuthData } from '@/test/fixtures';
 import { randomUUID } from 'node:crypto';
 import { eq, inArray, sql } from 'drizzle-orm';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { buildApp } from '@/app';
 import { SYSTEM_ROLES } from '@/config/constants';
 import {
@@ -852,6 +852,32 @@ describe('registering a customer', () => {
 
     // And it is immediately findable through the list every screen reads.
     expect((await list(adminAuth, '?q=Peddinti')).items.map(row => row.id)).toContain(created.id);
+  });
+
+  it('signals every signed-in customer screen after the committed write', async () => {
+    const signal = vi.spyOn(app.notifications, 'signal').mockResolvedValue({ pushed: 0, failed: 0 });
+
+    const response = await register(adminAuth, {
+      name: 'Realtime Customer',
+      phone: uniquePhone(),
+      connection: { packageId: cablePkgId, locationId: northAreaId },
+    });
+
+    expect(response.statusCode, response.body).toBe(201);
+    const created = bodyOf<CustomerDetail>(response);
+    createdCustomerIds.push(created.id);
+
+    expect(signal).toHaveBeenCalledWith(
+      data.tenantA.id,
+      [
+        { kind: 'role', roleId: 'admin' },
+        { kind: 'role', roleId: 'staff' },
+        { kind: 'role', roleId: 'customer' },
+      ],
+      { sync: 'customers', customerId: created.id },
+    );
+
+    signal.mockRestore();
   });
 
   it('lets an area-scoped collector register inside their own area', async () => {

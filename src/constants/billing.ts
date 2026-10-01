@@ -1,8 +1,13 @@
 export const COLLECTION_OUTCOMES = ['full', 'partial', 'none', 'refund', 'others'] as const;
 export type CollectionOutcome = (typeof COLLECTION_OUTCOMES)[number];
 
-export const PAYMENT_METHODS = ['cash', 'upi', 'card', 'bank_transfer', 'cheque'] as const;
-export type PaymentMethod = (typeof PAYMENT_METHODS)[number];
+/** Methods accepted for a new collection. */
+export const PAYMENT_METHODS = ['cash', 'upi'] as const;
+export type PaymentEntryMethod = (typeof PAYMENT_METHODS)[number];
+
+/** Legacy values remain readable on immutable historical receipts. */
+export const STORED_PAYMENT_METHODS = ['cash', 'upi', 'card', 'bank_transfer', 'cheque'] as const;
+export type PaymentMethod = (typeof STORED_PAYMENT_METHODS)[number];
 
 export const COLLECTION_OUTCOME = {
   FULL: 'full',
@@ -15,7 +20,4 @@ export const COLLECTION_OUTCOME = {
 export const PAYMENT_METHOD = {
   CASH: 'cash',
   UPI: 'upi',
-  CARD: 'card',
-  BANK_TRANSFER: 'bank_transfer',
-  CHEQUE: 'cheque',
-} as const satisfies Record<string, PaymentMethod>;
+} as const satisfies Record<string, PaymentEntryMethod>;

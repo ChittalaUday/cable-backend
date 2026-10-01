@@ -1,9 +1,8 @@
 import type { Static } from 'typebox';
 import { Type } from 'typebox';
 import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from '@/config/constants';
-import { COLLECTION_OUTCOMES, PAYMENT_METHODS } from '@/constants/billing';
+import { COLLECTION_OUTCOMES, PAYMENT_METHODS, STORED_PAYMENT_METHODS } from '@/constants/billing';
 import {
-  CUSTOMER_EQUIPMENT_STATUSES,
   EQUIPMENT_OWNERSHIPS,
   EQUIPMENT_RETURN_CONDITIONS,
 } from '@/constants/inventory';
@@ -18,6 +17,11 @@ export const RecordSubscriptionPaymentBody = Type.Object({
   subscriptionId: Type.Optional(Uuid),
   amount: PositiveMoney,
   method: Type.Optional(StringEnum([...PAYMENT_METHODS])),
+  accessories: Type.Optional(Type.Array(Type.Object({
+    catalogId: Uuid,
+    quantity: Type.Integer({ minimum: 1, maximum: 100 }),
+    unitPrice: PositiveMoney,
+  }), { maxItems: 100 })),
   reason: Type.Optional(Type.String({ maxLength: 500 })),
   notes: Type.Optional(Type.String({ maxLength: 1000 })),
   reference: Type.String({ minLength: 8, maxLength: 64 }),
@@ -29,7 +33,6 @@ export const RecordSubscriptionPaymentBody = Type.Object({
 
 export const RecordEquipmentPaymentBody = Type.Object({
   customerId: Uuid,
-  subscriptionId: Type.Optional(Uuid),
   amount: PositiveMoney,
   method: Type.Optional(StringEnum([...PAYMENT_METHODS])),
   reference: Type.String({ minLength: 8, maxLength: 64 }),
@@ -51,7 +54,8 @@ export const RecordEquipmentPaymentBody = Type.Object({
   equipmentId: Type.Optional(Uuid),
   serialNumber: Type.Optional(Type.String({ maxLength: 100 })),
   ownershipType: Type.Optional(StringEnum([...EQUIPMENT_OWNERSHIPS])),
-  status: Type.Optional(StringEnum([...CUSTOMER_EQUIPMENT_STATUSES])),
+  // Assignment lifecycle belongs to /inventory/issue and /inventory/return.
+  status: Type.Optional(Type.Never()),
 });
 
 export const ReverseCollectionBody = Type.Object({
@@ -81,7 +85,7 @@ export const CollectionResponse = Type.Object({
   collectedBy: Uuid,
   collectorName: Nullable(Type.String()),
   outcome: StringEnum([...COLLECTION_OUTCOMES]),
-  method: Nullable(StringEnum([...PAYMENT_METHODS])),
+  method: Nullable(StringEnum([...STORED_PAYMENT_METHODS])),
   dueAmount: Money,
   duesPaid: Money,
   accessoryAmount: Money,

@@ -6,6 +6,7 @@ import { buildApp } from '@/app';
 import { SYSTEM_ROLES } from '@/config/constants';
 import {
   customers,
+  equipment,
   itemCatalog,
   locationCategories,
   locations,
@@ -227,11 +228,13 @@ describe('a change in another module reaches a cached reader', () => {
     // Put the engineer back where the fixtures left them.
     await put(`/api/v1/staff/${staffMembershipId}/locations`, adminAuth, { locationIds: [north.id] });
     await warm(CUSTOMERS, adminAuth);
+    const serialNumber = `SN-${unique()}`;
+    await db.insert(equipment).values({ tenantId, catalogId, serialNumber });
 
     await post('/api/v1/inventory/issue', adminAuth, {
       customerId: north.customerId,
       catalogId,
-      serialNumber: `SN-${unique()}`,
+      serialNumber,
     });
 
     const after = await get(CUSTOMERS, adminAuth);

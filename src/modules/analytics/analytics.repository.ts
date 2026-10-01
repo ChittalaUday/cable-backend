@@ -58,17 +58,31 @@ export interface RecentCollectionRow extends Record<string, unknown> {
 
 const CASH_MOVEMENTS = ['deposit', 'reversal'];
 
-/** Cash actually taken: a reversal's debit cancels the deposit's credit. */
-function cashTaken(prefix: SQL): SQL {
-  return sql`(${prefix}credit - ${prefix}debit)`;
-}
-
-function receipt(prefix: SQL): SQL {
-  return sql`CASE WHEN ${prefix}transaction_type = 'reversal' THEN -1 ELSE 1 END`;
-}
-
-function isCash(prefix: SQL): SQL {
-  return sql`${prefix}transaction_type = ANY(${sql.param(CASH_MOVEMENTS)}::text[])`;
+/**
+ * Every real collection, plus pre-receipt ledger rows kept for migrated data.
+ * A linked ledger row is deliberately excluded: `billing.collections` carries
+ * the full amount including equipment and accessories, while the ledger only
+ * carries the portion that changed subscription dues.
+ */
+function cashEvents(): SQL {
+  return sql`
+    SELECT c.id, c.tenant_id, c.customer_id, c.collected_by,
+      c.total_collected amount,
+      CASE WHEN c.outcome = 'refund' THEN -1 WHEN c.outcome = 'none' OR c.total_collected = 0 THEN 0 ELSE 1 END receipt_delta,
+      c.collected_at occurred_at,
+      coalesce(s.service_account_number, 'Equipment') account_number
+    FROM billing.collections c
+    LEFT JOIN crm.subscriptions s ON s.id = c.subscription_id
+    UNION ALL
+    SELECT t.id, t.tenant_id, t.customer_id, t.collected_by,
+      t.credit - t.debit amount,
+      CASE WHEN t.transaction_type = 'reversal' THEN -1 ELSE 1 END receipt_delta,
+      t.transaction_date occurred_at,
+      t.service_account_number account_number
+    FROM crm.account_transactions t
+    WHERE t.transaction_type = ANY(${sql.param(CASH_MOVEMENTS)}::text[])
+      AND NOT EXISTS (SELECT 1 FROM billing.collections c WHERE c.transaction_id = t.id)
+  `;
 }
 
 export class AnalyticsRepository {
@@ -78,14 +92,13 @@ export class AnalyticsRepository {
     return this.db;
   }
 
-  async customerTotals(tenantId: string, month: Date, previousMonth: Date): Promise<CountRow> {
+  async customerTotals(tenantId: string, month: Date): Promise<CountRow> {
     const result = await this.db.execute<CountRow>(sql`
       SELECT count(*)::int total,
         count(*) FILTER (WHERE status = 'active')::int active,
         count(*) FILTER (WHERE status = 'inactive')::int inactive,
         count(*) FILTER (WHERE status = 'pending')::int pending,
         count(*) FILTER (WHERE created_at >= ${month})::int current_added,
-        count(*) FILTER (WHERE created_at >= ${previousMonth} AND created_at < ${month})::int previous_added,
         coalesce(sum(outstanding_balance) FILTER (WHERE outstanding_balance > 0), 0) outstanding,
         count(*) FILTER (WHERE outstanding_balance > 0)::int due_accounts
       FROM crm.customers WHERE tenant_id = ${tenantId} AND deleted_at IS NULL
@@ -102,7 +115,6 @@ export class AnalyticsRepository {
         count(*) FILTER (WHERE status = 'suspended')::int suspended,
         count(*) FILTER (WHERE status = 'cancelled')::int cancelled,
         count(*) FILTER (WHERE start_date >= ${month})::int current_added,
-        count(*) FILTER (WHERE start_date >= ${previousMonth} AND start_date < ${month})::int previous_added,
         count(*) FILTER (WHERE end_date >= ${month})::int current_ended,
         count(*) FILTER (WHERE end_date >= ${previousMonth} AND end_date < ${month})::int previous_ended
       FROM crm.subscriptions WHERE tenant_id = ${tenantId} AND deleted_at IS NULL
@@ -154,9 +166,12 @@ export class AnalyticsRepository {
         'Customer added'::text subtitle, created_at "createdAt" FROM crm.customers
       WHERE tenant_id = ${tenantId} AND deleted_at IS NULL
       UNION ALL
-      SELECT id::text, 'payment'::text, transaction_no, service_account_number,
-        transaction_date FROM crm.account_transactions
-      WHERE tenant_id = ${tenantId} AND transaction_type = 'deposit' AND credit > 0
+      SELECT t.id::text, 'payment'::text, coalesce(u.name, c.name, c.customer_code, 'Payment'),
+        t.account_number, t.occurred_at
+      FROM (${cashEvents()}) t
+      LEFT JOIN crm.customers c ON c.id = t.customer_id
+      LEFT JOIN auth.users u ON u.id = c.user_id
+      WHERE t.tenant_id = ${tenantId} AND t.amount > 0 AND t.receipt_delta > 0
       ORDER BY "createdAt" DESC LIMIT ${limit}
     `);
 
@@ -164,7 +179,7 @@ export class AnalyticsRepository {
   }
 
   tenantFilter(tenantId: string): SQL {
-    return sql`tenant_id = ${tenantId}`;
+    return sql`t.tenant_id = ${tenantId}`;
   }
 
   collectorFilter(tenantId: string, userId: string): SQL {
@@ -179,19 +194,17 @@ export class AnalyticsRepository {
     )`;
   }
 
-  async collectionMetrics(filter: SQL, periods: Periods, alias = ''): Promise<CountRow> {
-    const prefix = alias ? sql.raw(`${alias}.`) : sql.empty();
-
+  async collectionMetrics(filter: SQL, periods: Periods): Promise<CountRow> {
     const result = await this.db.execute<CountRow>(sql`
       SELECT
-        coalesce(sum(${cashTaken(prefix)}) FILTER (WHERE ${prefix}transaction_date >= ${periods.day}), 0) "today",
-        coalesce(sum(${cashTaken(prefix)}) FILTER (WHERE ${prefix}transaction_date >= ${periods.week}), 0) "week",
-        coalesce(sum(${cashTaken(prefix)}) FILTER (WHERE ${prefix}transaction_date >= ${periods.month}), 0) "month",
-        coalesce(sum(${receipt(prefix)}) FILTER (WHERE ${prefix}transaction_date >= ${periods.day}), 0)::int "today_receipts",
-        coalesce(sum(${receipt(prefix)}) FILTER (WHERE ${prefix}transaction_date >= ${periods.week}), 0)::int "week_receipts",
-        coalesce(sum(${receipt(prefix)}) FILTER (WHERE ${prefix}transaction_date >= ${periods.month}), 0)::int "month_receipts"
-      FROM crm.account_transactions ${alias ? sql.raw(alias) : sql.empty()}
-      WHERE ${filter} AND ${isCash(prefix)}
+        coalesce(sum(t.amount) FILTER (WHERE t.occurred_at >= ${periods.day}), 0) "today",
+        coalesce(sum(t.amount) FILTER (WHERE t.occurred_at >= ${periods.week}), 0) "week",
+        coalesce(sum(t.amount) FILTER (WHERE t.occurred_at >= ${periods.month}), 0) "month",
+        coalesce(sum(t.receipt_delta) FILTER (WHERE t.occurred_at >= ${periods.day}), 0)::int "today_receipts",
+        coalesce(sum(t.receipt_delta) FILTER (WHERE t.occurred_at >= ${periods.week}), 0)::int "week_receipts",
+        coalesce(sum(t.receipt_delta) FILTER (WHERE t.occurred_at >= ${periods.month}), 0)::int "month_receipts"
+      FROM (${cashEvents()}) t
+      WHERE ${filter}
     `);
 
     return result.rows[0] ?? {};
@@ -208,10 +221,10 @@ export class AnalyticsRepository {
         ) bucket
       )
       SELECT to_char(bucket, 'YYYY-MM-DD') key, to_char(bucket, ${format}) label,
-        coalesce(sum(t.credit - t.debit), 0)::numeric(12,2)::text value
-      FROM buckets LEFT JOIN crm.account_transactions t
-        ON t.tenant_id = ${tenantId} AND ${isCash(sql`t.`)}
-        AND t.transaction_date >= bucket AND t.transaction_date < bucket + '1 ${sql.raw(unit)}'::interval
+        coalesce(sum(t.amount), 0)::numeric(12,2)::text value
+      FROM buckets LEFT JOIN (${cashEvents()}) t
+        ON t.tenant_id = ${tenantId}
+        AND t.occurred_at >= bucket AND t.occurred_at < bucket + '1 ${sql.raw(unit)}'::interval
       GROUP BY bucket ORDER BY bucket
     `);
 
@@ -238,15 +251,6 @@ export class AnalyticsRepository {
   }
 
   /** The caller's team, read back under their own tenant — never by id alone. */
-  async teamOfMembership(tenantId: string, membershipId: string): Promise<string | null> {
-    const result = await this.db.execute<{ teamId: string | null }>(sql`
-      SELECT team_id "teamId" FROM tenancy.tenant_memberships
-      WHERE id = ${membershipId} AND tenant_id = ${tenantId} AND deleted_at IS NULL
-    `);
-
-    return result.rows[0]?.teamId ?? null;
-  }
-
   async staffWorkload(tenantId: string, nodeIds: readonly string[]): Promise<CountRow> {
     const reachesCustomer = customerWithinNodes(nodeIds, { id: sql`c.id` });
 
@@ -280,14 +284,14 @@ export class AnalyticsRepository {
   async staffLeaderboard(tenantId: string, since: Date, limit: number): Promise<StaffRow[]> {
     const result = await this.db.execute<StaffRow>(sql`
       SELECT u.id, coalesce(u.name, u.phone, u.email) name,
-        coalesce(sum(${cashTaken(sql`t.`)}), 0)::numeric(12,2)::text collected,
-        coalesce(sum(${receipt(sql`t.`)}), 0)::int receipts,
-        max(t.transaction_date) "lastCollectedAt"
-      FROM crm.account_transactions t JOIN auth.users u ON u.id = t.collected_by
-      WHERE t.tenant_id = ${tenantId} AND t.transaction_date >= ${since} AND ${isCash(sql`t.`)}
+        coalesce(sum(t.amount), 0)::numeric(12,2)::text collected,
+        coalesce(sum(t.receipt_delta), 0)::int receipts,
+        max(t.occurred_at) "lastCollectedAt"
+      FROM (${cashEvents()}) t JOIN auth.users u ON u.id = t.collected_by
+      WHERE t.tenant_id = ${tenantId} AND t.occurred_at >= ${since}
       GROUP BY u.id, u.name, u.phone, u.email
-      HAVING coalesce(sum(${receipt(sql`t.`)}), 0) > 0
-      ORDER BY sum(${cashTaken(sql`t.`)}) DESC, u.id LIMIT ${limit}
+      HAVING coalesce(sum(t.receipt_delta), 0) > 0
+      ORDER BY sum(t.amount) DESC, u.id LIMIT ${limit}
     `);
 
     return result.rows;
@@ -296,11 +300,11 @@ export class AnalyticsRepository {
   async recentCollections(filter: SQL, limit: number): Promise<RecentCollectionRow[]> {
     const result = await this.db.execute<RecentCollectionRow>(sql`
       SELECT t.id, t.customer_id "customerId", coalesce(u.name, c.name) "customerName",
-        t.service_account_number "accountNumber", t.credit amount, t.transaction_date "collectedAt"
-      FROM crm.account_transactions t LEFT JOIN crm.customers c ON c.id = t.customer_id
+        t.account_number "accountNumber", t.amount, t.occurred_at "collectedAt"
+      FROM (${cashEvents()}) t LEFT JOIN crm.customers c ON c.id = t.customer_id
       LEFT JOIN auth.users u ON u.id = c.user_id
-      WHERE ${filter} AND t.transaction_type = 'deposit' AND t.credit > 0
-      ORDER BY t.transaction_date DESC LIMIT ${limit}
+      WHERE ${filter} AND t.amount > 0 AND t.receipt_delta > 0
+      ORDER BY t.occurred_at DESC LIMIT ${limit}
     `);
 
     return result.rows;

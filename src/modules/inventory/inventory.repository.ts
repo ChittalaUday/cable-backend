@@ -31,12 +31,14 @@ import { withinGrantedSubtree } from '@/security/location-scope';
 
 export interface IssuableUnit {
   id: string;
+  catalogId: string | null;
   serialNumber: string | null;
   locationId: string | null;
 }
 
 const UNIT_COLUMNS = {
   id: equipment.id,
+  catalogId: equipment.catalogId,
   serialNumber: equipment.serialNumber,
   locationId: equipment.locationId,
 };
@@ -61,9 +63,26 @@ const CATALOG_COLUMNS = {
 function stockTotals() {
   return {
     totalStock: sql<number>`count(${equipment.id})::int`,
-    availableStock: sql<number>`count(*) FILTER (WHERE ${equipment.inventoryStatus} = ${INVENTORY_STATUS.AVAILABLE})::int`,
-    issuedStock: sql<number>`count(*) FILTER (WHERE ${equipment.inventoryStatus} = ${INVENTORY_STATUS.ALLOCATED})::int`,
+    availableStock: sql<number>`count(*) FILTER (WHERE ${availableUnit()})::int`,
+    issuedStock: sql<number>`count(*) FILTER (WHERE ${issuedUnit()})::int`,
   };
+}
+
+function activeAssignment() {
+  return sql`exists (
+    select 1 from inventory.customer_equipment active_assignment
+    where active_assignment.tenant_id = ${equipment.tenantId}
+      and active_assignment.equipment_id = ${equipment.id}
+      and active_assignment.status in ('active', 'standby')
+  )`;
+}
+
+function availableUnit() {
+  return sql`${equipment.inventoryStatus} = ${INVENTORY_STATUS.AVAILABLE} and not ${activeAssignment()}`;
+}
+
+function issuedUnit() {
+  return sql`${equipment.inventoryStatus} = ${INVENTORY_STATUS.ALLOCATED} or ${activeAssignment()}`;
 }
 
 export class InventoryRepository {
@@ -305,8 +324,8 @@ export class InventoryRepository {
     const [row] = await this.db
       .select({
         total: sql<number>`count(${equipment.id})::int`,
-        inStock: sql<number>`count(*) FILTER (WHERE ${equipment.inventoryStatus} = ${INVENTORY_STATUS.AVAILABLE})::int`,
-        issued: sql<number>`count(*) FILTER (WHERE ${equipment.inventoryStatus} = ${INVENTORY_STATUS.ALLOCATED})::int`,
+        inStock: sql<number>`count(*) FILTER (WHERE ${availableUnit()})::int`,
+        issued: sql<number>`count(*) FILTER (WHERE ${issuedUnit()})::int`,
         inTransit: sql<number>`count(*) FILTER (WHERE ${equipment.inventoryStatus} = ${INVENTORY_STATUS.STAFF_VAN})::int`,
       })
       .from(equipment)
@@ -331,7 +350,7 @@ export class InventoryRepository {
         name: itemCatalog.name,
         code: itemCatalog.code,
         totalStock: sql<number>`count(${equipment.id})::int`,
-        availableStock: sql<number>`count(*) FILTER (WHERE ${equipment.inventoryStatus} = ${INVENTORY_STATUS.AVAILABLE})::int`,
+        availableStock: sql<number>`count(*) FILTER (WHERE ${availableUnit()})::int`,
       })
       .from(itemCatalog)
       .leftJoin(equipment, and(
@@ -340,7 +359,7 @@ export class InventoryRepository {
       ))
       .where(and(eq(itemCatalog.tenantId, tenantId), isNull(itemCatalog.deletedAt)))
       .groupBy(itemCatalog.id, itemCatalog.name, itemCatalog.code)
-      .having(sql`count(*) FILTER (WHERE ${equipment.inventoryStatus} = ${INVENTORY_STATUS.AVAILABLE}) <= ${threshold}`)
+      .having(sql`count(*) FILTER (WHERE ${availableUnit()}) <= ${threshold}`)
       .limit(limit);
   }
 
@@ -444,8 +463,8 @@ export class InventoryRepository {
     const [totals] = await this.db
       .select({
         totalStock: sql<number>`count(*)::int`,
-        availableStock: sql<number>`count(*) FILTER (WHERE ${equipment.inventoryStatus} = ${INVENTORY_STATUS.AVAILABLE})::int`,
-        issuedStock: sql<number>`count(*) FILTER (WHERE ${equipment.inventoryStatus} = ${INVENTORY_STATUS.ALLOCATED})::int`,
+        availableStock: sql<number>`count(*) FILTER (WHERE ${availableUnit()})::int`,
+        issuedStock: sql<number>`count(*) FILTER (WHERE ${issuedUnit()})::int`,
         inTransitStock: sql<number>`count(*) FILTER (WHERE ${equipment.inventoryStatus} = ${INVENTORY_STATUS.STAFF_VAN})::int`,
       })
       .from(equipment)
@@ -481,6 +500,7 @@ export class InventoryRepository {
       eq(equipment.catalogId, catalogId),
       eq(equipment.tenantId, tenantId),
       eq(equipment.inventoryStatus, INVENTORY_STATUS.AVAILABLE),
+      sql`not ${activeAssignment()}`,
     ];
 
     if (serialOrBarcode !== undefined)
@@ -496,6 +516,7 @@ export class InventoryRepository {
       eq(equipment.tenantId, tenantId),
       eq(equipment.catalogId, catalogId),
       eq(equipment.inventoryStatus, INVENTORY_STATUS.AVAILABLE),
+      sql`not ${activeAssignment()}`,
     ];
 
     if (fromLocationId !== undefined)
@@ -510,6 +531,16 @@ export class InventoryRepository {
     const client = tx ?? this.db;
     const [created] = await client.insert(equipment).values(data).returning(UNIT_COLUMNS);
     return created!;
+  }
+
+  async isUnitAvailable(tenantId: string, id: string): Promise<boolean> {
+    const [row] = await this.db
+      .select({ id: equipment.id })
+      .from(equipment)
+      .where(and(eq(equipment.tenantId, tenantId), eq(equipment.id, id), availableUnit()))
+      .limit(1);
+
+    return row !== undefined;
   }
 
   async updateUnit(tenantId: string, id: string, data: Partial<typeof equipment.$inferInsert>, tx?: Transaction) {
@@ -760,7 +791,7 @@ export class InventoryRepository {
         model: itemCatalog.model,
         defaultSalePrice: itemCatalog.defaultSalePrice,
         defaultDepositAmount: itemCatalog.defaultDepositAmount,
-        availableStock: sql<number>`count(*) FILTER (WHERE ${equipment.inventoryStatus} = ${INVENTORY_STATUS.AVAILABLE})::int`,
+        availableStock: sql<number>`count(*) FILTER (WHERE ${availableUnit()})::int`,
       })
       .from(itemCatalog)
       .leftJoin(equipment, and(eq(itemCatalog.id, equipment.catalogId), eq(equipment.tenantId, tenantId)))

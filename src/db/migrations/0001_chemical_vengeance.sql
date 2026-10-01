@@ -1,0 +1,1 @@
+ALTER TABLE "billing"."collections" ADD COLUMN "request_hash" text;
