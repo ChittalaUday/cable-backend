@@ -283,7 +283,7 @@ describe('a change in another module reaches a cached reader', () => {
   });
 
   it('re-counts packages on the services list when a package is added', async () => {
-    const url = '/api/v1/services?limit=50';
+    const url = '/api/v1/services';
     await warm(url, adminAuth);
 
     const countOf = (body: unknown) => (body as { id: string; providers: { packageCount: number }[] }[])
