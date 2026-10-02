@@ -26,10 +26,10 @@ function encodeCursor(createdAt: Date, id: string): string {
 }
 
 function decodeCursor(cursor: string): { createdAt: Date; id: string } {
-  const [at, id] = Buffer.from(cursor, 'base64url').toString().split('|');
+  const [at, id, extra] = Buffer.from(cursor, 'base64url').toString().split('|');
   const createdAt = at === undefined ? new Date(Number.NaN) : new Date(at);
 
-  if (id === undefined || Number.isNaN(createdAt.getTime()))
+  if (id === undefined || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(id) || extra !== undefined || Number.isNaN(createdAt.getTime()))
     throw badRequest(ERROR_CODES.VALIDATION_FAILED, 'Malformed cursor');
 
   return { createdAt, id };

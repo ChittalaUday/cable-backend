@@ -1,6 +1,7 @@
 import type { CustomerDetail, CustomerPage } from '../customer.schema';
 import type { BuiltApp } from '@/app';
 import type { SeededAuthData } from '@/test/fixtures';
+import { Buffer } from 'node:buffer';
 import { randomUUID } from 'node:crypto';
 import { eq, inArray, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -313,6 +314,12 @@ describe('the customer list', () => {
     expect(new Set(seen).size).toBe(seen.length);
     expect(seen).toContain(northCustomerId);
     expect(seen).toContain(southCustomerId);
+  });
+
+  it.each(['2026-10-01T00:00:00.000Z|not-a-uuid', '2026-10-01T00:00:00.000Z|11111111-1111-4111-8111-111111111111|extra'])('rejects malformed decoded cursor %s', async (decoded) => {
+    const cursor = Buffer.from(decoded).toString('base64url');
+    const response = await app.inject({ method: 'GET', url: `/api/v1/customers?cursor=${cursor}`, headers: adminAuth });
+    expect(response.statusCode).toBe(400);
   });
 
   it('refuses a cursor that did not come from us', async () => {

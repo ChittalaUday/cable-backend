@@ -378,7 +378,7 @@ export class InventoryService {
       after: created,
     });
 
-    return created;
+    return { ...created, createdAt: created.createdAt.toISOString(), updatedAt: created.updatedAt.toISOString() };
   }
 
   async updateCatalogItem(access: RequestAccess, id: string, input: UpdateCatalogItemBody) {
@@ -400,7 +400,7 @@ export class InventoryService {
       after: updated!,
     });
 
-    return updated;
+    return { ...updated!, createdAt: updated!.createdAt.toISOString(), updatedAt: updated!.updatedAt.toISOString() };
   }
 
   async deleteCatalogItem(access: RequestAccess, id: string) {
@@ -448,7 +448,7 @@ export class InventoryService {
       after: created,
     });
 
-    return created;
+    return { ...created, createdAt: created.createdAt.toISOString(), updatedAt: created.updatedAt.toISOString() };
   }
 
   async listApprovalRequests(access: RequestAccess) {
@@ -495,7 +495,12 @@ export class InventoryService {
       after: updated,
     });
 
-    return updated;
+    const [row] = await this.repo.listApprovalRequests(tenantId, undefined, id);
+
+    if (row === undefined)
+      throw notFound('Approval request not found');
+
+    return { ...row, reviewedAt: row.reviewedAt?.toISOString() ?? null, createdAt: row.createdAt.toISOString() };
   }
 
   private async applyApprovedRequest(

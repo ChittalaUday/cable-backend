@@ -385,6 +385,34 @@ describe('inventory catalog permission', () => {
     expect(bodyOf<{ code: string }>(response).code).toBe('PERM_DENIED');
   });
 
+  it.each([false, true])('validates approval updates and returns the declared response (extra tenant field: %s)', async (extraTenantField) => {
+    const created = await post('/api/v1/inventory/catalog', { ...item(), defaultSalePrice: '123.45' });
+    expect(created.statusCode).toBe(201);
+    const catalogId = bodyOf<{ id: string }>(created).id;
+    const proposal = await post('/api/v1/inventory/approval-requests', {
+      requestType: 'update_item',
+      targetItemId: catalogId,
+      proposedData: { name: 'Reviewed item', ...(extraTenantField ? { tenantId: beta.id } : {}) },
+      reason: 'Correct the item name',
+    });
+    expect(proposal.statusCode).toBe(201);
+    expect(bodyOf<{ createdAt: string }>(proposal).createdAt).toMatch(/^\d{4}-/);
+    const reviewed = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/inventory/approval-requests/${bodyOf<{ id: string }>(proposal).id}`,
+      headers: { ...alphaAuth, 'x-tenant-id': alpha.id },
+      payload: { status: 'approved' },
+    });
+    expect(reviewed.statusCode, reviewed.body).toBe(extraTenantField ? 400 : 200);
+    if (!extraTenantField) {
+      expect(reviewed.json()).toMatchObject({ status: 'approved', reviewedBy: alpha.adminUserId });
+      expect(reviewed.json()).toHaveProperty('requestedByName');
+    }
+    const [row] = await db.select().from(itemCatalog).where(eq(itemCatalog.id, catalogId));
+    expect(row!.tenantId).toBe(alpha.id);
+    expect(row!.defaultSalePrice).toBe('123.45');
+  });
+
   it('shows staff only their own change requests', async () => {
     const mine = await app.inject({
       method: 'POST',

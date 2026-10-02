@@ -22,7 +22,7 @@ import { Buffer } from 'node:buffer';
 import { createHash, randomUUID } from 'node:crypto';
 import Decimal from 'decimal.js';
 import { AUDIT_ENTITIES } from '@/constants/audit';
-import { COLLECTION_OUTCOME, PAYMENT_METHOD } from '@/constants/billing';
+import { COLLECTION_OUTCOME, MAX_COLLECTION_AMOUNT, PAYMENT_METHOD } from '@/constants/billing';
 import { TRANSACTION_TYPE } from '@/constants/crm';
 import {
   CUSTOMER_EQUIPMENT_STATUS,
@@ -79,10 +79,10 @@ function encodeCursor(collectedAt: Date, id: string): string {
 }
 
 function decodeCursor(cursor: string): { collectedAt: Date; id: string } {
-  const [at, id] = Buffer.from(cursor, 'base64url').toString().split('|');
+  const [at, id, extra] = Buffer.from(cursor, 'base64url').toString().split('|');
   const collectedAt = at === undefined ? new Date(Number.NaN) : new Date(at);
 
-  if (id === undefined || Number.isNaN(collectedAt.getTime()))
+  if (id === undefined || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(id) || extra !== undefined || Number.isNaN(collectedAt.getTime()))
     throw badRequest(ERROR_CODES.VALIDATION_FAILED, 'Malformed cursor');
 
   return { collectedAt, id };
@@ -105,6 +105,11 @@ export class PaymentService {
       return replay;
 
     const duesPaid = new Decimal(input.amount);
+    const accessoryTotal = (input.accessories ?? []).reduce(
+      (total, item) => total.plus(new Decimal(item.unitPrice).mul(item.quantity)),
+      ZERO,
+    );
+    assertCollectionLimit(duesPaid.plus(accessoryTotal));
     const collectedAt = input.collectedAt === undefined ? new Date() : new Date(input.collectedAt);
     const id = randomUUID();
 
@@ -140,6 +145,7 @@ export class PaymentService {
     }
 
     const paidAmount = new Decimal(input.amount);
+    assertCollectionLimit(paidAmount);
     const collectedAt = input.collectedAt === undefined ? new Date() : new Date(input.collectedAt);
     const id = randomUUID();
 
@@ -157,8 +163,8 @@ export class PaymentService {
     return this.hydrateOne(created.id, access.tenantId);
   }
 
-  private async replayOf(access: RequestAccess, reference: string, requestHash: string): Promise<CollectionResponse | null> {
-    const existing = await this.findByReference(access.tenantId, reference);
+  private async replayOf(access: RequestAccess, reference: string, requestHash: string, tx?: Transaction): Promise<CollectionResponse | null> {
+    const existing = await this.repo.findByReference(access.tenantId, reference, tx);
 
     if (existing === null)
       return null;
@@ -169,7 +175,7 @@ export class PaymentService {
     if (existing.requestHash !== null && existing.requestHash !== requestHash)
       throw conflict('That reference was already used for a different payment request');
 
-    return this.hydrateOne(existing.id, access.tenantId);
+    return this.hydrateOne(existing.id, access.tenantId, tx);
   }
 
   private async insertSubscriptionVisit(
@@ -187,7 +193,7 @@ export class PaymentService {
         if (customer === null)
           throw notFound('Customer');
 
-        const replay = await this.replayOf(access, input.reference, prepared.requestHash);
+        const replay = await this.replayOf(access, input.reference, prepared.requestHash, tx);
         if (replay !== null)
           return { id: replay.id, customerId: replay.customerId, customerUserId: null, shouldAnnounce: false };
 
@@ -510,6 +516,7 @@ export class PaymentService {
     prepared: { id: string; paidAmount: Decimal; collectedAt: Date; requestHash: string },
     customer: { id: string },
     targetCustomerEquipmentId: string,
+    transactionId: string | null,
   ) {
     const { id, paidAmount, collectedAt } = prepared;
     const isZero = paidAmount.isZero();
@@ -525,7 +532,7 @@ export class PaymentService {
       collectedBy: access.userId,
       outcome,
       paidAmount,
-      transactionId: null,
+      transactionId,
       requestHash: prepared.requestHash,
       input,
       collectedAt,
@@ -539,7 +546,7 @@ export class PaymentService {
     input: RecordEquipmentPaymentBody,
     prepared: { id: string; paidAmount: Decimal; collectedAt: Date; requestHash: string },
   ): Promise<{ id: string; customerId: string; customerUserId: string | null; shouldAnnounce: boolean }> {
-    const { id, collectedAt } = prepared;
+    const { id, paidAmount, collectedAt } = prepared;
     const scope = requireScope(access, PERMISSIONS.PAYMENTS_COLLECT);
 
     try {
@@ -548,12 +555,24 @@ export class PaymentService {
         if (customer === null)
           throw notFound('Customer');
 
-        const replay = await this.replayOf(access, input.reference, prepared.requestHash);
+        const replay = await this.replayOf(access, input.reference, prepared.requestHash, tx);
         if (replay !== null)
           return { id: replay.id, customerId: replay.customerId, customerUserId: null, shouldAnnounce: false };
 
         const lines = await this.repo.collectableLines(tx, access.tenantId, input.customerId, null);
+        if (paidAmount.greaterThan(ZERO) && lines.length === 0) {
+          throw badRequest(
+            ERROR_CODES.VALIDATION_FAILED,
+            'This customer has no subscription to post the payment against',
+          );
+        }
         const line = await this.firstReachableLine(tx, scope, access, lines);
+        if (line !== null && new Decimal(line.outstandingBalance).plus(paidAmount).greaterThan('9999999999.99')) {
+          throw badRequest(
+            ERROR_CODES.VALIDATION_FAILED,
+            'This payment exceeds the supported equipment ledger balance',
+          );
+        }
 
         const targetCustomerEquipmentId = await this.resolveTargetEquipmentId(
           tx,
@@ -564,6 +583,10 @@ export class PaymentService {
           collectedAt,
         );
 
+        const transactionId = line !== null && paidAmount.greaterThan(ZERO)
+          ? await this.postEquipmentLedger(tx, access, prepared, customer.id, targetCustomerEquipmentId, line)
+          : null;
+
         const row = await this.recordEquipmentCollectionRow(
           tx,
           access,
@@ -571,6 +594,7 @@ export class PaymentService {
           prepared,
           customer,
           targetCustomerEquipmentId,
+          transactionId,
         );
 
         await audit.created(tx, access.audit, {
@@ -593,6 +617,38 @@ export class PaymentService {
 
       return { id: winner.id, customerId: winner.customerId, customerUserId: null, shouldAnnounce: false };
     }
+  }
+
+  private async postEquipmentLedger(
+    tx: Transaction,
+    access: RequestAccess,
+    prepared: { id: string; paidAmount: Decimal; collectedAt: Date },
+    customerId: string,
+    customerEquipmentId: string,
+    line: CollectableLine,
+  ): Promise<string> {
+    const assignment = await this.repo.findCustomerEquipment(tx, access.tenantId, customerEquipmentId);
+    if (assignment === null)
+      throw notFound('Customer equipment');
+    const unit = await this.repo.findEquipmentUnit(tx, access.tenantId, assignment.equipmentId);
+    if (unit === null)
+      throw notFound('Equipment unit');
+    const catalog = unit.catalogId === null ? null : await this.repo.findCatalogItem(tx, access.tenantId, unit.catalogId);
+    const remarks = `Equipment: ${catalog?.name ?? 'Equipment'}${unit.serialNumber === null ? '' : ` ${unit.serialNumber}`}`;
+
+    // Charge and receipt cancel each other; equipment money never pays dues.
+    return this.postLedger(tx, {
+      id: prepared.id,
+      access,
+      line,
+      customerId,
+      dueAmount: new Decimal(line.outstandingBalance),
+      accessoryAmount: prepared.paidAmount,
+      takings: prepared.paidAmount,
+      collectedAt: prepared.collectedAt,
+      remarks,
+      chargeRemarks: remarks,
+    });
   }
 
   async reverse(access: RequestAccess, id: string, input: ReverseCollectionBody): Promise<CollectionResponse> {
@@ -618,7 +674,7 @@ export class PaymentService {
           throw conflict('That row is itself a refund');
 
         if (await this.repo.findReversalOf(tx, access.tenantId, id) !== null) {
-          const winner = await this.replayOf(access, input.reference, requestHash);
+          const winner = await this.replayOf(access, input.reference, requestHash, tx);
           if (winner !== null)
             return { id: winner.id, customerId: winner.customerId, customerUserId: null, shouldAnnounce: false };
           throw conflict('That receipt has already been refunded');
@@ -901,6 +957,7 @@ export class PaymentService {
     takings: Decimal;
     collectedAt: Date;
     remarks: string | null;
+    chargeRemarks?: string;
   }): Promise<string> {
     const common = {
       tenantId: input.access.tenantId,
@@ -924,7 +981,7 @@ export class PaymentService {
         debit: input.accessoryAmount.toFixed(2),
         credit: '0',
         closingBalance: running.toFixed(2),
-        remarks: 'Accessories sold at collection',
+        remarks: input.chargeRemarks ?? 'Accessories sold at collection',
       });
     }
 
@@ -939,12 +996,8 @@ export class PaymentService {
     });
   }
 
-  private async findByReference(tenantId: string, reference: string): Promise<{ id: string; collectedBy: string; requestHash: string | null } | null> {
-    return this.repo.findByReference(tenantId, reference);
-  }
-
-  private async hydrateOne(id: string, tenantId: string): Promise<CollectionResponse> {
-    const row = await this.repo.findHydrated(tenantId, id);
+  private async hydrateOne(id: string, tenantId: string, tx?: Transaction): Promise<CollectionResponse> {
+    const row = await this.repo.findHydrated(tenantId, id, undefined, tx);
 
     if (row === null)
       throw notFound('Collection');
@@ -1069,6 +1122,11 @@ function determineReturnConditionStatus(condition?: EquipmentReturnCondition): {
   };
 }
 
+function assertCollectionLimit(amount: Decimal): void {
+  if (amount.greaterThan(MAX_COLLECTION_AMOUNT))
+    throw badRequest(ERROR_CODES.VALIDATION_FAILED, 'The total payment cannot exceed ₹99,000');
+}
+
 function assertValidEquipmentVisit(isZero: boolean, reason?: string, method?: string): void {
   if (isZero) {
     if (reason === undefined || reason.trim() === '')
@@ -1147,6 +1205,7 @@ function toResponse(row: HydratedRow): CollectionResponse {
     accessoryAmount: money(row.accessoryAmount),
     totalCollected: money(row.totalCollected),
     balanceAfter: money(row.balanceAfter),
+    transactionId: row.transactionId,
     accessories: row.accessories ?? [],
     reversesId: row.reversesId,
     reversedById: row.reversedById,

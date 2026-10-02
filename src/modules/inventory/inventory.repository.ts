@@ -837,9 +837,12 @@ export class InventoryRepository {
     return updated!;
   }
 
-  async listApprovalRequests(tenantId: string, requestedBy?: string) {
+  async listApprovalRequests(tenantId: string, requestedBy?: string, id?: string) {
     const reviewer = alias(users, 'reviewer');
     const conditions = [eq(approvalRequests.tenantId, tenantId)];
+
+    if (id !== undefined)
+      conditions.push(eq(approvalRequests.id, id));
 
     if (requestedBy !== undefined)
       conditions.push(eq(approvalRequests.requestedBy, requestedBy));

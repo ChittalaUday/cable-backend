@@ -3,7 +3,7 @@ import { Type } from 'typebox';
 import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from '@/config/constants';
 
 export const PaginationQuerySchema = Type.Object({
-  page: Type.Integer({ minimum: 1, default: 1 }),
+  page: Type.Integer({ minimum: 1, maximum: 1_000_000, default: 1 }),
   limit: Type.Integer({ minimum: 1, maximum: MAX_PAGE_SIZE, default: DEFAULT_PAGE_SIZE }),
 });
 

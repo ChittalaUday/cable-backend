@@ -1,3 +1,4 @@
+import type { MembershipResponse } from '../auth.schema';
 import type { Database } from '@/db/client';
 import type { OtpCode, User } from '@/db/schema';
 import type { PermissionKey, PermissionScope } from '@/security/permissions';
@@ -10,16 +11,7 @@ export interface MembershipPermission {
   scope: PermissionScope;
 }
 
-export interface PublicMembership {
-  membershipId: string;
-  tenantId: string;
-  tenantName: string;
-  roleId: string;
-  status: string;
-  teamId: string | null;
-  permissionVersion: number;
-  permissions: MembershipPermission[];
-}
+export type PublicMembership = MembershipResponse;
 
 export interface ClaimMembership {
   tenantId: string;

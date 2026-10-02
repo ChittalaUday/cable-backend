@@ -91,6 +91,7 @@ export const CollectionResponse = Type.Object({
   accessoryAmount: Money,
   totalCollected: Money,
   balanceAfter: Money,
+  transactionId: Nullable(Uuid),
   accessories: Type.Array(Type.Object({
     catalogId: Uuid,
     name: Type.String(),

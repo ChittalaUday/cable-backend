@@ -9,6 +9,7 @@ import { Type } from 'typebox';
 import { API_PREFIX, API_VERSION } from '@/config/constants';
 import { isTest } from '@/config/env';
 import { createLogger } from '@/utils/logging/logger';
+import { hardenBodySchema, requestValidationOptions } from '@/utils/request-validation';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -45,17 +46,19 @@ export async function buildApp() {
     loggerInstance: createLogger('api'),
     ...(isTest ? { disableRequestLogging: true } : {}),
     trustProxy: true,
-    ajv: {
-      customOptions: {
-        removeAdditional: false,
-        allErrors: true,
-      },
-    },
+    ...requestValidationOptions,
   }).withTypeProvider<TypeBoxTypeProvider>();
 
   const routeTable: RouteRecord[] = [];
   app.decorate('routeTable', routeTable);
   app.addHook('onRoute', (route) => {
+    // Publish the same request shapes that the validator enforces.
+    if (route.schema?.body !== undefined)
+      route.schema.body = hardenBodySchema(route.schema.body, route.method === 'PATCH');
+    for (const part of ['querystring', 'params'] as const) {
+      if (route.schema?.[part] !== undefined)
+        route.schema[part] = hardenBodySchema(route.schema[part], false);
+    }
     const config = route.config as
       | { cache?: { tag: string }; invalidates?: readonly string[] }
       | undefined;

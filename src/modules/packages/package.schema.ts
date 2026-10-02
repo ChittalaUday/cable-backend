@@ -50,7 +50,7 @@ export const PackageChannelResponse = Type.Object({
   name: Type.String(),
   slug: Type.String(),
   genre: Type.String(),
-  resolution: Type.String(),
+  resolution: StringEnum(CHANNEL_RESOLUTIONS),
   isFta: Type.Boolean(),
   isMandatory: Type.Boolean(),
 });
@@ -125,7 +125,7 @@ export const ChannelResponse = Type.Object({
   slug: Type.String(),
   genre: Type.String(),
   languages: Type.Array(Type.String()),
-  resolution: Type.String(),
+  resolution: StringEnum(CHANNEL_RESOLUTIONS),
   isFta: Type.Boolean(),
   broadcaster: Type.Union([Type.String(), Type.Null()]),
   price: Money,

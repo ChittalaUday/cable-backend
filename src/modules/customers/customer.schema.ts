@@ -74,12 +74,12 @@ export const ListCustomersQuery = Type.Object({
   serviceProviderId: Type.Optional(Uuid),
   packageId: Type.Optional(Uuid),
   createdFrom: Type.Optional(Type.String({
-    minLength: 1,
+    format: 'date-time',
     maxLength: 50,
     description: 'Filter customers created on or after this timestamp (ISO-8601 string)',
   })),
   createdTo: Type.Optional(Type.String({
-    minLength: 1,
+    format: 'date-time',
     maxLength: 50,
     description: 'Filter customers created on or before this timestamp (ISO-8601 string)',
   })),

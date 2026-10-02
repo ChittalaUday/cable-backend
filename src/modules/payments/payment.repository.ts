@@ -56,6 +56,7 @@ export interface HydratedRow extends Record<string, unknown> {
   accessoryAmount: string;
   totalCollected: string;
   balanceAfter: string;
+  transactionId: string | null;
   accessories: CollectionAccessory[] | null;
   reversesId: string | null;
   reversedById: string | null;
@@ -137,6 +138,7 @@ export class PaymentRepository {
              c.accessory_amount "accessoryAmount",
              c.total_collected "totalCollected",
              c.balance_after "balanceAfter",
+             c.transaction_id "transactionId",
              c.accessories,
              c.reverses_id "reversesId",
              (SELECT r.id FROM billing.collections r WHERE r.reverses_id = c.id) "reversedById",
@@ -155,8 +157,8 @@ export class PaymentRepository {
     `;
   }
 
-  async findHydrated(tenantId: string, id: string, reach?: SQL): Promise<HydratedRow | null> {
-    const { rows } = await this.db.execute<HydratedRow>(sql`
+  async findHydrated(tenantId: string, id: string, reach?: SQL, tx?: Transaction): Promise<HydratedRow | null> {
+    const { rows } = await (tx ?? this.db).execute<HydratedRow>(sql`
       ${this.selectCollections()}
       WHERE c.tenant_id = ${tenantId} AND c.id = ${id}
       ${reach === undefined ? sql`` : sql`AND ${reach}`}
@@ -236,8 +238,8 @@ export class PaymentRepository {
     return sql`(c.collected_at, c.id) < (${collectedAt}, ${id}::uuid)`;
   }
 
-  async findByReference(tenantId: string, reference: string): Promise<{ id: string; collectedBy: string; requestHash: string | null } | null> {
-    const [row] = await this.db
+  async findByReference(tenantId: string, reference: string, tx?: Transaction): Promise<{ id: string; collectedBy: string; requestHash: string | null } | null> {
+    const [row] = await (tx ?? this.db)
       .select({ id: collections.id, collectedBy: collections.collectedBy, requestHash: collections.requestHash })
       .from(collections)
       .where(and(eq(collections.tenantId, tenantId), eq(collections.reference, reference)))

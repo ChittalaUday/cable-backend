@@ -1,7 +1,9 @@
 import type { Static } from 'typebox';
 import { Type } from 'typebox';
 import { DEVICE_PLATFORMS, OTP_CHANNELS } from '@/constants/auth';
+import { MEMBERSHIP_STATUSES } from '@/constants/tenancy';
 import { CustomerProfileResponse } from '@/modules/customers/customer.service';
+import { PERMISSION_SCOPES } from '@/security/permissions';
 import { StringEnum } from '@/types/typebox';
 
 export const DeviceHeaders = Type.Object({
@@ -75,15 +77,15 @@ export const TokensResponse = Type.Object({
 
 const MembershipPermissionResponse = Type.Object({
   key: Type.String({ description: 'Permission key, e.g. customers.view' }),
-  scope: Type.String({ description: 'OWN | ASSIGNED | TEAM | LOCATION | ALL' }),
+  scope: StringEnum(PERMISSION_SCOPES),
 });
 
-const MembershipResponse = Type.Object({
+export const MembershipResponse = Type.Object({
   membershipId: Type.String({ format: 'uuid' }),
   tenantId: Type.String({ format: 'uuid' }),
   tenantName: Type.String({ description: 'What a tenant picker shows — the id alone is a UUID' }),
   roleId: Type.String(),
-  status: Type.String({ description: 'active | suspended | invited' }),
+  status: StringEnum(MEMBERSHIP_STATUSES),
   teamId: Type.Union([Type.String({ format: 'uuid' }), Type.Null()]),
   permissionVersion: Type.Integer({ description: 'Incremented when role permissions change — use to bust local caches' }),
   permissions: Type.Array(MembershipPermissionResponse, { description: 'All permission grants for the user\'s role in this tenant' }),
@@ -121,8 +123,8 @@ export const LoginConfigResponse = Type.Object({
   password: Type.Boolean({ description: 'Email or phone with a password' }),
   passwordNeedsEmailOtp: Type.Boolean({ description: 'A password sign-in is finished with an emailed code' }),
   phoneOtp: Type.Boolean(),
-  phoneOtpChannels: Type.Array(Type.String(), { description: 'Channels answering right now, best first' }),
-  defaultPhoneOtpChannel: Type.Union([Type.String(), Type.Null()]),
+  phoneOtpChannels: Type.Array(StringEnum(OTP_CHANNELS), { description: 'Channels answering right now, best first' }),
+  defaultPhoneOtpChannel: Type.Union([StringEnum(OTP_CHANNELS), Type.Null()]),
   google: Type.Boolean(),
 });
 
@@ -144,3 +146,5 @@ export type VerifyOtpBody = Static<typeof VerifyOtpBody>;
 export type LoginBody = Static<typeof LoginBody>;
 export type RefreshBody = Static<typeof RefreshBody>;
 export type UserResponse = Static<typeof UserResponse>;
+
+export type MembershipResponse = Static<typeof MembershipResponse>;

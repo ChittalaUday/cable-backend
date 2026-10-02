@@ -1,9 +1,10 @@
 import type { CollectionPage, CollectionResponse } from './payment.schema';
 import type { BuiltApp } from '@/app';
 import type { SeededAuthData } from '@/test/fixtures';
+import { Buffer } from 'node:buffer';
 import { randomUUID } from 'node:crypto';
 import { and, eq, inArray, sql } from 'drizzle-orm';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { buildApp } from '@/app';
 import { SYSTEM_ROLES } from '@/config/constants';
 import {
@@ -26,6 +27,7 @@ import { PERMISSIONS } from '@/security/permissions';
 import { createTestDb } from '@/test/db';
 import { seedAuthData, TEST_PASSWORD, uniqueDeviceId, uniqueEmail, uniquePhone } from '@/test/fixtures';
 import { bodyOf } from '@/test/http';
+import { PaymentRepository } from './payment.repository';
 
 const { db, close } = createTestDb();
 
@@ -418,7 +420,7 @@ describe('recording a visit', () => {
     expect(replaced.equipment?.serialNumber).toContain('SN-NEW-');
   });
 
-  it('keeps equipment receipts and ledger entries separate from subscriptions', async () => {
+  it('posts an equipment charge and receipt without changing subscription dues', async () => {
     const { customerId } = await makeCustomerLikeNorth('500.00');
     const serialNumber = `SN-${unique()}`;
     await stockEquipment(serialNumber);
@@ -446,7 +448,7 @@ describe('recording a visit', () => {
     expect(response.statusCode).toBe(201);
     expect(bodyOf<CollectionResponse>(response).subscriptionId).toBeNull();
     expect(await balances(customerId)).toEqual({ customer: '500.00', line: '500.00' });
-    expect(await db.select().from(accountTransactions).where(eq(accountTransactions.customerId, customerId))).toHaveLength(0);
+    await expectEquipmentLedger(bodyOf<CollectionResponse>(response), '150.00', '500.00');
   });
 
   it('rejects an equipment request that mixes existing and new-equipment modes', async () => {
@@ -1042,7 +1044,8 @@ describe('edge cases', () => {
       customerEquipmentId: receipt.customerEquipmentId,
     });
     expect(await balances(customerId)).toEqual({ customer: '500.00', line: '500.00' });
-    expect(await db.select().from(accountTransactions).where(eq(accountTransactions.customerId, customerId))).toHaveLength(0);
+    // UDA-8 handles refund ledger entries; UDA-7's original charge/receipt remain.
+    expect(await db.select().from(accountTransactions).where(eq(accountTransactions.customerId, customerId))).toHaveLength(2);
   });
 
   it('shows a subscriber their own receipts and nobody else\'s', async () => {
@@ -1112,6 +1115,12 @@ describe('edge cases', () => {
     expect(mine.items[0]!.collectedBy).toBe(fieldUserId);
   });
 
+  it.each(['2026-10-01T00:00:00.000Z|not-a-uuid', '2026-10-01T00:00:00.000Z|11111111-1111-4111-8111-111111111111|extra'])('rejects malformed decoded cursor %s', async (decoded) => {
+    const cursor = Buffer.from(decoded).toString('base64url');
+    const response = await app.inject({ method: 'GET', url: `/api/v1/payments?cursor=${cursor}`, headers: fieldAuth });
+    expect(response.statusCode).toBe(400);
+  });
+
   it('refuses a malformed cursor rather than ignoring it', async () => {
     const response = await app.inject({ method: 'GET', url: '/api/v1/payments?cursor=not-a-cursor', headers: fieldAuth });
 
@@ -1147,6 +1156,228 @@ describe('edge cases', () => {
     expect(response.statusCode).toBe(404);
   });
 });
+
+describe('equipment ledger (UDA-7)', () => {
+  it.each(['subscription', 'equipment'])('%s accepts 99000 and rejects 99000.01 without extra writes', async (kind) => {
+    const { customerId } = await makeCustomerLikeNorth('500.00');
+    const unit = await stockEquipment();
+    const payload = {
+      customerId,
+      amount: '99000.00',
+      method: 'cash',
+      reference: ref(),
+      ...(kind === 'equipment' ? { catalogId: ourCatalogId, equipmentId: unit.id } : {}),
+    };
+    const send = kind === 'equipment' ? collectEquipment : collect;
+    const allowed = await send(fieldAuth, payload);
+    expect(allowed.statusCode).toBe(201);
+    expect(bodyOf<CollectionResponse>(allowed).totalCollected).toBe('99000.00');
+    const before = await db.select().from(accountTransactions).where(eq(accountTransactions.customerId, customerId));
+    const rejected = await send(fieldAuth, { ...payload, amount: '99000.01', reference: ref() });
+    expect(rejected.statusCode).toBe(400);
+    expect(bodyOf(rejected).code).toBe('VALIDATION_FAILED');
+    expect(await db.select().from(collections).where(eq(collections.customerId, customerId))).toHaveLength(1);
+    expect(await db.select().from(accountTransactions).where(eq(accountTransactions.customerId, customerId))).toHaveLength(before.length);
+  });
+
+  it('caps combined dues and accessories at 99000', async () => {
+    const { customerId } = await makeCustomerLikeNorth('500.00');
+    const response = await collect(fieldAuth, {
+      customerId,
+      amount: '98999.99',
+      method: 'cash',
+      accessories: [{ catalogId: ourCatalogId, quantity: 2, unitPrice: '0.01' }],
+      reference: ref(),
+    });
+    expect(response.statusCode).toBe(400);
+    expect(bodyOf(response).code).toBe('VALIDATION_FAILED');
+    expect(await db.select().from(collections).where(eq(collections.customerId, customerId))).toHaveLength(0);
+    expect(await balances(customerId)).toEqual({ customer: '500.00', line: '500.00' });
+  });
+
+  it('rejects an overflowing charge balance without issuing stock or recording money', async () => {
+    const { customerId } = await makeCustomerLikeNorth('9999999999.99');
+    const unit = await stockEquipment();
+    const response = await collectEquipment(fieldAuth, {
+      customerId,
+      catalogId: ourCatalogId,
+      equipmentId: unit.id,
+      amount: '0.01',
+      method: 'cash',
+      reference: ref(),
+    });
+    expect(response.statusCode).toBe(400);
+    expect(bodyOf(response).code).toBe('VALIDATION_FAILED');
+    expect(bodyOf(response).message).toBe('This payment exceeds the supported equipment ledger balance');
+    expect(await db.select().from(accountTransactions).where(eq(accountTransactions.customerId, customerId))).toHaveLength(0);
+    expect(await db.select().from(collections).where(eq(collections.customerId, customerId))).toHaveLength(0);
+    expect(await db.select().from(customerEquipment).where(eq(customerEquipment.customerId, customerId))).toHaveLength(0);
+    expect(await db.select().from(stockMovements).where(eq(stockMovements.equipmentId, unit.id))).toHaveLength(0);
+    const [unchanged] = await db.select().from(equipment).where(eq(equipment.id, unit.id));
+    expect(unchanged!.inventoryStatus).toBe('available');
+    expect(await balances(customerId)).toEqual({ customer: '9999999999.99', line: '9999999999.99' });
+  });
+
+  it.each([
+    { mode: 'issue', amount: '150.00' },
+    { mode: 'existing', amount: '150.00' },
+    { mode: 'replacement', amount: '150.00' },
+    { mode: 'issue', amount: '0.00' },
+    { mode: 'existing', amount: '0.00' },
+    { mode: 'replacement', amount: '0.00' },
+  ])('$mode at $amount posts only paid visits and preserves dues', async ({ mode, amount }) => {
+    const { customerId } = await makeCustomerLikeNorth('500.00');
+    const unit = await stockEquipment(`UDA7-${unique()}`);
+    const payload: Record<string, unknown> = {
+      customerId,
+      amount,
+      ...(amount === '0.00' ? { reason: 'Included with installation' } : { method: 'cash' }),
+      reference: ref(),
+    };
+
+    if (mode === 'issue') {
+      payload.catalogId = ourCatalogId;
+      payload.equipmentId = unit.id;
+    }
+    else {
+      const initial = await collectEquipment(fieldAuth, {
+        customerId,
+        catalogId: ourCatalogId,
+        equipmentId: unit.id,
+        amount: '0.00',
+        reason: 'Initial installation',
+        reference: ref(),
+      });
+      expect(initial.statusCode).toBe(201);
+      payload.customerEquipmentId = bodyOf<CollectionResponse>(initial).customerEquipmentId;
+      if (mode === 'replacement') {
+        const replacement = await stockEquipment(`UDA7-NEW-${unique()}`);
+        payload.replacementEquipmentId = replacement.id;
+        payload.returnCondition = 'damaged';
+      }
+    }
+
+    const response = await collectEquipment(fieldAuth, payload);
+    expect(response.statusCode).toBe(201);
+    const receipt = bodyOf<CollectionResponse>(response);
+    if (amount === '0.00') {
+      expect(receipt.transactionId).toBeNull();
+      expect(await db.select().from(accountTransactions).where(eq(accountTransactions.customerId, customerId))).toHaveLength(0);
+      const [stored] = await db.select().from(collections).where(eq(collections.id, receipt.id));
+      expect(stored!.transactionId).toBeNull();
+    }
+    else {
+      await expectEquipmentLedger(receipt, '150.00', '500.00');
+      expect(await db.select().from(accountTransactions).where(eq(accountTransactions.customerId, customerId))).toHaveLength(2);
+    }
+    expect(await balances(customerId)).toEqual({ customer: '500.00', line: '500.00' });
+
+    const [oldUnit] = await db.select().from(equipment).where(eq(equipment.id, unit.id));
+    expect(oldUnit!.inventoryStatus).toBe(mode === 'replacement' ? 'faulty' : 'allocated');
+    const oldMovements = await db.select().from(stockMovements).where(eq(stockMovements.equipmentId, unit.id));
+    expect(oldMovements).toHaveLength(mode === 'replacement' ? 2 : 1);
+    if (mode === 'replacement') {
+      const [replacement] = await db.select().from(equipment).where(eq(equipment.id, payload.replacementEquipmentId as string));
+      expect(replacement!.inventoryStatus).toBe('allocated');
+      const movements = await db.select().from(stockMovements).where(eq(stockMovements.equipmentId, replacement!.id));
+      expect(movements).toHaveLength(1);
+    }
+  });
+
+  it.each(['sequential', 'concurrent'])('%s retries post one ledger pair and issue stock once', async (retry) => {
+    const { customerId } = await makeCustomerLikeNorth('500.00');
+    const unit = await stockEquipment();
+    const payload = { customerId, catalogId: ourCatalogId, equipmentId: unit.id, amount: '150.00', method: 'cash', reference: ref() };
+    const responses = retry === 'concurrent'
+      ? await Promise.all([collectEquipment(fieldAuth, payload), collectEquipment(fieldAuth, payload)])
+      : [await collectEquipment(fieldAuth, payload), await collectEquipment(fieldAuth, payload)];
+    expect(responses.map(response => response.statusCode), responses.map(response => response.body).join('\n')).toEqual([201, 201]);
+    const receipt = bodyOf<CollectionResponse>(responses[0]!);
+    expect(bodyOf<CollectionResponse>(responses[1]!).id).toBe(receipt.id);
+    await expectEquipmentLedger(receipt, '150.00', '500.00');
+    expect(await db.select().from(accountTransactions).where(eq(accountTransactions.customerId, customerId))).toHaveLength(2);
+    expect(await db.select().from(collections).where(eq(collections.customerId, customerId))).toHaveLength(1);
+    expect(await db.select().from(customerEquipment).where(eq(customerEquipment.customerId, customerId))).toHaveLength(1);
+    expect(await db.select().from(stockMovements).where(eq(stockMovements.equipmentId, unit.id))).toHaveLength(1);
+    expect(await balances(customerId)).toEqual({ customer: '500.00', line: '500.00' });
+  });
+
+  it.each(['admin', 'staff'])('rejects paid equipment without a subscription for %s before changing stock', async (actor) => {
+    const [customer] = await db.insert(customers).values({
+      tenantId: data.tenantA.id,
+      customerCode: `UDA7-${unique()}`,
+      name: 'No subscription',
+      phone: uniquePhone(),
+    }).returning();
+    createdCustomerIds.push(customer!.id);
+    const unit = await stockEquipment();
+    const response = await collectEquipment(actor === 'admin' ? adminAuth : fieldAuth, {
+      customerId: customer!.id,
+      catalogId: ourCatalogId,
+      equipmentId: unit.id,
+      amount: '150.00',
+      method: 'cash',
+      reference: ref(),
+    });
+    expect(response.statusCode).toBe(400);
+    expect(bodyOf(response)).toMatchObject({ code: 'VALIDATION_FAILED', message: 'This customer has no subscription to post the payment against' });
+    expect(await db.select().from(collections).where(eq(collections.customerId, customer!.id))).toHaveLength(0);
+    expect(await db.select().from(accountTransactions).where(eq(accountTransactions.customerId, customer!.id))).toHaveLength(0);
+    expect(await db.select().from(customerEquipment).where(eq(customerEquipment.customerId, customer!.id))).toHaveLength(0);
+    const [unchanged] = await db.select().from(equipment).where(eq(equipment.id, unit.id));
+    expect(unchanged!.inventoryStatus).toBe('available');
+  });
+
+  it('rolls back ledger, receipt and stock when a later write fails', async () => {
+    const { customerId } = await makeCustomerLikeNorth('500.00');
+    const unit = await stockEquipment();
+    const repository = new PaymentRepository(app.db);
+    const insertCollection = repository.insertCollection.bind(repository);
+    const fault = vi.spyOn(PaymentRepository.prototype, 'insertCollection').mockImplementationOnce(async (tx, values) => {
+      await insertCollection(tx, values);
+      throw new Error('Injected failure after the receipt write');
+    });
+    try {
+      const response = await collectEquipment(fieldAuth, {
+        customerId,
+        catalogId: ourCatalogId,
+        equipmentId: unit.id,
+        amount: '150.00',
+        method: 'cash',
+        reference: ref(),
+      });
+      expect(response.statusCode).toBe(500);
+      expect(await db.select().from(accountTransactions).where(eq(accountTransactions.customerId, customerId))).toHaveLength(0);
+      expect(await db.select().from(collections).where(eq(collections.customerId, customerId))).toHaveLength(0);
+      expect(await db.select().from(customerEquipment).where(eq(customerEquipment.customerId, customerId))).toHaveLength(0);
+      expect(await db.select().from(stockMovements).where(eq(stockMovements.equipmentId, unit.id))).toHaveLength(0);
+      const [unchanged] = await db.select().from(equipment).where(eq(equipment.id, unit.id));
+      expect(unchanged!.inventoryStatus).toBe('available');
+      expect(await balances(customerId)).toEqual({ customer: '500.00', line: '500.00' });
+    }
+    finally {
+      fault.mockRestore();
+    }
+  });
+});
+
+async function expectEquipmentLedger(receipt: CollectionResponse, amount: string, balance: string): Promise<void> {
+  const [stored] = await db.select().from(collections).where(eq(collections.id, receipt.id));
+  expect(stored!.transactionId).not.toBeNull();
+  expect(receipt.transactionId).toBe(stored!.transactionId);
+  const [deposit] = await db.select().from(accountTransactions).where(eq(accountTransactions.id, stored!.transactionId!));
+  expect(deposit).toMatchObject({ transactionType: 'deposit', debit: '0.00', credit: amount, closingBalance: balance, customerId: receipt.customerId });
+  expect(deposit!.transactionNo).toMatch(/^RCP-/);
+  expect(deposit!.remarks).toContain('Equipment: Remote Control');
+  if (receipt.equipment?.serialNumber != null)
+    expect(deposit!.remarks).toContain(receipt.equipment.serialNumber);
+  const chargeNo = deposit!.transactionNo.replace(/^RCP-/, 'ACC-');
+  const [charge] = await db.select().from(accountTransactions).where(and(eq(accountTransactions.customerId, receipt.customerId), eq(accountTransactions.transactionNo, chargeNo)));
+  expect(charge).toMatchObject({ transactionType: 'deduction', debit: amount, credit: '0.00', closingBalance: '650.00', subscriptionId: deposit!.subscriptionId });
+  expect(charge!.remarks).toContain('Equipment: Remote Control');
+  if (receipt.equipment?.serialNumber != null)
+    expect(charge!.remarks).toContain(receipt.equipment.serialNumber);
+}
 
 async function northTemplate(): Promise<{ locationId: string; providerId: string; packageId: string }> {
   const [template] = await db.select({

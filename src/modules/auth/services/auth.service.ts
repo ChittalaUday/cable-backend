@@ -1,4 +1,5 @@
 import type { TokenPayload } from 'google-auth-library';
+import type { UserResponse } from '../auth.schema';
 import type { PublicMembership } from '../repositories/auth.repository';
 import type { DeviceInfo, SessionsService } from './sessions.service';
 import type { AuditAction } from '@/constants/audit';
@@ -60,13 +61,7 @@ export interface AuthTokens {
 
 export type { PublicMembership };
 
-export interface PublicUser {
-  id: string;
-  email: string | null;
-  phone: string | null;
-  name: string | null;
-  photoUrl: string | null;
-}
+export type PublicUser = UserResponse;
 
 function toClaimMemberships(memberships: PublicMembership[]): AccessTokenClaims['memberships'] {
   return memberships.map(m => ({ t: m.tenantId, r: m.roleId }));

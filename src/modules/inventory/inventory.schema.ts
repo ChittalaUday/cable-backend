@@ -14,6 +14,10 @@ import {
 } from '@/constants/inventory';
 import { StringEnum, StringEnumWithDefault } from '@/types/typebox';
 
+const InventoryMoney = Type.String({ pattern: '^\\d{1,10}(\\.\\d{1,2})?$' });
+const DefaultInventoryMoney = Type.String({ pattern: '^\\d{1,10}(\\.\\d{1,2})?$', default: '0' });
+const MAX_INWARD_QUANTITY = 1000;
+
 export const IdParams = Type.Object({
   id: Type.String({ format: 'uuid' }),
 });
@@ -26,7 +30,7 @@ export const ListStockQuery = Type.Object({
   locationId: Type.Optional(Type.String({ format: 'uuid' })),
   status: Type.Optional(StringEnum(STOCK_LEVEL_FILTERS)),
   search: Type.Optional(Type.String()),
-  page: Type.Optional(Type.Integer({ minimum: 1, default: 1 })),
+  page: Type.Optional(Type.Integer({ minimum: 1, maximum: 1_000_000, default: 1 })),
   limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100, default: 50 })),
 });
 
@@ -78,8 +82,8 @@ export const CatalogItemResponse = Type.Object({
   defaultDepositAmount: Type.String(),
   defaultRentalPrice: Type.String(),
   isReturnable: Type.Boolean(),
-  createdAt: Type.Any(),
-  updatedAt: Type.Any(),
+  createdAt: Type.String({ format: 'date-time' }),
+  updatedAt: Type.String({ format: 'date-time' }),
 });
 
 export const LowStockItem = Type.Object({
@@ -148,14 +152,14 @@ export const CreateCatalogItemBody = Type.Object({
   itemType: Type.Optional(Type.String({ default: 'other' })),
   isBundle: Type.Optional(Type.Boolean({ default: false })),
   defaultOwnership: Type.Optional(StringEnumWithDefault(EQUIPMENT_OWNERSHIPS, 'tenant_provided')),
-  defaultSalePrice: Type.Optional(Type.String({ default: '0' })),
-  defaultDepositAmount: Type.Optional(Type.String({ default: '0' })),
-  defaultRentalPrice: Type.Optional(Type.String({ default: '0' })),
+  defaultSalePrice: Type.Optional(DefaultInventoryMoney),
+  defaultDepositAmount: Type.Optional(DefaultInventoryMoney),
+  defaultRentalPrice: Type.Optional(DefaultInventoryMoney),
   isReturnable: Type.Optional(Type.Boolean({ default: true })),
   description: Type.Optional(Type.String({ maxLength: 500 })),
-});
+}, { additionalProperties: false });
 
-export const UpdateCatalogItemBody = Type.Partial(CreateCatalogItemBody);
+export const UpdateCatalogItemBody = Type.Partial(CreateCatalogItemBody, { additionalProperties: false });
 
 export const IssueEquipmentBody = Type.Object({
   customerId: Type.String({ format: 'uuid' }),
@@ -164,8 +168,8 @@ export const IssueEquipmentBody = Type.Object({
   equipmentId: Type.Optional(Type.String({ format: 'uuid' })),
   serialNumber: Type.Optional(Type.String()),
   ownershipType: Type.Optional(StringEnumWithDefault(EQUIPMENT_OWNERSHIPS, 'tenant_provided')),
-  chargedAmount: Type.Optional(Type.String({ default: '0' })),
-  depositAmount: Type.Optional(Type.String({ default: '0' })),
+  chargedAmount: Type.Optional(DefaultInventoryMoney),
+  depositAmount: Type.Optional(DefaultInventoryMoney),
   notes: Type.Optional(Type.String()),
 });
 
@@ -222,8 +226,8 @@ export const CreateApprovalRequestResponse = Type.Object({
   proposedData: Type.Union([Type.Record(Type.String(), Type.Unknown()), Type.Null()]),
   reason: Type.String(),
   status: Type.String(),
-  createdAt: Type.Any(),
-  updatedAt: Type.Any(),
+  createdAt: Type.String({ format: 'date-time' }),
+  updatedAt: Type.String({ format: 'date-time' }),
 });
 
 export const StockMovementResponse = Type.Object({
@@ -308,7 +312,7 @@ export const ReturnCustomerEquipmentBody = Type.Object({
   returnRemarks: Type.Optional(Type.String()),
   returnedToLocationId: Type.Optional(Type.String({ format: 'uuid' })),
   depositRefundStatus: Type.Optional(StringEnum(DEPOSIT_REFUND_STATUSES)),
-  depositDeductionAmount: Type.Optional(Type.String()),
+  depositDeductionAmount: Type.Optional(InventoryMoney),
   notes: Type.Optional(Type.String()),
 });
 
@@ -325,10 +329,10 @@ export const ReturnCustomerEquipmentResponse = Type.Object({
 export const InwardStockBody = Type.Object({
   catalogId: Type.String({ format: 'uuid' }),
   locationId: Type.Optional(Type.String({ format: 'uuid' })),
-  quantity: Type.Optional(Type.Integer({ minimum: 1, default: 1 })),
-  serialNumbers: Type.Optional(Type.Array(Type.String())),
-  costPrice: Type.Optional(Type.String({ default: '0' })),
-  depositAmount: Type.Optional(Type.String({ default: '0' })),
+  quantity: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_INWARD_QUANTITY, default: 1 })),
+  serialNumbers: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 128 }), { maxItems: MAX_INWARD_QUANTITY, uniqueItems: true })),
+  costPrice: Type.Optional(DefaultInventoryMoney),
+  depositAmount: Type.Optional(DefaultInventoryMoney),
   notes: Type.Optional(Type.String()),
 });
 
@@ -338,7 +342,7 @@ export const TransferStockBody = Type.Object({
   fromLocationId: Type.Optional(Type.String({ format: 'uuid' })),
   toLocationId: Type.Optional(Type.String({ format: 'uuid' })),
   toStaffId: Type.Optional(Type.String({ format: 'uuid' })),
-  quantity: Type.Optional(Type.Integer({ minimum: 1, default: 1 })),
+  quantity: Type.Optional(Type.Integer({ minimum: 1, maximum: 1, default: 1 })),
   notes: Type.Optional(Type.String()),
 });
 
